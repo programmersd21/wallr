@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name for release (e.g. v0.1.0)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build and Release Binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libx11-dev libasound2-dev libudev-dev pkg-config
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release --bin wallr
+
+      - name: Prepare Release Asset
+        run: |
+          mkdir -p staging
+          cp target/release/wallr staging/
+          cp README.md staging/
+          cp -r docs staging/
+          cd staging
+          tar -czf ../wallr-linux-amd64.tar.gz *
+          cd ..
+
+      - name: Determine Tag
+        id: determine_tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag_name }}" ]; then
+            echo "TAG_NAME=${{ inputs.tag_name }}" >> $GITHUB_ENV
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "TAG_NAME=${{ github.ref_name }}" >> $GITHUB_ENV
+          else
+            echo "TAG_NAME=v$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="wallr") | .version')" >> $GITHUB_ENV
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: Release ${{ env.TAG_NAME }}
+          draft: false
+          prerelease: false
+          files: |
+            wallr-linux-amd64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

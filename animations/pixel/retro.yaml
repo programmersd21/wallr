@@ -1,0 +1,25 @@
+name: retro
+duration: 700ms
+timeline:
+  - at: 0ms
+    duration: 350ms
+    pixelate:
+      from: 1
+      to: 64
+  - at: 350ms
+    duration: 350ms
+    pixelate:
+      from: 64
+      to: 1
+  - at: 0ms
+    duration: 700ms
+    fade:
+      from: 0
+      to: 1
+custom_effects:
+  scanline:
+    params:
+      strength: 0.08
+    field: |
+      line = sin(uv.y * resolution.y * 0.5) * strength
+      return mix(old, new, clamp(t + line, 0.0, 1.0))

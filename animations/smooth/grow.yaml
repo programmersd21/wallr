@@ -1,0 +1,5 @@
+name: grow
+duration: 900ms
+effects:
+  - grow:
+      origin: center

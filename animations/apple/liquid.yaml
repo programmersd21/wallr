@@ -1,0 +1,28 @@
+name: liquid
+duration: 800ms
+timeline:
+  - at: 0ms
+    duration: 800ms
+    fade:
+      from: 0
+      to: 1
+      easing: ease_out
+  - at: 0ms
+    duration: 800ms
+    blur:
+      from: 30
+      to: 0
+  - at: 150ms
+    duration: 650ms
+    ripple:
+      origin: center
+      frequency: 15.0
+      amplitude: 0.02
+      speed: 6.0
+custom_effects:
+  soft_glass:
+    params:
+      strength: 0.2
+    field: |
+      offset = vec2<f32>(sin(uv.y * 20.0 + time_absolute) * strength, 0.0)
+      return mix(old, sample(new, uv + offset), t)

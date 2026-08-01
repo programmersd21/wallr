@@ -1,0 +1,7 @@
+name: crossfade
+duration: 600ms
+effects:
+  - fade
+  - blur:
+      from: 10
+      to: 0

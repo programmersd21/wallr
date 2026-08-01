@@ -1,0 +1,6 @@
+name: wave
+duration: 900ms
+effects:
+  - wave:
+      frequency: 3.0
+      amplitude: 0.05

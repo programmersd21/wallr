@@ -1,0 +1,5 @@
+name: outer
+duration: 900ms
+effects:
+  - outer:
+      origin: center

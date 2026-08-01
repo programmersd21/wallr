@@ -1,0 +1,28 @@
+[package]
+name = "wallr"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+readme = "../README.md"
+homepage.workspace = true
+categories.workspace = true
+keywords.workspace = true
+default-run = "wallr"
+
+[[bin]]
+name = "wallr"
+path = "src/main.rs"
+
+[dependencies]
+wallr-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+colored.workspace = true
+serde_yaml.workspace = true
+humansize.workspace = true

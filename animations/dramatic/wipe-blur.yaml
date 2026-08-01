@@ -1,0 +1,13 @@
+name: wipe-blur
+duration: 1000ms
+timeline:
+  - at: 0ms
+    duration: 700ms
+    wipe:
+      direction: right
+      softness: 0.1
+  - at: 0ms
+    duration: 700ms
+    blur:
+      from: 15
+      to: 0

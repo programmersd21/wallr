@@ -1,0 +1,43 @@
+[workspace]
+members = ["wallr", "wallr-core"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Wallr Contributors"]
+license = "MIT"
+repository = "https://github.com/programmersd21/wallr"
+description = "The wallpaper engine for Wayland — animated transitions, theme pipeline integration, and a package ecosystem."
+homepage = "https://github.com/programmersd21/wallr"
+categories = ["command-line-utilities", "rendering"]
+keywords = ["wallpaper", "wayland", "wgpu", "daemon", "matugen"]
+
+[workspace.dependencies]
+wallr-core = { path = "wallr-core", version = "0.1.0" }
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+clap = { version = "4", features = ["derive", "env", "string"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+image = { version = "0.25", features = ["png", "jpeg", "gif", "webp"] }
+wgpu = "24"
+naga = { version = "24", features = ["wgsl-in"] }
+raw-window-handle = "0.6"
+notify = "7"
+dirs = "6"
+sha2 = "0.10"
+hex = "0.4"
+humansize = "2"
+colored = "3"
+which = "7"
+glob = "0.3"
+wayland-client = "0.31"
+smithay-client-toolkit = { version = "0.19", features = ["calloop"] }
+wayland-backend = { version = "0.3", features = ["client_system"] }
+winit = "0.30"
+pollster = "0.4"
