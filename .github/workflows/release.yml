@@ -39,6 +39,11 @@ jobs:
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+
       - name: Build release binary
         run: cargo build --release --bin wallr
 
