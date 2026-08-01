@@ -135,6 +135,24 @@ Details: [docs/architecture.md](docs/architecture.md)
 - [Architecture](docs/architecture.md)
 - [Matugen integration](docs/matugen-integration.md)
 
+## Support
+
+If Wallr has improved your workflow or desktop experience, consider supporting its continued development.
+
+Your support helps fund new features, performance improvements, bug fixes, documentation, testing, and long term maintenance while keeping Wallr open source.
+
+### Star on GitHub
+
+Starring the repository helps more people discover the project and shows that the work is valuable.
+
+### Sponsor
+
+Financial support allows more time to be invested in building, maintaining, and improving Wallr.
+
+Every contribution, regardless of size, directly supports the future of the project.
+
+Thank you for supporting open source software.
+
 ## Star History
 
 [![RepoStars](https://repostars.dev/api/embed?repo=programmersd21%2Fwallr&theme=sunset)](https://repostars.dev/?repos=torvalds%2Flinux&theme=sunset)
