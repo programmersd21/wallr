@@ -40,6 +40,12 @@ Rust toolchain, Wayland client headers, and a compositor with `wlr-layer-shell` 
 ## Install
 
 ```bash
+cargo install wallr
+```
+
+or manually, from source:
+
+```bash
 # Arch
 sudo pacman -S rust wayland wayland-protocols pkg-config
 
