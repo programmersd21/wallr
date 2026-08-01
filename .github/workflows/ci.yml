@@ -12,6 +12,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwayland-dev \
+            wayland-protocols \
+            libxkbcommon-dev \
+            libegl-dev \
+            libgles-dev \
+            pkg-config
       - run: cargo fmt --all --check
       - run: cargo check --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
