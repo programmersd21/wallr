@@ -8,14 +8,16 @@
 
 Wallr draws its own background surface with `wlr-layer-shell` and `wgpu`. It does not wrap `hyprpaper`, `swww`, or `swaybg`; it renders transitions itself and treats theme generation (Matugen, Wallust, Pywal) as an optional step after the fact, not the core of what it does.
 
-[![License](https://img.shields.io/badge/license-MIT-000000?style=for-the-badge&labelColor=000000&color=8b5cf6)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-stable-000000?style=for-the-badge&labelColor=000000&color=dea584&logo=rust&logoColor=white)](https://www.rust-lang.org)
-[![Wayland](https://img.shields.io/badge/wayland-native-000000?style=for-the-badge&labelColor=000000&color=22d3ee&logo=wayland&logoColor=white)](https://wayland.freedesktop.org)
-[![gpu](https://img.shields.io/badge/gpu-wgpu-000000?style=for-the-badge&labelColor=000000&color=4ade80)](https://wgpu.rs)
-[![crates.io](https://img.shields.io/crates/v/wallr?style=for-the-badge&labelColor=000000&color=f97316&label=crates.io)](https://crates.io/crates/wallr)
-[![stars](https://img.shields.io/github/stars/programmersd21/wallr?style=for-the-badge&labelColor=000000&color=facc15&label=stars)](https://github.com/programmersd21/wallr/stargazers)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-000000?style=for-the-badge&labelColor=000000&color=ec4899)](CONTRIBUTING.md)
-[![made with love](https://img.shields.io/badge/made%20with-%E2%9D%A4-000000?style=for-the-badge&labelColor=000000&color=f43f5e)](https://github.com/programmersd21)
+[![License](https://img.shields.io/badge/License-MIT-000000?style=for-the-badge&labelColor=000000&color=8b5cf6)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-stable-000000?style=for-the-badge&labelColor=000000&color=dea584&logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![Wayland](https://img.shields.io/badge/Wayland-native-000000?style=for-the-badge&labelColor=000000&color=22d3ee&logo=wayland&logoColor=white)](https://wayland.freedesktop.org)
+[![GPU](https://img.shields.io/badge/GPU-wgpu-000000?style=for-the-badge&labelColor=000000&color=4ade80)](https://wgpu.rs)
+[![Crates.io](https://img.shields.io/crates/v/wallr?style=for-the-badge&labelColor=000000&color=f97316&label=Crates.io)](https://crates.io/crates/wallr)
+[![CI](https://img.shields.io/github/actions/workflow/status/programmersd21/wallr/ci.yml?style=for-the-badge&labelColor=000000&color=22c55e&label=CI)](https://github.com/programmersd21/wallr/actions/workflows/ci.yml)
+[![Downloads](https://img.shields.io/github/downloads/programmersd21/wallr/total?style=for-the-badge&labelColor=000000&color=38bdf8&label=Downloads)](https://github.com/programmersd21/wallr/releases)
+[![Stars](https://img.shields.io/github/stars/programmersd21/wallr?style=for-the-badge&labelColor=000000&color=facc15&label=Stars)](https://github.com/programmersd21/wallr/stargazers)
+[![PRs Welcome](https://img.shields.io/badge/PRs%20Welcome-welcome-000000?style=for-the-badge&labelColor=000000&color=ec4899)](CONTRIBUTING.md)
+[![Made with love](https://img.shields.io/badge/Made%20with-%E2%9D%A4-000000?style=for-the-badge&labelColor=000000&color=f43f5e)](https://github.com/programmersd21)
 
 </div>
 

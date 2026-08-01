@@ -10,6 +10,7 @@ readme = "README.md"
 homepage.workspace = true
 categories.workspace = true
 keywords.workspace = true
+include = ["src/**", "Cargo.toml", "README.md", "shaders/**"]
 
 [dependencies]
 anyhow.workspace = true

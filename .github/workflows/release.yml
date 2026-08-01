@@ -25,7 +25,16 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwayland-dev libx11-dev libasound2-dev libudev-dev pkg-config
+          sudo apt-get install -y \
+            libwayland-dev \
+            wayland-protocols \
+            libxkbcommon-dev \
+            libegl-dev \
+            libgles-dev \
+            libx11-dev \
+            libasound2-dev \
+            libudev-dev \
+            pkg-config
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable

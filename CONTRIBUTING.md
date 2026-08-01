@@ -56,31 +56,30 @@ wallr/
 │   └── src/
 │       └── main.rs             # Main CLI entrypoint & IPC client
 ├── wallr-core/                 # Library crate (Core Engine)
-│   └── src/
-│       ├── animation/          # Animation spec parsing, timeline & uniform computation
-│       ├── animated/           # Animated GIF decoding & wall-clock playback timing
-│       ├── easing/              # Cubic-bezier and spring curves
-│       ├── custom_effects/      # Sandboxed field validation/transpilation
-│       ├── cache/              # Frame & package cache management
-│       ├── cli/                # Clap CLI structures and commands
-│       ├── config/             # Config loader, parser, paths & defaults
-│       ├── daemon/             # Daemon event loop, Wayland layer-shell & IPC socket server
-│       ├── ipc/                # Unix domain socket IPC protocol & messaging
-│       ├── packages/           # Animation package registry, remote fetcher & dependency solver
-│       ├── preview/            # Wallpaper preview renderer window
-│       ├── renderer/           # wgpu GPU rendering pipeline
-│       ├── shader/             # WGSL shader bindings and uniform layouts
-│       ├── theme/              # Matugen, Wallust, Pywal, & hook dispatchers
-│       └── wallpaper/          # High-level engine coordinator & diagnostics (doctor)
+│   ├── src/
+│   │   ├── animation/          # Animation spec parsing, timeline & uniform computation
+│   │   ├── animated/           # Animated GIF decoding & wall-clock playback timing
+│   │   ├── easing/              # Cubic-bezier and spring curves
+│   │   ├── custom_effects/      # Sandboxed field validation/transpilation
+│   │   ├── cache/              # Frame & package cache management
+│   │   ├── cli/                # Clap CLI structures and commands
+│   │   ├── config/             # Config loader, parser, paths & defaults
+│   │   ├── daemon/             # Daemon event loop, Wayland layer-shell & IPC socket server
+│   │   ├── ipc/                # Unix domain socket IPC protocol & messaging
+│   │   ├── packages/           # Animation package registry, remote fetcher & dependency solver
+│   │   ├── preview/            # Wallpaper preview renderer window
+│   │   ├── renderer/           # wgpu GPU rendering pipeline
+│   │   ├── shader/             # WGSL shader bindings and uniform layouts
+│   │   ├── theme/              # Matugen, Wallust, Pywal, & hook dispatchers
+│   │   └── wallpaper/          # High-level engine coordinator & diagnostics (doctor)
+│   └── shaders/                # WGSL shader source files
+│       └── effects.wgsl        # Fragment transition effects
 ├── animations/                 # Built-in animation package templates
 │   ├── apple/liquid.yaml
 │   ├── dramatic/wipe-blur.yaml
 │   ├── minimal/minimal.yaml
 │   ├── pixel/retro.yaml
 │   └── smooth/crossfade.yaml
-└── shaders/                    # WGSL shader source files
-    ├── effects.wgsl            # Fragment transition effects
-    └── fullscreen.wgsl         # Fullscreen quad vertex shader
 ```
 
 ---
@@ -119,7 +118,7 @@ do not hand-edit generated sections.
 ## How to Add a New GPU Effect
 
 1. **WGSL Shader Implementation**:
-   Add or modify fragment logic inside `shaders/effects.wgsl`. Effect selection is driven by `uniforms.effect_type`.
+   Add or modify fragment logic inside `wallr-core/shaders/effects.wgsl`. Effect selection is driven by `uniforms.effect_type`.
 
 2. **Animation Spec Enum**:
    Define parameter structs and add the effect variant to the `Effect` enum in `wallr-core/src/animation/mod.rs`:

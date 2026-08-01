@@ -1,4 +1,4 @@
-pub const EFFECTS_SHADER: &str = include_str!("../../../shaders/effects.wgsl");
+pub const EFFECTS_SHADER: &str = include_str!("../../shaders/effects.wgsl");
 
 #[cfg(test)]
 mod tests {
