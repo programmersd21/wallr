@@ -1,79 +1,56 @@
 # Contributing to Wallr
 
-Thank you for your interest in contributing to Wallr! Wallr is a native, GPU-accelerated Wayland wallpaper engine written in Rust.
+Wallr is a native, GPU-accelerated Wayland wallpaper engine written in Rust. This document covers environment setup, code standards, and how to add new effects and theme providers.
 
----
+## Setup
 
-## Development Environment Setup
+Requires the Rust toolchain (edition 2024, MSRV 1.85+), Wayland development headers, and FFmpeg development libraries (used by `ffmpeg-next` for video support).
 
-### Prerequisites
-
-You will need the Rust toolchain (edition 2024 / MSRV 1.85+), Wayland development headers, and FFmpeg development libraries (required by `ffmpeg-next` for video support) installed on your system.
-
-#### Arch Linux
 ```bash
+# Arch
 sudo pacman -S rustup wayland wayland-protocols pkg-config ffmpeg
-```
 
-#### Fedora
-```bash
+# Fedora
 sudo dnf install rust cargo wayland-devel wayland-protocols-devel pkg-config ffmpeg-devel
-```
 
-#### Ubuntu / Debian
-```bash
+# Ubuntu/Debian
 sudo apt install rustc cargo libwayland-dev wayland-protocols pkg-config libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
 ```
 
-### Getting Started
+```bash
+git clone https://github.com/programmersd21/wallr.git
+cd wallr
+cargo build
+cargo test
+```
 
-1. **Fork and Clone**:
-   ```bash
-   git clone https://github.com/YOUR_USERNAME/wallr.git
-   cd wallr
-   ```
-
-2. **Build the Workspace**:
-   ```bash
-   cargo build
-   ```
-
-3. **Run Tests**:
-   ```bash
-   cargo test
-   ```
-
----
-
-## Workspace Structure
-
-The project is structured as a Cargo workspace:
+## Workspace layout
 
 ```
 wallr/
 ├── Cargo.toml                  # Workspace manifest
 ├── wallr/                      # Binary crate (CLI frontend)
 │   └── src/
-│       └── main.rs             # Main CLI entrypoint & IPC client
-├── wallr-core/                 # Library crate (Core Engine)
+│       └── main.rs             # CLI entrypoint & IPC client
+├── wallr-core/                 # Core engine library
 │   ├── src/
 │   │   ├── animation/          # Animation spec parsing, timeline & uniform computation
-│   │   ├── animated/           # Animated GIF decoding & wall-clock playback timing
-│   │   ├── easing/              # Cubic-bezier and spring curves
-│   │   ├── custom_effects/      # Sandboxed field validation/transpilation
+│   │   ├── animated/           # GIF decoding & wall-clock playback timing
+│   │   ├── easing/             # Cubic-bezier and spring curves
+│   │   ├── custom_effects/     # Sandboxed field validation/transpilation
 │   │   ├── cache/              # Frame & package cache management
 │   │   ├── cli/                # Clap CLI structures and commands
 │   │   ├── config/             # Config loader, parser, paths & defaults
-│   │   ├── daemon/             # Daemon event loop, Wayland layer-shell & IPC socket server
-│   │   ├── ipc/                # Unix domain socket IPC protocol & messaging
-│   │   ├── packages/           # Animation package registry, remote fetcher & dependency solver
-│   │   ├── preview/            # Wallpaper preview renderer window
-│   │   ├── renderer/           # wgpu GPU rendering pipeline
+│   │   ├── daemon/             # Daemon event loop, layer-shell & IPC socket server
+│   │   ├── ipc/                # Unix socket IPC protocol & messaging
+│   │   ├── packages/           # Animation package registry, fetcher & dependency solver
+│   │   ├── preview/            # Wallpaper preview window
+│   │   ├── renderer/           # wgpu rendering pipeline
 │   │   ├── shader/             # WGSL shader bindings and uniform layouts
 │   │   ├── theme/              # Matugen, Wallust, Pywal, & hook dispatchers
-│   │   ├── video/             # FFmpeg decoding & PTS playback scheduling
-│   │   └── wallpaper/          # High-level engine coordinator & diagnostics (doctor)
-│   └── shaders/                # WGSL shader source files
+│   │   ├── video/              # FFmpeg decoding & PTS playback scheduling
+│   │   └── wallpaper/          # Engine coordinator & diagnostics (doctor)
+│   └── shaders/
 │       └── effects.wgsl        # Fragment transition effects
 ├── animations/                 # Built-in animation package templates
 │   ├── apple/liquid.yaml
@@ -83,42 +60,24 @@ wallr/
 │   └── smooth/crossfade.yaml
 ```
 
----
+## Code standards
 
-## Code Quality Standards
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
 
-We enforce strict Rust code quality standards:
+Non-trivial logic needs tests: config merge order, duration parsing, timeline scheduling, easing math, effect validation, package cycle detection, custom effect transpilation, GIF frame indexing, video scheduling.
 
-1. **Formatting**: Always format your code with `cargo fmt`:
-   ```bash
-   cargo fmt --all --check
-   ```
+Library errors use `thiserror`. `anyhow` stays at the binary boundary. No unused dependencies, stub functions, `TODO` comments, or `unwrap()` in library code.
 
-2. **Clippy Lints**: Ensure there are no warnings or errors reported by `cargo clippy`:
-   ```bash
-   cargo clippy --workspace --all-targets -- -D warnings
-   ```
+## Adding a GPU effect
 
-3. **Testing**: Add unit or integration tests for new functionality and verify all tests pass:
-   ```bash
-   cargo test --workspace
-   ```
+1. Add the fragment logic to `wallr-core/shaders/effects.wgsl`. Effect selection is driven by `uniforms.effect_type`.
 
-Non-trivial logic requires tests: config merge order, duration parsing, timeline
-scheduling, easing math, effect validation, package cycle detection, custom
-effect transpilation, GIF frame indexing, and video scheduling. Library errors use `thiserror`;
-`anyhow` belongs at the binary boundary. Do not add unused dependencies, stubs,
-`TODO` comments, or `unwrap()` calls to library code.
+2. Define the parameter struct and add a variant to `Effect` in `wallr-core/src/animation/mod.rs`:
 
----
-
-## How to Add a New GPU Effect
-
-1. **WGSL Shader Implementation**:
-   Add or modify fragment logic inside `wallr-core/shaders/effects.wgsl`. Effect selection is driven by `uniforms.effect_type`.
-
-2. **Animation Spec Enum**:
-   Define parameter structs and add the effect variant to the `Effect` enum in `wallr-core/src/animation/mod.rs`:
    ```rust
    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
    pub struct MyCustomEffectParams { ... }
@@ -129,44 +88,24 @@ effect transpilation, GIF frame indexing, and video scheduling. Library errors u
    }
    ```
 
-3. **Uniform Computation**:
-   Update `compute_effect_uniforms` in `wallr-core/src/animation/mod.rs` to map parameters and progress into `EffectUniforms`.
+3. Map the parameters and progress into `EffectUniforms` in `compute_effect_uniforms` (same file).
 
-4. **Validation & Testing**:
-   Write tests for deserialization and uniform computation in `wallr-core/src/animation/mod.rs`. Test with `wallr validate <yaml>`.
+4. Add deserialization and uniform-computation tests. Verify with `wallr validate <yaml>`.
 
----
+## Adding a theme provider
 
-## How to Add a New Theme Provider
+1. Add a variant to `ThemeProvider` in `wallr-core/src/config/mod.rs`.
+2. Add a runner (e.g. `run_my_theme_provider`) in `wallr-core/src/theme/mod.rs` that spawns the executable with the right flags.
+3. Update `check_provider_available` in the same file so `wallr doctor` can detect it.
 
-1. **Implement Provider Dispatch**:
-   Add a new variant to `ThemeProvider` enum in `wallr-core/src/config/mod.rs`.
+## Pull requests
 
-2. **Implement Runner**:
-   In `wallr-core/src/theme/mod.rs`, add a runner function (e.g. `run_my_theme_provider`) that spawns the executable with appropriate CLI flags.
+```bash
+git checkout -b feature/my-feature
+```
 
-3. **Update Availability Check**:
-   Update `check_provider_available` in `wallr-core/src/theme/mod.rs` so `wallr doctor` can verify system binary presence.
-
----
-
-## Pull Request Guidelines
-
-1. **Create a Feature Branch**:
-   ```bash
-   git checkout -b feature/my-awesome-feature
-   ```
-
-2. **Commit Messages**:
-   Write descriptive commit messages explaining *what* changed and *why*.
-
-3. **Open Pull Request**:
-   - Provide a concise summary of your changes.
-   - Mention any related issues or discussions.
-   - Ensure all CI checks (fmt, clippy, test) pass locally before requesting review.
-
----
+Write commit messages that explain what changed and why. In the PR description, summarize the change and link any related issues. Run `fmt`, `clippy`, and `test` locally before requesting review.
 
 ## License
 
-By contributing to Wallr, you agree that your contributions will be licensed under the project's [MIT License](LICENSE).
+Contributions are licensed under the project's [MIT License](LICENSE).
