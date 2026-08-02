@@ -3,7 +3,7 @@ members = ["wallr", "wallr-core"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["Wallr Contributors"]
 license = "MIT"
@@ -12,32 +12,80 @@ description = "The wallpaper engine for Wayland — animated transitions, theme 
 homepage = "https://github.com/programmersd21/wallr"
 categories = ["command-line-utilities", "rendering"]
 keywords = ["wallpaper", "wayland", "wgpu", "daemon", "matugen"]
+rust-version = "1.85"
+
+# Optimized profile settings for faster compilation and better runtime performance
+[profile.dev]
+opt-level = 1              # Basic optimizations for faster dev builds
+debug = true               # Keep debug symbols
+incremental = true         # Enable incremental compilation
+
+[profile.release]
+opt-level = 3              # Full optimizations
+lto = "thin"              # Thin LTO for faster linking with good optimization
+codegen-units = 1          # Better optimization, slower compile (worth it for release)
+strip = true               # Strip symbols for smaller binary
+panic = "abort"            # Smaller binary, faster panic handling
+debug = false              # No debug info in release
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true               # Release build with debug symbols
+strip = false
+
+# Fast development builds
+[profile.dev.package."*"]
+opt-level = 2              # Optimize dependencies even in dev mode
 
 [workspace.dependencies]
-wallr-core = { path = "wallr-core", version = "0.1.0" }
+wallr-core = { path = "wallr-core", version = "0.2.0" }
+
+# Core utilities
 anyhow = "1"
 thiserror = "2"
+
+# Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+
+# CLI
 clap = { version = "4", features = ["derive", "env", "string"] }
-tokio = { version = "1", features = ["full"] }
+colored = "3"
+
+# Async runtime
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "sync", "io-util", "net", "time", "macros", "signal"] }
+
+# Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-image = { version = "0.25", features = ["png", "jpeg", "gif", "webp"] }
-wgpu = "24"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "ansi"] }
+
+# Image processing
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+# Graphics
+wgpu = { version = "24", default-features = false, features = ["wgsl"] }
 naga = { version = "24", features = ["wgsl-in"] }
 raw-window-handle = "0.6"
-notify = "7"
+winit = { version = "0.30", default-features = false, features = ["wayland", "wayland-dlopen", "wayland-csd-adwaita", "rwh_06"] }
+pollster = "0.4"
+
+# Wayland
+wayland-client = "0.31"
+smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop"] }
+wayland-backend = { version = "0.3", features = ["client_system"] }
+
+# File operations
+notify = { version = "7", default-features = false }
 dirs = "6"
-sha2 = "0.10"
+glob = "0.3"
+which = "7"
+
+# Crypto & utilities
+sha2 = { version = "0.10", default-features = false }
 hex = "0.4"
 humansize = "2"
-colored = "3"
-which = "7"
-glob = "0.3"
-wayland-client = "0.31"
-smithay-client-toolkit = { version = "0.19", features = ["calloop"] }
-wayland-backend = { version = "0.3", features = ["client_system"] }
-winit = "0.30"
-pollster = "0.4"
+
+# Video support
+ffmpeg-next = { version = "8.1", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
+crossbeam-channel = "0.5"

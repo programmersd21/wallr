@@ -184,7 +184,7 @@ Everything declarable in YAML is also settable from the CLI on `wallr set` / `wa
 | `frequency` / `amplitude` / `speed` | `--frequency 5 --amplitude 0.08 --speed 8` |
 | `softness` / `scale` | `--softness 0.02` / `--scale 12` |
 
-CLI flags always override the package values. See [cli.md](cli.md#effect-flags) for the full flag reference.
+CLI flags always override the package values. See [cli-reference.md](cli-reference.md) for the full flag list.
 
 ---
 

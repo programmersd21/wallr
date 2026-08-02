@@ -284,6 +284,18 @@ async fn main() -> Result<()> {
             }
         }
 
+        Commands::Quit => {
+            let socket_path = config::expand_path(&config.daemon.socket);
+            if socket_path.exists() && tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
+                let resp = send_ipc_command(socket_path, IpcCommand::Stop).await?;
+                if let Some(msg) = resp.message {
+                    println!("{}", msg);
+                }
+            } else {
+                anyhow::bail!("daemon not running");
+            }
+        }
+
         Commands::Daemon => {
             let daemon = Daemon::new(config)?;
             daemon.start().await?;
@@ -329,6 +341,34 @@ async fn main() -> Result<()> {
                 },
                 IpcCommands::Stop => IpcCommand::Stop,
                 IpcCommands::Status => IpcCommand::Status,
+                IpcCommands::Info => IpcCommand::Info,
+                IpcCommands::Seek { timestamp } => {
+                    // Parse timestamp: HH:MM:SS or seconds
+                    let ms = if timestamp.contains(':') {
+                        let parts: Vec<&str> = timestamp.split(':').collect();
+                        match parts.len() {
+                            2 => {
+                                // MM:SS
+                                let min: u64 = parts[0].parse()?;
+                                let sec: u64 = parts[1].parse()?;
+                                (min * 60 + sec) * 1000
+                            }
+                            3 => {
+                                // HH:MM:SS
+                                let hr: u64 = parts[0].parse()?;
+                                let min: u64 = parts[1].parse()?;
+                                let sec: u64 = parts[2].parse()?;
+                                (hr * 3600 + min * 60 + sec) * 1000
+                            }
+                            _ => anyhow::bail!("Invalid timestamp format. Use HH:MM:SS or seconds"),
+                        }
+                    } else {
+                        // Plain seconds
+                        let sec: f64 = timestamp.parse()?;
+                        (sec * 1000.0) as u64
+                    };
+                    IpcCommand::Seek { timestamp_ms: ms }
+                }
             };
             let resp = send_ipc_command(socket_path, cmd).await?;
             if let Some(msg) = resp.message {

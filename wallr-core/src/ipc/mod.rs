@@ -9,6 +9,9 @@ pub enum IpcCommand {
     Pause,
     Resume,
     Reload,
+    Seek {
+        timestamp_ms: u64,
+    },
     Preview {
         path: String,
         effect: Option<crate::animation::Effect>,
@@ -23,6 +26,7 @@ pub enum IpcCommand {
     },
     Stop,
     Status,
+    Info,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

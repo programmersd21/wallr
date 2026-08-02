@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Tag name for release (e.g. v0.1.0)'
+        description: 'Tag name for release (e.g. v0.2.0)'
         required: false
         type: string
 
@@ -34,6 +34,10 @@ jobs:
             libx11-dev \
             libasound2-dev \
             libudev-dev \
+            libavcodec-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libswscale-dev \
             pkg-config
 
       - name: Install stable Rust

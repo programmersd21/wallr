@@ -10,19 +10,34 @@ readme = "../README.md"
 homepage.workspace = true
 categories.workspace = true
 keywords.workspace = true
+rust-version.workspace = true
 default-run = "wallr"
 
 [[bin]]
 name = "wallr"
 path = "src/main.rs"
+bench = false  # Disable benchmarks for faster builds
 
 [dependencies]
+# Core library
 wallr-core.workspace = true
+
+# Error handling
 anyhow.workspace = true
+
+# CLI
 clap.workspace = true
+colored.workspace = true
+
+# Async runtime
 tokio.workspace = true
+
+# Logging
 tracing.workspace = true
 tracing-subscriber.workspace = true
-colored.workspace = true
+
+# Serialization
 serde_yaml.workspace = true
+
+# Utilities
 humansize.workspace = true

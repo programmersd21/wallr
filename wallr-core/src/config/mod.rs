@@ -23,6 +23,8 @@ pub struct WallrConfig {
     pub cache: CacheConfig,
     #[serde(default)]
     pub plugins: PluginsConfig,
+    #[serde(default)]
+    pub video: VideoConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -49,6 +51,10 @@ pub struct WallpaperConfig {
     pub mode: ScalingMode,
     #[serde(default)]
     pub monitors: Vec<MonitorConfig>,
+    #[serde(default = "default_true")]
+    pub loop_video: bool,
+    #[serde(default = "default_true")]
+    pub mute: bool,
 }
 
 impl Default for WallpaperConfig {
@@ -57,8 +63,38 @@ impl Default for WallpaperConfig {
             default: None,
             mode: ScalingMode::Fill,
             monitors: vec![],
+            loop_video: true,
+            mute: true,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoConfig {
+    #[serde(default = "default_hw_decode")]
+    pub hw_decode: String,
+    #[serde(default)]
+    pub preferred_gpu: crate::video::GpuSelection,
+    #[serde(default = "default_preload_frames")]
+    pub preload_frames: usize,
+}
+
+impl Default for VideoConfig {
+    fn default() -> Self {
+        Self {
+            hw_decode: default_hw_decode(),
+            preferred_gpu: crate::video::GpuSelection::Auto,
+            preload_frames: default_preload_frames(),
+        }
+    }
+}
+
+fn default_hw_decode() -> String {
+    "auto".to_string()
+}
+
+fn default_preload_frames() -> usize {
+    2
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

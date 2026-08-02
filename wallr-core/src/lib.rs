@@ -16,4 +16,5 @@ pub mod preview;
 pub mod renderer;
 pub mod shader;
 pub mod theme;
+pub mod video;
 pub mod wallpaper;

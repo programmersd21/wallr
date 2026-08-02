@@ -9,6 +9,8 @@ matugen: {enabled: true, mode: dark, wait: true, args: []}
 
 `matugen.mode` is passed to matugen's `--mode` flag, so it must be `light` or `dark` (the default is `dark`). `scheme` maps to `--type` and `contrast` to `--contrast`. Wallr runs `matugen image <wallpaper> --mode <mode> --type <scheme> --contrast <n> --source-color-index 0`, followed by any extra `args`. Matugen then runs its own template `post_hook` commands; Wallr additionally runs its `reload` list afterwards.
 
+Animated GIFs need no special handling: Wallr passes the GIF path straight to Matugen (Matugen ≥ 4 reads the first frame itself), so `wallr set demo.gif` themes GIFs the same way as stills.
+
 ## Forcing matugen per invocation
 
 `wallr set` / `wallr img` accept `--theme <PROVIDER>` to override the configured provider for one call, without config edits:

@@ -92,6 +92,10 @@ struct PreviewApp {
     play_tex: Option<wgpu::Texture>,
     play_bind: Option<wgpu::BindGroup>,
     shown_frame: usize,
+    video: Option<crate::video::VideoPlayback>,
+    video_tex: Option<wgpu::Texture>,
+    video_bind: Option<wgpu::BindGroup>,
+    video_size: (u32, u32),
 }
 
 impl PreviewApp {
@@ -115,6 +119,10 @@ impl PreviewApp {
             play_tex: None,
             play_bind: None,
             shown_frame: usize::MAX,
+            video: None,
+            video_tex: None,
+            video_bind: None,
+            video_size: (1, 1),
         }
     }
 
@@ -190,6 +198,40 @@ impl ApplicationHandler for PreviewApp {
         let size = window.inner_size();
         self.configure_surface(&renderer, &surface, format, size.width, size.height);
 
+        // Video preview: stream decoded frames directly into the preview
+        // window. Images and GIFs keep the transition-based preview path.
+        if crate::video::VideoDecoder::is_video_file(&self.target_path) {
+            let playback = crate::video::VideoPlayback::new();
+            match playback.start(
+                &self.target_path,
+                crate::video::HwAccel::from_config("auto"),
+            ) {
+                Ok(meta) => {
+                    let first = playback.wait_first_frame(std::time::Duration::from_millis(2000));
+                    let (w, h) = (meta.width, meta.height);
+                    let (tex, bind) = renderer.create_texture(w, h);
+                    if let Some(frame) = first {
+                        renderer.update_texture(&tex, &frame.data, frame.width, frame.height);
+                    }
+                    self.video = Some(playback);
+                    self.video_tex = Some(tex);
+                    self.video_bind = Some(bind);
+                    self.video_size = (w, h);
+                    self.window = Some(window);
+                    self.renderer = Some(renderer);
+                    self.surface = Some(surface);
+                    self.surface_format = Some(format);
+                    self.start = Some(Instant::now());
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("failed to start video preview: {e}");
+                    event_loop.exit();
+                    return;
+                }
+            }
+        }
+
         let img = match image::ImageReader::open(&self.target_path) {
             Ok(reader) => match reader.decode() {
                 Ok(img) => img,
@@ -253,9 +295,13 @@ impl ApplicationHandler for PreviewApp {
         self.animated = crate::animated::AnimatedImage::decode(&self.target_path)
             .ok()
             .flatten();
-        if let Some(anim) = &self.animated {
-            let (tex, bind) = renderer.create_texture(anim.width, anim.height);
-            renderer.update_texture(&tex, anim.first_frame(), anim.width, anim.height);
+        if let Some(anim) = self.animated.as_mut() {
+            let (w, h) = (anim.width, anim.height);
+            let (tex, bind) = renderer.create_texture(w, h);
+            let first = anim.first_frame();
+            if !first.is_empty() {
+                renderer.update_texture(&tex, first, w, h);
+            }
             self.play_tex = Some(tex);
             self.play_bind = Some(bind);
         }
@@ -297,6 +343,12 @@ impl ApplicationHandler for PreviewApp {
 
 impl PreviewApp {
     fn render_frame(&mut self, event_loop: &ActiveEventLoop) {
+        // Video targets skip the transition and stream frames live.
+        if self.video.is_some() {
+            self.render_video_frame(event_loop);
+            return;
+        }
+
         let Some(start) = self.start else { return };
 
         let elapsed = start.elapsed().as_millis() as f32;
@@ -369,6 +421,58 @@ impl PreviewApp {
         }
     }
 
+    /// Streams video frames into the preview window, mirroring the daemon's
+    /// `play_video` loop: pull the next displayable frame per vsync and
+    /// present it, never blocking on the bounded decoder queue.
+    fn render_video_frame(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(renderer) = &self.renderer else {
+            return;
+        };
+        let Some(surface) = &self.surface else { return };
+        let Some(format) = self.surface_format else {
+            return;
+        };
+        let Some(playback) = &self.video else { return };
+        let Some(tex) = &self.video_tex else { return };
+        let Some(bind) = &self.video_bind else { return };
+
+        let size = self
+            .window
+            .as_ref()
+            .map(|w| w.inner_size())
+            .unwrap_or(winit::dpi::PhysicalSize::new(1, 1));
+
+        let (w, h) = self.video_size;
+        if let Some(frame) = playback.next_frame()
+            && frame.width == w
+            && frame.height == h
+        {
+            renderer.update_texture(tex, &frame.data, frame.width, frame.height);
+        }
+
+        let uniforms = compute_effect_uniforms(&self.effect, 1.0);
+        match renderer.render_frame(crate::renderer::FrameRequest {
+            surface,
+            format,
+            bg_bind: bind,
+            new_bind: bind,
+            effect: &uniforms,
+            width: size.width.max(1),
+            height: size.height.max(1),
+            img_width: w,
+            img_height: h,
+            old_img_width: w,
+            old_img_height: h,
+        }) {
+            Ok(crate::renderer::FrameStatus::TimedOut) => {}
+            Err(e) => {
+                eprintln!("render error: {e}");
+                event_loop.exit();
+            }
+            _ => {}
+        }
+    }
+
     /// Present GIF frames live, one per vsync, after the initial transition
     /// has completed. Texture uploads only happen when the playhead crosses
     /// into a new frame, so playback is smooth without re-uploading frames
@@ -387,15 +491,21 @@ impl PreviewApp {
         let Some(format) = self.surface_format else {
             return;
         };
-        let Some(anim) = &self.animated else { return };
+        let Some(anim) = self.animated.as_mut() else {
+            return;
+        };
         let Some(tex) = &self.play_tex else { return };
         let Some(bind) = &self.play_bind else { return };
 
+        let (anim_w, anim_h) = (anim.width, anim.height);
         let live_ms = (elapsed - total).max(0.0) as u64;
         let index = anim.frame_index_at(std::time::Duration::from_millis(live_ms));
         if index != self.shown_frame {
-            renderer.update_texture(tex, anim.frame_at(index), anim.width, anim.height);
-            self.shown_frame = index;
+            let frame = anim.frame_at(index);
+            if !frame.is_empty() {
+                renderer.update_texture(tex, frame, anim_w, anim_h);
+                self.shown_frame = index;
+            }
         }
 
         let uniforms = compute_effect_uniforms(&self.effect, 1.0);

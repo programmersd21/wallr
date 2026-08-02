@@ -10,35 +10,66 @@ readme = "README.md"
 homepage.workspace = true
 categories.workspace = true
 keywords.workspace = true
+rust-version.workspace = true
 include = ["src/**", "Cargo.toml", "README.md", "shaders/**"]
 
+[lib]
+name = "wallr_core"
+path = "src/lib.rs"
+bench = false  # Disable benchmarks for faster builds
+
 [dependencies]
+# Error handling
 anyhow.workspace = true
 thiserror.workspace = true
+
+# Serialization
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
+
+# CLI
 clap.workspace = true
+colored.workspace = true
+
+# Async runtime
 tokio.workspace = true
+
+# Logging
 tracing.workspace = true
+
+# Image processing
 image.workspace = true
+gif = "0.13"
+zstd = "0.13"
+
+# Graphics
 wgpu.workspace = true
 naga.workspace = true
 raw-window-handle.workspace = true
-notify.workspace = true
-dirs.workspace = true
-sha2.workspace = true
-hex.workspace = true
-humansize.workspace = true
-colored.workspace = true
-which.workspace = true
-glob.workspace = true
-bytemuck = { version = "1.25.2", features = ["derive"] }
+winit.workspace = true
+pollster.workspace = true
+bytemuck = { version = "1.25", features = ["derive"] }
+
+# Wayland
 wayland-client.workspace = true
 smithay-client-toolkit.workspace = true
 wayland-backend.workspace = true
-winit.workspace = true
-pollster.workspace = true
+
+# File operations
+notify.workspace = true
+dirs.workspace = true
+glob.workspace = true
+which.workspace = true
+
+# Utilities
+sha2.workspace = true
+hex.workspace = true
+humansize.workspace = true
+
+# Video support
+ffmpeg-next.workspace = true
+crossbeam-channel.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

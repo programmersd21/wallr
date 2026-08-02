@@ -272,6 +272,8 @@ pub enum Commands {
         #[command(subcommand)]
         subcommand: IpcCommands,
     },
+    /// Gracefully stop the running daemon (alias for `ipc stop`)
+    Quit,
 }
 
 #[derive(Subcommand, Debug)]
@@ -314,4 +316,11 @@ pub enum IpcCommands {
     Stop,
     /// Get daemon status
     Status,
+    /// Get video decoder and GPU information
+    Info,
+    /// Seek video to timestamp (format: HH:MM:SS or seconds)
+    Seek {
+        /// Timestamp in format HH:MM:SS or seconds
+        timestamp: String,
+    },
 }

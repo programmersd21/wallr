@@ -21,6 +21,10 @@ jobs:
             libxkbcommon-dev \
             libegl-dev \
             libgles-dev \
+            libavcodec-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libswscale-dev \
             pkg-config
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2

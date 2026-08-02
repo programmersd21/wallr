@@ -17,5 +17,6 @@ wallr doctor
 - [Cookbook](cookbook.md)
 - [Compositor support](compositor-support.md)
 - [Matugen integration](matugen-integration.md)
+- [Video wallpapers](video-wallpaper.md)
 - [Packages](packages.md)
 - [Architecture](architecture.md)

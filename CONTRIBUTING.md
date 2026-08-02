@@ -8,21 +8,21 @@ Thank you for your interest in contributing to Wallr! Wallr is a native, GPU-acc
 
 ### Prerequisites
 
-You will need the Rust toolchain (edition 2024 / MSRV 1.85+) and Wayland development headers installed on your system.
+You will need the Rust toolchain (edition 2024 / MSRV 1.85+), Wayland development headers, and FFmpeg development libraries (required by `ffmpeg-next` for video support) installed on your system.
 
 #### Arch Linux
 ```bash
-sudo pacman -S rustup wayland wayland-protocols pkg-config
+sudo pacman -S rustup wayland wayland-protocols pkg-config ffmpeg
 ```
 
 #### Fedora
 ```bash
-sudo dnf install rust cargo wayland-devel wayland-protocols-devel pkg-config
+sudo dnf install rust cargo wayland-devel wayland-protocols-devel pkg-config ffmpeg-devel
 ```
 
 #### Ubuntu / Debian
 ```bash
-sudo apt install rustc cargo libwayland-dev wayland-protocols pkg-config
+sudo apt install rustc cargo libwayland-dev wayland-protocols pkg-config libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
 ```
 
 ### Getting Started
@@ -71,6 +71,7 @@ wallr/
 │   │   ├── renderer/           # wgpu GPU rendering pipeline
 │   │   ├── shader/             # WGSL shader bindings and uniform layouts
 │   │   ├── theme/              # Matugen, Wallust, Pywal, & hook dispatchers
+│   │   ├── video/             # FFmpeg decoding & PTS playback scheduling
 │   │   └── wallpaper/          # High-level engine coordinator & diagnostics (doctor)
 │   └── shaders/                # WGSL shader source files
 │       └── effects.wgsl        # Fragment transition effects
@@ -105,13 +106,9 @@ We enforce strict Rust code quality standards:
 
 Non-trivial logic requires tests: config merge order, duration parsing, timeline
 scheduling, easing math, effect validation, package cycle detection, custom
-effect transpilation, and GIF frame indexing. Library errors use `thiserror`;
+effect transpilation, GIF frame indexing, and video scheduling. Library errors use `thiserror`;
 `anyhow` belongs at the binary boundary. Do not add unused dependencies, stubs,
 `TODO` comments, or `unwrap()` calls to library code.
-
-The command and configuration references under `docs/` are generated from the
-live Clap/config types. Update the generator when their public surface changes;
-do not hand-edit generated sections.
 
 ---
 

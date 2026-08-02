@@ -18,9 +18,12 @@ wallr cache clear|info
 wallr reload
 wallr config get|set|path
 wallr monitor list|current
-wallr ipc pause|resume|reload|preview|stop|status
+wallr ipc pause|resume|reload|preview|stop|status|info|seek <timestamp>
+wallr quit
 ```
 
 `--theme <PROVIDER>` forces the theme pipeline for one invocation only (overrides `theme.provider` from the config without modifying it). `--no-theme` still disables it entirely; passing both makes `--no-theme` win. Example: `wallr set ~/Pictures/a.jpg --theme matugen` regenerates the Material You scheme from the image even if the config provider is unset or different.
+
+`wallr ipc info` reports version, GPU, decoder state, and playback position; `wallr ipc seek` accepts `HH:MM:SS`, `M:SS`, or plain seconds. `wallr quit` is an alias for `wallr ipc stop` and removes the daemon socket before exiting.
 
 Run `wallr <command> --help` for the exact flags emitted by the installed binary.

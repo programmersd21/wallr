@@ -28,9 +28,8 @@ use smithay_client_toolkit::{
 use wayland_client::{
     Connection, Proxy, QueueHandle,
     globals::registry_queue_init,
-    protocol::{wl_output, wl_surface},
+    protocol::{wl_compositor, wl_output, wl_surface},
 };
-
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
     #[error("daemon already running: {0}")]
@@ -136,6 +135,18 @@ impl CompositorHandler for WaylandState {
     }
 }
 
+impl wayland_client::Dispatch<wayland_client::protocol::wl_region::WlRegion, ()> for WaylandState {
+    fn event(
+        _state: &mut WaylandState,
+        _region: &wayland_client::protocol::wl_region::WlRegion,
+        _event: wayland_client::protocol::wl_region::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<WaylandState>,
+    ) {
+    }
+}
+
 impl LayerShellHandler for WaylandState {
     fn configure(
         &mut self,
@@ -151,6 +162,8 @@ impl LayerShellHandler for WaylandState {
         if configure.new_size.1 > 0 {
             self.height = configure.new_size.1;
         }
+        // Note: Input region is set once at creation and persists across
+        // configure events. The empty region ensures clicks pass through.
         layer.commit();
     }
 
@@ -196,6 +209,39 @@ delegate_output!(WaylandState);
 delegate_registry!(WaylandState);
 delegate_shm!(WaylandState);
 
+/// Wakes paced live-playback loops when a new commit bumps the generation.
+struct LivePacer {
+    lock: std::sync::Mutex<()>,
+    cond: std::sync::Condvar,
+}
+
+impl LivePacer {
+    fn new() -> Self {
+        Self {
+            lock: std::sync::Mutex::new(()),
+            cond: std::sync::Condvar::new(),
+        }
+    }
+
+    fn notify(&self) {
+        let _guard = self.lock.lock().unwrap();
+        self.cond.notify_all();
+    }
+
+    /// Blocks until `deadline` or until `notify` is called, whichever comes
+    /// first.
+    fn wait_until(&self, deadline: std::time::Instant) {
+        let guard = self.lock.lock().unwrap();
+        let now = std::time::Instant::now();
+        if deadline <= now {
+            return;
+        }
+        let _ = self
+            .cond
+            .wait_timeout_while(guard, deadline - now, |_| true);
+    }
+}
+
 struct RenderState {
     renderer: std::sync::Arc<Renderer>,
     surface: &'static wgpu::Surface<'static>,
@@ -206,6 +252,9 @@ struct RenderState {
     /// Bumped on every commit. Live playback checks it each frame and stops
     /// as soon as a new wallpaper supersedes the one it is playing.
     playback_gen: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Wakes paced live-playback loops when a new commit bumps the generation,
+    /// so an old player exits immediately instead of after its sleep quantum.
+    pacer: std::sync::Arc<LivePacer>,
     current_bind: Option<wgpu::BindGroup>,
     current_tex: Option<wgpu::Texture>,
     width: u32,
@@ -213,6 +262,10 @@ struct RenderState {
     current_width: u32,
     current_height: u32,
     format: wgpu::TextureFormat,
+    /// Video playback manager
+    video_playback: std::sync::Arc<crate::video::VideoPlayback>,
+    /// Hardware backend to request for new decoders (from `video.hw_decode`).
+    hw_accel: crate::video::HwAccel,
 }
 
 /// Everything the transition render task needs; the daemon state has already
@@ -230,6 +283,8 @@ struct CommitData {
     /// Animated frames to play live after the transition, when the committed
     /// file is a GIF.
     animated: Option<crate::animated::AnimatedImage>,
+    /// Video metadata when committed file is a video.
+    is_video: bool,
     /// Playback generation captured at commit time; live playback stops when
     /// it no longer matches `RenderState::playback_gen`.
     generation: u64,
@@ -253,14 +308,96 @@ impl RenderState {
     fn commit_wallpaper(&mut self, path: &std::path::Path) -> anyhow::Result<CommitData> {
         use image::ImageReader;
 
-        // Decode animated frames first (cheap for static images: a six-byte
-        // magic sniff); the first frame also serves as the transition's
-        // incoming image.
-        let animated = crate::animated::AnimatedImage::decode(path)?;
-        let new_img = ImageReader::open(path)?.decode()?;
-        let (new_tex, new_bind) = self.renderer.load_texture(&new_img)?;
-        let img_width = new_img.width();
-        let img_height = new_img.height();
+        // Check if this is a video file FIRST
+        if crate::video::VideoDecoder::is_video_file(path) {
+            tracing::info!("Video file detected: {:?}", path);
+
+            // Invalidate any in-flight video render task BEFORE touching the
+            // shared decoder: the old task checks the generation on every
+            // iteration, so bumping first makes it exit (or skip the upload)
+            // before it could pull a frame of the new resolution from the
+            // freshly started decoder.
+            let generation = self.playback_gen.fetch_add(1, Ordering::SeqCst) + 1;
+            self.pacer.notify();
+
+            // Start video playback (replaces any previous playback and joins
+            // its decode thread, releasing the old decoder's buffers).
+            let metadata = self.video_playback.start(path, self.hw_accel)?;
+
+            // Wait for the first frame so the transition's incoming image is
+            // the real first frame, not a black placeholder.
+            let first_frame = self
+                .video_playback
+                .wait_first_frame(std::time::Duration::from_millis(1000));
+
+            let (new_tex, new_bind, img_width, img_height) = if let Some(frame) = first_frame {
+                let (tex, bind) = self.renderer.create_texture(frame.width, frame.height);
+                self.renderer
+                    .update_texture(&tex, &frame.data, frame.width, frame.height);
+                (tex, bind, frame.width, frame.height)
+            } else {
+                // Fallback: create black texture
+                tracing::warn!("No first frame available, using black texture");
+                let (tex, bind) = self
+                    .renderer
+                    .create_texture(metadata.width, metadata.height);
+                let black = vec![0u8; (metadata.width * metadata.height * 4) as usize];
+                self.renderer
+                    .update_texture(&tex, &black, metadata.width, metadata.height);
+                (tex, bind, metadata.width, metadata.height)
+            };
+
+            let old_bind = self.current_bind.take();
+            let (old_img_width, old_img_height) = if old_bind.is_some() {
+                (self.current_width.max(1), self.current_height.max(1))
+            } else {
+                (img_width, img_height)
+            };
+            let bg_bind = old_bind.unwrap_or_else(|| new_bind.clone());
+
+            drop(self.current_tex.take());
+            self.current_tex = Some(new_tex);
+            self.current_bind = Some(new_bind.clone());
+            self.current_width = img_width;
+            self.current_height = img_height;
+
+            return Ok(CommitData {
+                bg_bind,
+                new_bind,
+                img_width,
+                img_height,
+                old_img_width,
+                old_img_height,
+                format: self.format,
+                width: self.width,
+                height: self.height,
+                animated: None,
+                is_video: true,
+                generation,
+            });
+        }
+
+        // A static image or GIF supersedes any video: release the video
+        // decoder and its buffers immediately (the generation bump also stops
+        // the video render task on its next vsync).
+        self.video_playback.stop();
+
+        // Stream animated frames (GIF) on demand during playback; the
+        // transition's incoming texture is the GIF's first frame.
+        let mut animated = crate::animated::AnimatedImage::decode(path)?;
+        let (new_tex, new_bind, img_width, img_height) = if let Some(anim) = animated.as_mut() {
+            let (w, h) = (anim.width, anim.height);
+            let (tex, bind) = self.renderer.create_texture(w, h);
+            let first = anim.first_frame();
+            if !first.is_empty() {
+                self.renderer.update_texture(&tex, first, w, h);
+            }
+            (tex, bind, w, h)
+        } else {
+            let new_img = ImageReader::open(path)?.decode()?;
+            let (tex, bind) = self.renderer.load_texture(&new_img)?;
+            (tex, bind, new_img.width(), new_img.height())
+        };
 
         let old_bind = self.current_bind.take();
         let (old_img_width, old_img_height) = if old_bind.is_some() {
@@ -281,6 +418,7 @@ impl RenderState {
         self.current_height = img_height;
 
         let generation = self.playback_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        self.pacer.notify();
 
         Ok(CommitData {
             bg_bind,
@@ -293,6 +431,7 @@ impl RenderState {
             width: self.width,
             height: self.height,
             animated,
+            is_video: false,
             generation,
         })
     }
@@ -311,6 +450,8 @@ impl RenderState {
         let surface: &'static wgpu::Surface<'static> = self.surface;
         let render_lock = self.render_lock.clone();
         let playback_gen = self.playback_gen.clone();
+        let pacer = self.pacer.clone();
+        let video_playback = self.video_playback.clone();
         let effect = effect.clone();
         drop(tokio::task::spawn_blocking(move || {
             render_transition(
@@ -318,6 +459,8 @@ impl RenderState {
                 surface,
                 render_lock,
                 playback_gen,
+                pacer,
+                video_playback,
                 commit,
                 effect,
                 duration_ms,
@@ -333,12 +476,15 @@ impl RenderState {
 /// pacing would run too fast on high-refresh panels and too slow when the
 /// present rate is low. If the compositor stops presenting, the loop can park
 /// inside a present; that is fine here because the task is detached.
+#[allow(clippy::too_many_arguments)]
 fn render_transition(
     renderer: std::sync::Arc<Renderer>,
     surface: &'static wgpu::Surface<'static>,
     render_lock: std::sync::Arc<std::sync::Mutex<()>>,
     playback_gen: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    commit: CommitData,
+    pacer: std::sync::Arc<LivePacer>,
+    video_playback: std::sync::Arc<crate::video::VideoPlayback>,
+    mut commit: CommitData,
     effect: crate::animation::Effect,
     duration_ms: u32,
 ) {
@@ -379,33 +525,121 @@ fn render_transition(
     // The transition ended; if the committed wallpaper is an animated GIF and
     // nothing superseded it while we rendered, keep the render lock and play
     // the frames live until the next commit bumps the generation.
-    if let Some(animated) = &commit.animated
+    let mut animated = commit.animated.take();
+    if let Some(animated) = animated.as_mut()
         && playback_gen.load(Ordering::SeqCst) == commit.generation
     {
-        play_live(&renderer, surface, &commit, animated, &playback_gen);
+        play_live(&renderer, surface, &commit, animated, &playback_gen, &pacer);
+    } else if commit.is_video && playback_gen.load(Ordering::SeqCst) == commit.generation {
+        play_video(&renderer, surface, &commit, &video_playback, &playback_gen);
     }
 }
 
 /// Presents live wallpaper frames until the next commit. One frame is
-/// presented per vsync (Fifo), and texture uploads only happen when the
-/// playhead crosses into a new GIF frame, so playback is smooth without
-/// burning GPU bandwidth on unchanged pixels.
+/// presented per GIF frame boundary instead of at the monitor refresh rate.
+/// Two textures are double-buffered and frames are decompressed directly
+/// into a mapped staging ring (no intermediate copy), so the wake path only
+/// presents and the pacing sleep hides the decode/upload entirely.
 fn play_live(
     renderer: &Renderer,
     surface: &'static wgpu::Surface<'static>,
     commit: &CommitData,
-    animated: &crate::animated::AnimatedImage,
+    animated: &mut crate::animated::AnimatedImage,
     playback_gen: &std::sync::atomic::AtomicU64,
+    pacer: &LivePacer,
 ) {
-    let (texture, bind) = renderer.create_texture(animated.width, animated.height);
-    renderer.update_texture(
-        &texture,
-        animated.first_frame(),
-        animated.width,
-        animated.height,
-    );
+    let (tex_a, bind_a) = renderer.create_texture(animated.width, animated.height);
+    let (tex_b, bind_b) = renderer.create_texture(animated.width, animated.height);
+    let (frame_w, frame_h) = (animated.width, animated.height);
+    let (bytes_per_row, rows) = (frame_w * 4, frame_h);
+    let frame_bytes = bytes_per_row as u64 * rows as u64;
 
-    let mut shown = usize::MAX;
+    // Map+decompress+copy path needs a byte-per-row multiple of the copy
+    // alignment; fall back to write_texture for odd widths.
+    let direct_upload = bytes_per_row % 256 == 0;
+    let staging: Vec<wgpu::Buffer> = if direct_upload {
+        (0..2)
+            .map(|_| {
+                renderer.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("wallr-gif-staging"),
+                    size: frame_bytes,
+                    usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let first = animated.first_frame();
+    if !first.is_empty() {
+        renderer.update_texture(&tex_a, first, frame_w, frame_h);
+        renderer.update_texture(&tex_b, first, frame_w, frame_h);
+    }
+    let binds = [bind_a, bind_b];
+    let textures = [tex_a, tex_b];
+
+    // Uploads frame `index` into `textures[tgt]`. Returns true when the GPU
+    // copy was recorded.
+    let upload = |renderer: &Renderer,
+                  tgt: usize,
+                  index: usize,
+                  slot: usize,
+                  animated: &mut crate::animated::AnimatedImage|
+     -> bool {
+        if direct_upload {
+            let buffer = &staging[slot];
+            let slice = buffer.slice(..);
+            slice.map_async(wgpu::MapMode::Write, |_| {});
+            renderer.device.poll(wgpu::Maintain::Wait);
+            let ok = {
+                let mut mapped = slice.get_mapped_range_mut();
+                animated.decompress_into(index, &mut mapped)
+            };
+            buffer.unmap();
+            if ok {
+                let mut encoder = renderer
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                encoder.copy_buffer_to_texture(
+                    wgpu::TexelCopyBufferInfo {
+                        buffer,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(bytes_per_row),
+                            rows_per_image: Some(rows),
+                        },
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &textures[tgt],
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d {
+                        width: frame_w,
+                        height: frame_h,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                renderer.queue.submit([encoder.finish()]);
+                return true;
+            }
+        } else {
+            let frame = animated.frame_at(index);
+            if !frame.is_empty() {
+                renderer.update_texture(&textures[tgt], frame, frame_w, frame_h);
+                return true;
+            }
+        }
+        false
+    };
+
+    let mut cur = 0usize; // texture index currently holding the presented frame
+    let mut cur_frame = 0usize; // frame index currently in texture `cur`
+    let mut next_frame = 0usize; // frame index currently in the idle texture
+    let mut slot = 0usize; // staging ring slot for the next upload
     let start = std::time::Instant::now();
     let static_effect = crate::animation::Effect::Fade(crate::animation::FadeParams::default());
     loop {
@@ -413,21 +647,21 @@ fn play_live(
             return;
         }
         let index = animated.frame_index_at(start.elapsed());
-        if index != shown {
-            renderer.update_texture(
-                &texture,
-                animated.frame_at(index),
-                animated.width,
-                animated.height,
-            );
-            shown = index;
+        if index != cur_frame {
+            if next_frame != index {
+                upload(renderer, cur ^ 1, index, slot, animated);
+                slot ^= 1;
+                next_frame = index;
+            }
+            cur ^= 1;
+            cur_frame = index;
         }
         let uniforms = crate::animation::compute_effect_uniforms(&static_effect, 1.0);
         let status = renderer.render_frame(crate::renderer::FrameRequest {
             surface,
             format: commit.format,
-            bg_bind: &bind,
-            new_bind: &bind,
+            bg_bind: &binds[cur],
+            new_bind: &binds[cur],
             effect: &uniforms,
             width: commit.width,
             height: commit.height,
@@ -442,6 +676,108 @@ fn play_live(
             // means the surface is unusable, so give up and let the next
             // transition take over.
             _ => return,
+        }
+
+        // Pace to the next GIF frame boundary instead of presenting at the
+        // monitor refresh rate: an animated wallpaper only needs a present
+        // when its frame changes. A commit wakes us via the pacer. The
+        // boundary is computed in absolute time (frame_start is loop-relative,
+        // so add the completed loops) to stay correct after the animation
+        // wraps. While waiting, warm the idle texture with the next frame so
+        // the wake path stays on the hot critical section.
+        let elapsed = start.elapsed();
+        let total: std::time::Duration = animated.total_duration();
+        let loops = (elapsed.as_millis() / total.as_millis().max(1)) as u64;
+        let next_change = animated.frame_start(index + 1) + total * (loops as u32);
+        let wait = next_change.saturating_sub(elapsed);
+        if wait > std::time::Duration::ZERO {
+            let next = index + 1;
+            if next_frame != next {
+                upload(renderer, cur ^ 1, next, slot, animated);
+                slot ^= 1;
+                next_frame = next;
+            }
+            pacer.wait_until(std::time::Instant::now() + wait);
+        }
+    }
+}
+
+/// Live video playback loop: continuously updates texture with decoded frames.
+fn play_video(
+    renderer: &Renderer,
+    surface: &'static wgpu::Surface<'static>,
+    commit: &CommitData,
+    video_playback: &std::sync::Arc<crate::video::VideoPlayback>,
+    playback_gen: &std::sync::atomic::AtomicU64,
+) {
+    // Get initial frame dimensions
+    let (width, height) = match video_playback.metadata() {
+        Some(meta) => (meta.width, meta.height),
+        None => {
+            tracing::warn!("No video metadata available");
+            return;
+        }
+    };
+
+    let (texture, bind) = renderer.create_texture(width, height);
+    let static_effect = crate::animation::Effect::Fade(crate::animation::FadeParams::default());
+
+    // The texture starts empty; present a real frame before the first
+    // vsync so the surface never flashes black.
+    let mut uploaded = false;
+
+    loop {
+        // A newer commit superseded us. Do NOT touch the shared
+        // `video_playback` here: the successor commit already replaced the
+        // decoder (video) or stopped it (static image), and stopping it now
+        // would kill the successor's playback too.
+        if playback_gen.load(Ordering::SeqCst) != commit.generation {
+            return;
+        }
+
+        // Pull the next displayable frame. The decoder queue is bounded, so
+        // this never blocks; `None` means "present the current texture".
+        if let Some(frame) = video_playback.next_frame() {
+            // The shared decoder can be replaced between commits; never
+            // upload a frame whose size does not match this task's texture.
+            if frame.width != width || frame.height != height {
+                continue;
+            }
+            renderer.update_texture(&texture, &frame.data, frame.width, frame.height);
+            uploaded = true;
+        }
+
+        if !uploaded {
+            // No frame yet; wait briefly and try again instead of presenting
+            // an uninitialized texture.
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            continue;
+        }
+
+        let uniforms = crate::animation::compute_effect_uniforms(&static_effect, 1.0);
+        let status = renderer.render_frame(crate::renderer::FrameRequest {
+            surface,
+            format: commit.format,
+            bg_bind: &bind,
+            new_bind: &bind,
+            effect: &uniforms,
+            width: commit.width,
+            height: commit.height,
+            img_width: width,
+            img_height: height,
+            old_img_width: width,
+            old_img_height: height,
+        });
+
+        match status {
+            Ok(crate::renderer::FrameStatus::Presented) => {}
+            // A stalled present parks inside the acquire; a Timeout or error
+            // means the surface is unusable, so give up.
+            other => {
+                tracing::warn!("Video present failed ({:?}), stopping playback", other);
+                video_playback.stop();
+                return;
+            }
         }
     }
 }
@@ -513,9 +849,24 @@ impl Daemon {
             None,
         );
         layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-        layer_surface.set_exclusive_zone(-1);
-        layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer_surface.set_exclusive_zone(-1); // Don't reserve space
+        layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None); // No keyboard
+
+        // CRITICAL: Empty input region so ALL clicks pass through to desktop
+        // Without this, the wallpaper blocks desktop interaction on KDE/Plasma
+        let compositor = globals
+            .bind::<wl_compositor::WlCompositor, WaylandState, smithay_client_toolkit::globals::GlobalData>(
+                &qh,
+                1..=4,
+                smithay_client_toolkit::globals::GlobalData,
+            )
+            .map_err(|e| DaemonError::StartError(format!("compositor bind failed: {e:?}")))?;
+        let empty_region = compositor.create_region(&qh, ());
+        layer_surface
+            .wl_surface()
+            .set_input_region(Some(&empty_region));
         layer_surface.commit();
+        empty_region.destroy();
 
         event_queue
             .roundtrip(&mut wayland_state)
@@ -592,6 +943,7 @@ impl Daemon {
             surface,
             render_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
             playback_gen: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            pacer: std::sync::Arc::new(LivePacer::new()),
             current_bind: None,
             current_tex: None,
             width,
@@ -599,6 +951,8 @@ impl Daemon {
             current_width: 0,
             current_height: 0,
             format: surf_format,
+            video_playback: std::sync::Arc::new(crate::video::VideoPlayback::new()),
+            hw_accel: crate::video::HwAccel::from_config(&self.config.video.hw_decode),
         }));
 
         {
@@ -620,14 +974,43 @@ impl Daemon {
         let engine_clone = self.engine.clone();
         let render_state_clone = render_state.clone();
 
+        // Graceful shutdown on POSIX signals: stop video decoding, remove the
+        // IPC socket, and exit. The compositor releases the layer-shell
+        // surface automatically when the process exits.
+        {
+            let rs = render_state.clone();
+            let socket_path = socket_path.clone();
+            tokio::spawn(async move {
+                use tokio::signal::unix::{SignalKind, signal};
+                let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
+                let mut int = signal(SignalKind::interrupt()).expect("SIGINT handler");
+                let mut hup = signal(SignalKind::hangup()).expect("SIGHUP handler");
+                tokio::select! {
+                    _ = term.recv() => {}
+                    _ = int.recv() => {}
+                    _ = hup.recv() => {}
+                }
+                tracing::info!("Signal received, shutting down gracefully");
+                if let Ok(state) = rs.try_lock() {
+                    state.video_playback.stop();
+                }
+                let _ = std::fs::remove_file(&socket_path);
+                std::process::exit(0);
+            });
+        }
+
+        let ipc_socket_path = socket_path.clone();
         start_ipc_server(&socket_path, move |cmd| {
             let paused = paused_clone.clone();
             let engine = engine_clone.clone();
             let rs = render_state_clone.clone();
+            let stop_socket = ipc_socket_path.clone();
             async move {
                 match cmd {
                     IpcCommand::Pause => {
                         paused.store(true, Ordering::SeqCst);
+                        let rs_lock = rs.lock().await;
+                        rs_lock.video_playback.pause();
                         IpcResponse {
                             success: true,
                             message: Some("Paused".into()),
@@ -635,6 +1018,8 @@ impl Daemon {
                     }
                     IpcCommand::Resume => {
                         paused.store(false, Ordering::SeqCst);
+                        let rs_lock = rs.lock().await;
+                        rs_lock.video_playback.resume();
                         IpcResponse {
                             success: true,
                             message: Some("Resumed".into()),
@@ -686,7 +1071,11 @@ impl Daemon {
                         let effect = effect.unwrap_or_else(|| {
                             crate::animation::Effect::Fade(crate::animation::FadeParams::default())
                         });
-                        let duration = duration_ms.unwrap_or(2000);
+                        // Live playback only starts after the transition, so for
+                        // videos an unrequested 2s fade reads as a long "load".
+                        // Default to a short fade unless the user asked for one.
+                        let is_video = crate::video::VideoDecoder::is_video_file(&p);
+                        let duration = duration_ms.unwrap_or(if is_video { 150 } else { 2000 });
 
                         let rs_clone = rs.clone();
                         let p_clone = p.clone();
@@ -731,8 +1120,10 @@ impl Daemon {
                         }
                     }
                     IpcCommand::Stop => {
-                        tokio::spawn(async {
+                        let sp = stop_socket.clone();
+                        tokio::spawn(async move {
                             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                            let _ = std::fs::remove_file(&sp);
                             std::process::exit(0);
                         });
                         IpcResponse {
@@ -749,6 +1140,88 @@ impl Daemon {
                         IpcResponse {
                             success: true,
                             message: Some(format!("wallr daemon {}", state)),
+                        }
+                    }
+                    IpcCommand::Seek { timestamp_ms } => {
+                        let rs_lock = rs.lock().await;
+                        match rs_lock
+                            .video_playback
+                            .seek(std::time::Duration::from_millis(timestamp_ms))
+                        {
+                            Ok(()) => IpcResponse {
+                                success: true,
+                                message: Some(format!("Seeked to {}ms", timestamp_ms)),
+                            },
+                            Err(e) => IpcResponse {
+                                success: false,
+                                message: Some(format!("Seek failed: {}", e)),
+                            },
+                        }
+                    }
+                    IpcCommand::Info => {
+                        let rs_lock = rs.lock().await;
+
+                        // Get GPU info from renderer
+                        let gpu_info =
+                            crate::video::gpu::adapter_diagnostics(&rs_lock.renderer.adapter);
+
+                        let mut lines = vec![
+                            format!("wallr v{}", env!("CARGO_PKG_VERSION")),
+                            String::new(),
+                            gpu_info,
+                        ];
+
+                        match rs_lock.video_playback.metadata() {
+                            Some(meta) => {
+                                let decoder_info = rs_lock.video_playback.decoder_info();
+                                let hw = rs_lock.video_playback.hw_accel_in_use();
+                                let state = if rs_lock.video_playback.is_paused() {
+                                    "paused"
+                                } else {
+                                    "playing"
+                                };
+                                let position = rs_lock
+                                    .video_playback
+                                    .position()
+                                    .map(|p| format!("{:.2}s", p.as_secs_f64()))
+                                    .unwrap_or_else(|| "?".to_string());
+                                lines.push(String::new());
+                                lines.push("Video:".into());
+                                lines.push(format!("  Resolution: {}x{}", meta.width, meta.height));
+                                lines.push(format!("  FPS: {:.2}", meta.fps));
+                                lines.push(format!(
+                                    "  Duration: {:.2}s",
+                                    meta.duration.as_secs_f64()
+                                ));
+                                lines.push(format!(
+                                    "  Codec: {}",
+                                    decoder_info
+                                        .as_ref()
+                                        .map(|d| d.codec_name.as_str())
+                                        .unwrap_or("unknown")
+                                ));
+                                lines.push(format!("  Container: {}", meta.format));
+                                lines.push(format!("  Decoder: {}", hw.name()));
+                                lines.push(format!(
+                                    "  GPU Decode: {}",
+                                    if hw == crate::video::HwAccel::Software {
+                                        "disabled"
+                                    } else {
+                                        "enabled"
+                                    }
+                                ));
+                                lines.push(format!("  State: {} @ {}", state, position));
+                            }
+                            None => {
+                                lines.push(String::new());
+                                lines.push("Video: none active".into());
+                                lines.push("Decoder: idle".into());
+                            }
+                        }
+
+                        IpcResponse {
+                            success: true,
+                            message: Some(lines.join("\n")),
                         }
                     }
                 }
@@ -771,6 +1244,11 @@ impl Daemon {
                     break;
                 }
             }
+            // The compositor connection is dead (e.g. the compositor exited
+            // or killed our layer surface with a protocol error). Rendering
+            // can never recover, so exit and let the supervisor restart us.
+            eprintln!("wallr: Wayland connection lost, exiting");
+            std::process::exit(1);
         });
 
         loop {
