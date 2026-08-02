@@ -1,12 +1,10 @@
 <div align="center">
 
-### Wallr
+# Wallr
 
-**The wallpaper engine for Wayland.**
+Wallpaper engine for Wayland.
 
 ![demo](https://raw.githubusercontent.com/programmersd21/wallr/main/assets/demo.gif)
-
-Wallr draws its own background surface with `wlr-layer-shell` and `wgpu`. It does not wrap `hyprpaper`, `swww`, or `swaybg`; it renders transitions itself and treats theme generation (Matugen, Wallust, Pywal) as an optional step after the fact, not the core of what it does.
 
 [![License](https://img.shields.io/badge/License-MIT-000000?style=for-the-badge&labelColor=000000&color=8b5cf6)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-stable-000000?style=for-the-badge&labelColor=000000&color=dea584&logo=rust&logoColor=white)](https://www.rust-lang.org)
@@ -20,33 +18,39 @@ Wallr draws its own background surface with `wlr-layer-shell` and `wgpu`. It doe
 
 </div>
 
+## Introduction
+
+Wallr sets and animates wallpapers on Wayland compositors that support `wlr-layer-shell`. It renders its own background surface with `wgpu` — it does not shell out to `hyprpaper`, `swww`, or `swaybg`.
+
+Theme generation (Matugen, Wallust, Pywal) is supported as an optional step that runs after a wallpaper is applied. It is not required and not part of the core rendering path.
+
 ## Features
 
-- **11 transition effects**: fade, blur, wipe, slide, zoom, pixelate, ripple, dissolve, wave, grow, outer. Each tunable from the CLI or a YAML package (origin, direction, angle, easing, duration).
-- **Live wallpapers**: animated GIFs play frame-by-frame once the transition completes, starting from the transition's incoming image so playback eases in cleanly. Frames are cached in a zstd-compressed stream, so looping playback never re-decodes the file and stays CPU-light (measured on par with other native GIF wallpaper engines).
-- **Video wallpapers**: native MP4/WebM/MKV support with hardware-accelerated decoding (VAAPI, NVDEC), PTS-based scheduling, seek, and seamless looping. Near-idle CPU usage.
-- **Circular reveals**: `grow`, `outer`, and `ripple` expand as true, aspect-corrected circles.
-- **Wall-clock timing**: transition duration holds exactly, regardless of refresh rate.
-- **Background daemon**: `wallr daemon` owns the surface over a Unix socket; `wallr set` starts it automatically.
-- **Directory watching**: `wallr watch <dir>` applies new files as they land.
-- **Animation packages**: YAML timelines with inheritance and a registry (`install`, `search`, `publish`, `validate`).
-- **Preview window**: judge an effect before it touches your desktop.
-- **Per-monitor control**: independent wallpapers and scaling modes (`fill`, `fit`, `stretch`, `center`, `tile`).
-- **Hybrid GPU support**: automatic GPU selection (integrated/discrete) for optimal power efficiency.
+- 11 built-in transitions: fade, blur, wipe, slide, zoom, pixelate, ripple, dissolve, wave, grow, outer.
+- GIF wallpapers, decoded once and cached to avoid re-decoding on loop.
+- Video wallpapers (MP4, WebM, MKV) with hardware-accelerated decoding via FFmpeg.
+- Transition duration is wall-clock based, independent of monitor refresh rate.
+- Background daemon (`wallr daemon`) that owns the surface over a Unix socket.
+- Directory watching (`wallr watch`) to apply new files automatically.
+- Per-monitor wallpapers and scaling modes.
+- Preview mode to test an effect before applying it.
+- YAML animation packages with an install/search/publish registry.
+- Automatic GPU selection on hybrid graphics systems.
 
 ## Requirements
 
-Rust toolchain, Wayland client headers, and a compositor with `wlr-layer-shell` support: Hyprland, Sway, niri (with a layer rule), or KDE Plasma 6. GNOME/Mutter doesn't implement the protocol.
+- Rust (stable)
+- A compositor with `wlr-layer-shell`: Hyprland, Sway, niri (with a layer rule), or KDE Plasma 6
+- GNOME/Mutter is not supported — it does not implement the protocol
+- FFmpeg development libraries, for video wallpapers (detected at build time)
 
-For video wallpapers: FFmpeg libraries (automatically detected at build time).
-
-## Install
+## Installation
 
 ```bash
 cargo install wallr
 ```
 
-or manually, from source:
+Or build from source:
 
 ```bash
 # Arch
@@ -65,26 +69,28 @@ cd wallr
 cargo install --path wallr
 ```
 
-## Usage
+## Quick start
 
 ```bash
-wallr set wallpaper.jpg                                     # starts the daemon if needed
+wallr set wallpaper.jpg
 wallr set wallpaper.jpg --effect grow --origin bottom_right --duration 1.2s
-wallr set animated.gif --effect fade --duration 500ms        # live wallpaper
-wallr set video.mp4 --effect wave --duration 1s              # video wallpaper
-wallr preview wallpaper.jpg --effect wave --angle 45         # test before applying
+wallr set animated.gif --effect fade --duration 500ms
+wallr set video.mp4 --effect wave --duration 1s
+wallr preview wallpaper.jpg --effect wave --angle 45
 ```
 
+`wallr set` starts the daemon automatically if it isn't running.
+
 ```bash
-wallr daemon               # run the background daemon
-wallr watch ~/Pictures     # auto-apply new files dropped into a folder
-wallr ipc pause            # pause video/GIF playback
-wallr ipc resume           # resume playback
-wallr ipc seek 1:30        # seek a video wallpaper
-wallr ipc info             # decoder, codec, and GPU information
-wallr quit                 # stop the daemon (removes its socket)
-wallr doctor                # check compositor, GPU, and theme providers
-wallr validate anim.yaml    # lint an animation package
+wallr daemon
+wallr watch ~/Pictures
+wallr ipc pause
+wallr ipc resume
+wallr ipc seek 1:30
+wallr ipc info
+wallr quit
+wallr doctor
+wallr validate anim.yaml
 ```
 
 Full flag reference: [docs/cli-reference.md](docs/cli-reference.md)
@@ -110,33 +116,17 @@ reload:
   - "dunst"
 ```
 
+If Matugen calls `wallr set` as its own wallpaper command, pass `--no-theme` on that call to avoid a feedback loop.
+
 Full schema: [docs/config-reference.md](docs/config-reference.md)
-
-If Matugen is configured to call `wallr set` as its own wallpaper command, pass `--no-theme` on that call to avoid a feedback loop.
-
-## Animation packages
-
-Effects and timelines are plain YAML:
-
-```yaml
-name: liquid
-duration: 2000ms
-timeline:
-  - at: 0ms
-    fade: { from: 0.0, to: 1.0 }
-  - at: 150ms
-    ripple: { origin: center, frequency: 15.0, amplitude: 0.02, speed: 6.0 }
-```
-
-`wallr validate <file>` checks a package before you use it. Full authoring guide: [docs/animation-authoring.md](docs/animation-authoring.md)
 
 ## Architecture
 
-The `wallr` CLI talks to `wallr daemon` over a Unix socket. The daemon owns the layer-shell surface, a `wgpu` renderer, and the animation engine. Every change is a GPU-rendered transition from the previous wallpaper, timed to wall-clock duration regardless of refresh rate; GIFs keep playing frame-by-frame once the transition ends, served from a zstd-compressed frame cache that avoids re-decoding on every loop. Videos are decoded by FFmpeg with hardware acceleration, streamed frame-by-frame, and rendered seamlessly after transitions complete.
+`wallr` is a CLI that talks to `wallr daemon` over a Unix socket. The daemon owns the layer-shell surface, the `wgpu` renderer, and the animation engine. Wallpaper changes are rendered as GPU transitions from the previous image; GIFs continue playing frame-by-frame once the transition ends, and videos are decoded by FFmpeg with hardware acceleration where available.
 
 Details: [docs/architecture.md](docs/architecture.md)
 
-## Docs
+## Documentation
 
 - [CLI reference](docs/cli-reference.md)
 - [Configuration reference](docs/config-reference.md)
@@ -147,38 +137,12 @@ Details: [docs/architecture.md](docs/architecture.md)
 
 ## Troubleshooting
 
-### Desktop interaction blocked
+**Wallpaper blocks clicks or keyboard input.** It shouldn't — the surface is rendered on `Layer::Background`, with `KeyboardInteractivity::None` and an empty input region. If this happens:
 
-**wallr does NOT block desktop interaction.** The wallpaper surface is configured with:
-- `Layer::Background` (behind all windows)
-- `KeyboardInteractivity::None` (no keyboard input)
-- Empty input region (all clicks pass through)
-
-If you experience blocked interaction:
-1. Ensure you're using a compatible compositor (Hyprland, Sway, niri, KDE Plasma 6)
-2. Check compositor logs for layer-shell errors
-3. Restart the daemon: `pkill wallr && wallr daemon`
-4. For niri: Add layer-shell rule to allow wallr on the background layer
-
-The wallpaper behaves like any other background - windows, desktop icons, and clicks work normally over it.
-
-## Support
-
-If Wallr has improved your workflow or desktop experience, consider supporting its continued development.
-
-Your support helps fund new features, performance improvements, bug fixes, documentation, testing, and long term maintenance while keeping Wallr open source.
-
-### Star on GitHub
-
-Starring the repository helps more people discover the project and shows that the work is valuable.
-
-### Sponsor
-
-Financial support allows more time to be invested in building, maintaining, and improving Wallr.
-
-Every contribution, regardless of size, directly supports the future of the project.
-
-Thank you for supporting open source software.
+1. Confirm your compositor is one of the supported ones.
+2. Check compositor logs for layer-shell errors.
+3. Restart the daemon: `pkill wallr && wallr daemon`.
+4. On niri, add a layer-shell rule permitting Wallr on the background layer.
 
 ## Star History
 
