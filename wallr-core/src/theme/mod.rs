@@ -25,7 +25,6 @@ pub fn dispatch_theme(
     }
 }
 
-/// Runs the matugen theme provider quietly.
 fn run_matugen(image_path: &Path, config: &MatugenConfig) -> Result<(), ThemeError> {
     let mut cmd = Command::new("matugen");
     cmd.arg("image")
@@ -60,7 +59,6 @@ fn run_matugen(image_path: &Path, config: &MatugenConfig) -> Result<(), ThemeErr
     Ok(())
 }
 
-/// Runs the wallust theme provider quietly.
 fn run_wallust(image_path: &Path) -> Result<(), ThemeError> {
     let mut cmd = Command::new("wallust");
     cmd.arg("run")
@@ -79,7 +77,6 @@ fn run_wallust(image_path: &Path) -> Result<(), ThemeError> {
     Ok(())
 }
 
-/// Runs the pywal theme provider quietly.
 fn run_pywal(image_path: &Path) -> Result<(), ThemeError> {
     let mut cmd = Command::new("wal");
     cmd.arg("-i")
@@ -115,7 +112,6 @@ pub fn check_provider_available(provider: &ThemeProvider) -> bool {
         .unwrap_or(false)
 }
 
-/// Detects if matugen is the parent process, which could cause a loop.
 pub fn detect_matugen_loop_risk() -> Option<String> {
     if let Ok(status) = fs::read_to_string("/proc/self/status")
         && let Some(ppid_line) = status.lines().find(|l| l.starts_with("PPid:"))

@@ -1,19 +1,13 @@
-//! Sandboxed declarative custom-effect validation and WGSL transpilation.
-
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-/// A declarative per-pixel effect definition.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct CustomEffect {
-    /// Effect parameters and their default numeric values.
     #[serde(default)]
     pub params: HashMap<String, serde_yaml::Value>,
-    /// Sandboxed expression body returning a color expression.
     pub field: String,
 }
 
-/// Error returned when a custom field cannot be safely transpiled.
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum CustomEffectError {
     #[error("custom effect field is empty")]
@@ -48,7 +42,6 @@ const FUNCTIONS: &[&str] = &[
 ];
 const CONTEXT: &[&str] = &["t", "uv", "resolution", "old", "new", "time_absolute", "pi"];
 
-/// Validate and transpile a field into a WGSL expression body.
 pub fn transpile(name: &str, effect: &CustomEffect) -> Result<String, CustomEffectError> {
     if effect.field.trim().is_empty() {
         return Err(CustomEffectError::Empty);

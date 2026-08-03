@@ -99,18 +99,18 @@ async fn main() -> Result<()> {
             path,
             no_theme,
             theme,
-            monitor: _,
+            monitor,
             animation,
-            mode: _,
+            mode,
             effect_args,
         }
         | Commands::Set {
             path,
             no_theme,
             theme,
-            monitor: _,
+            monitor,
             animation,
-            mode: _,
+            mode,
             effect_args,
         } => {
             let socket_path = config::expand_path(&config.daemon.socket);
@@ -155,7 +155,8 @@ async fn main() -> Result<()> {
                     duration_ms,
                     no_theme,
                     theme_override: theme,
-                    monitor: None,
+                    monitor,
+                    scaling_mode: mode,
                 },
             )
             .await?;
@@ -338,6 +339,7 @@ async fn main() -> Result<()> {
                     no_theme: true,
                     theme_override: None,
                     monitor: None,
+                    scaling_mode: None,
                 },
                 IpcCommands::Stop => IpcCommand::Stop,
                 IpcCommands::Status => IpcCommand::Status,

@@ -62,7 +62,6 @@ impl CacheManager {
             return Ok(());
         }
 
-        // Collect cache files sorted by modification time (oldest first)
         let mut entries: Vec<_> = fs::read_dir(&self.cache_dir)?
             .filter_map(|e| e.ok())
             .filter(|e| e.metadata().map(|m| m.is_file()).unwrap_or(false))

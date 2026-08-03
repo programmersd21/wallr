@@ -17,7 +17,6 @@ pub struct AnimationSpec {
     /// Parent package references, merged from base to child.
     #[serde(default)]
     pub extends: Vec<String>,
-    /// Declarative custom per-pixel effects.
     #[serde(default)]
     pub custom_effects: HashMap<String, crate::custom_effects::CustomEffect>,
 }
@@ -828,7 +827,6 @@ pub fn effect_from_name(name: &str) -> Option<Effect> {
     })
 }
 
-/// All effect names usable from the CLI / YAML.
 pub fn effect_names() -> &'static [&'static str] {
     &[
         "simple", "fade", "blur", "wipe", "slide", "left", "right", "top", "bottom", "zoom",
@@ -836,7 +834,6 @@ pub fn effect_names() -> &'static [&'static str] {
     ]
 }
 
-/// Overrides that can be applied on top of an `Effect` from the CLI.
 #[derive(Debug, Clone, Default)]
 pub struct EffectOverrides {
     pub origin: Option<(f32, f32)>,
