@@ -184,6 +184,7 @@ impl OutputHandler for WaylandState {
         output: wl_output::WlOutput,
     ) {
         let id = output.id().protocol_id();
+        tracing::info!("Output detected: protocol_id={id}");
         let info = OutputInfo {
             name: format!("output-{id}"),
             width: 1920,
@@ -211,8 +212,37 @@ impl OutputHandler for WaylandState {
             }
             if let Some(info_data) = self.output_state.info(&output) {
                 info.scale_factor = info_data.scale_factor;
-                if !info.name.starts_with("output-") {
-                    info.name = info_data.name.clone().unwrap_or_else(|| info.name.clone());
+                // Always try to apply the real output name from the
+                // compositor (e.g. "DP-1", "HDMI-A-1", "eDP-1").
+                // Fall back to description, then to make+model.
+                let resolved = info_data
+                    .name
+                    .as_deref()
+                    .filter(|n| !n.is_empty())
+                    .or(info_data.description.as_deref().filter(|n| !n.is_empty()));
+                if let Some(real_name) = resolved {
+                    if real_name != info.name {
+                        tracing::info!(
+                            "Output {id}: resolved name '{}' -> '{}'",
+                            info.name,
+                            real_name
+                        );
+                        info.name = real_name.to_string();
+                    }
+                } else if info.name.starts_with("output-")
+                    && (!info_data.make.is_empty() || !info_data.model.is_empty())
+                {
+                    let fallback = format!("{} {}", info_data.make, info_data.model)
+                        .trim()
+                        .to_string();
+                    if !fallback.is_empty() {
+                        tracing::info!(
+                            "Output {id}: fallback name '{}' -> '{}'",
+                            info.name,
+                            fallback
+                        );
+                        info.name = fallback;
+                    }
                 }
             }
         }
@@ -887,19 +917,30 @@ impl Daemon {
             )
             .map_err(|e| DaemonError::StartError(format!("compositor bind failed: {e:?}")))?;
 
-        // Two roundtrips: first discovers outputs, second gets their modes/scale.
-        event_queue
-            .roundtrip(&mut wayland_state)
-            .map_err(|e| DaemonError::StartError(format!("roundtrip failed: {e:?}")))?;
-        event_queue
-            .roundtrip(&mut wayland_state)
-            .map_err(|e| DaemonError::StartError(format!("roundtrip2 failed: {e:?}")))?;
+        // Multiple roundtrips: some compositors deliver output events lazily
+        // across several dispatch cycles. Five roundtrips ensures all outputs
+        // are discovered and their modes/scale are populated.
+        for i in 0..5 {
+            event_queue
+                .roundtrip(&mut wayland_state)
+                .map_err(|e| DaemonError::StartError(format!("roundtrip {i} failed: {e:?}")))?;
+        }
 
         if wayland_state.outputs.is_empty() {
             return Err(DaemonError::StartError(
                 "no outputs detected after roundtrip".into(),
             ));
         }
+
+        tracing::info!(
+            "Detected {} output(s): {:?}",
+            wayland_state.outputs.len(),
+            wayland_state
+                .outputs
+                .values()
+                .map(|o| format!("{} ({}x{})", o.name, o.width, o.height))
+                .collect::<Vec<_>>()
+        );
 
         let renderer = std::sync::Arc::new(renderer);
 

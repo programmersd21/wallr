@@ -33,7 +33,8 @@
 ### 1. Native Wayland Layer Shell (`smithay-client-toolkit`)
 - **Protocol**: `wlr-layer-shell-unstable-v1`
 - **Layer**: `Layer::Background`
-- **Behavior**: Binds to Wayland display server, registers a full-screen background surface, handles `scale_factor_changed` and `configure` events dynamically, and sets `wl_surface.set_buffer_scale(scale_factor)` for crisp 1:1 physical pixel rendering on 4K and HiDPI displays.
+- **Behavior**: Binds to Wayland display server, registers a full-screen background surface per output, handles `scale_factor_changed` and `configure` events dynamically, and sets `wl_surface.set_buffer_scale(scale_factor)` for crisp 1:1 physical pixel rendering on 4K and HiDPI displays.
+- **Per-monitor**: Each Wayland output gets its own `LayerSurface`, wgpu `Surface`, and `RenderState`, stored in a `HashMap<String, Arc<Mutex<RenderState>>>` keyed by output name (e.g. `DP-1`, `HDMI-A-1`). Output names are resolved via `wl_output` v4; compositors that don't provide names fall back to make/model or a generated ID. The daemon performs 5 roundtrips at startup to ensure all outputs are discovered, even on compositors that deliver output events lazily.
 
 ### 2. GPU Rendering Pipeline (`wgpu`)
 - **Backend**: Vulkan / OpenGL / Metal (via `wgpu` abstraction)

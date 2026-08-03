@@ -28,4 +28,6 @@ wallr quit
 
 `wallr ipc info` reports version, GPU, decoder state, and playback position; `wallr ipc seek` accepts `HH:MM:SS`, `M:SS`, or plain seconds. `wallr quit` is an alias for `wallr ipc stop` and removes the daemon socket before exiting.
 
+`wallr monitor list` queries the daemon for all connected outputs and prints each output's name and resolution. `wallr monitor current` returns the primary output. Output names are resolved from the compositor (e.g. `DP-1`, `HDMI-A-1`, `eDP-1`); if the compositor doesn't provide names, a fallback based on make/model or a generated ID is used.
+
 Run `wallr <command> --help` for the exact flags emitted by the installed binary.
