@@ -51,7 +51,7 @@
   <img alt="Rust" src="https://shieldcn.dev/badge/Rust-2024-orange.svg?variant=secondary&theme=zinc&font=geist">
 </a>
 
-<br><br>
+<br>
 
 GPU-accelerated wallpaper engine for Wayland with native <code>wl-layer-shell</code> rendering powered by <strong>wgpu</strong>.
 
