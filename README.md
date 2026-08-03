@@ -5,55 +5,29 @@
 **Native Wayland wallpapers. GPU-rendered. Built with Rust.**
 
 <a href="https://github.com/programmersd21/wallr">
-  <img
-    src="https://raw.githubusercontent.com/programmersd21/wallr/main/assets/demo.gif"
-    alt="Wallr Demo"
-    width="860">
+  <img src="https://raw.githubusercontent.com/programmersd21/wallr/main/assets/demo.gif" alt="Wallr Demo" width="860">
 </a>
 
 <br><br>
 
-<a href="https://github.com/programmersd21/wallr/stargazers">
-  <img alt="Stars" src="https://shieldcn.dev/github/stars/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist">
-</a>
-
-<a href="https://github.com/programmersd21/wallr/releases/latest">
-  <img alt="Release" src="https://shieldcn.dev/github/release/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist">
-</a>
-
-<a href="https://github.com/programmersd21/wallr/releases">
-  <img alt="Downloads" src="https://shieldcn.dev/github/downloads/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist">
-</a>
-
-<a href="https://crates.io/crates/wallr">
-  <img alt="Crates.io" src="https://shieldcn.dev/crates/wallr.svg?variant=secondary&theme=zinc&font=geist">
-</a>
-
-<a href="https://github.com/programmersd21/wallr/actions">
-  <img alt="CI" src="https://shieldcn.dev/github/ci/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist">
-</a>
-
-<a href="https://github.com/programmersd21/wallr/blob/main/LICENSE">
-  <img alt="License" src="https://shieldcn.dev/github/license/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist">
-</a>
+<!-- Project stats -->
+<a href="https://github.com/programmersd21/wallr/stargazers"><img alt="Stars" src="https://shieldcn.dev/github/stars/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist"></a>
+<a href="https://github.com/programmersd21/wallr/releases/latest"><img alt="Release" src="https://shieldcn.dev/github/release/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist"></a>
+<a href="https://github.com/programmersd21/wallr/releases"><img alt="Downloads" src="https://shieldcn.dev/github/downloads/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist"></a>
+<a href="https://crates.io/crates/wallr"><img alt="Crates.io" src="https://shieldcn.dev/crates/wallr.svg?variant=secondary&theme=zinc&font=geist"></a>
+<a href="https://github.com/programmersd21/wallr/actions"><img alt="CI" src="https://shieldcn.dev/github/ci/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist"></a>
+<a href="https://github.com/programmersd21/wallr/blob/main/LICENSE"><img alt="License" src="https://shieldcn.dev/github/license/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist"></a>
 
 <br>
 
-<a href="https://wayland.freedesktop.org/">
-  <img alt="Wayland" src="https://shieldcn.dev/badge/Wayland-Native-violet.svg?variant=secondary&theme=zinc&font=geist">
-</a>
+<!-- Tech stack -->
+<a href="https://wayland.freedesktop.org/"><img alt="Wayland" src="https://shieldcn.dev/badge/Wayland-Native-violet.svg?variant=secondary&theme=zinc&font=geist"></a>
+<a href="https://wgpu.rs/"><img alt="wgpu" src="https://shieldcn.dev/badge/wgpu-Renderer-blue.svg?variant=secondary&theme=zinc&font=geist"></a>
+<a href="https://www.rust-lang.org/"><img alt="Rust" src="https://shieldcn.dev/badge/Rust-2024-orange.svg?variant=secondary&theme=zinc&font=geist"></a>
 
-<a href="https://wgpu.rs/">
-  <img alt="wgpu" src="https://shieldcn.dev/badge/wgpu-Renderer-blue.svg?variant=secondary&theme=zinc&font=geist">
-</a>
+<br><br>
 
-<a href="https://www.rust-lang.org/">
-  <img alt="Rust" src="https://shieldcn.dev/badge/Rust-2024-orange.svg?variant=secondary&theme=zinc&font=geist">
-</a>
-
-<br>
-
-GPU-accelerated wallpaper engine for Wayland with native <code>wl-layer-shell</code> rendering powered by <strong>wgpu</strong>.
+GPU-accelerated wallpaper engine for Wayland with native `wl-layer-shell` rendering powered by **wgpu**.
 
 </div>
 
