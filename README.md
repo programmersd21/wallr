@@ -11,8 +11,6 @@
     width="860">
 </a>
 
-<br><br>
-
 <a href="https://github.com/programmersd21/wallr/stargazers">
   <img alt="Stars" src="https://shieldcn.dev/github/stars/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist">
 </a>
@@ -36,8 +34,6 @@
 <a href="https://github.com/programmersd21/wallr/blob/main/LICENSE">
   <img alt="License" src="https://shieldcn.dev/github/license/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist">
 </a>
-
-<br><br>
 
 <a href="https://wayland.freedesktop.org/">
   <img alt="Wayland" src="https://shieldcn.dev/badge/Wayland-Native-violet.svg?variant=secondary&theme=zinc&font=geist">
