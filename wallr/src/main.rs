@@ -275,12 +275,19 @@ async fn main() -> Result<()> {
 
         Commands::Monitor { subcommand } => {
             use wallr_core::cli::MonitorCommands;
+            let socket_path = config::expand_path(&config.daemon.socket);
             match subcommand {
                 MonitorCommands::List => {
-                    println!("Monitor listing (Wayland connected)");
+                    let resp = send_ipc_command(socket_path, IpcCommand::MonitorList).await?;
+                    if let Some(msg) = resp.message {
+                        println!("{}", msg);
+                    }
                 }
                 MonitorCommands::Current => {
-                    println!("Current monitor info");
+                    let resp = send_ipc_command(socket_path, IpcCommand::MonitorCurrent).await?;
+                    if let Some(msg) = resp.message {
+                        println!("{}", msg);
+                    }
                 }
             }
         }

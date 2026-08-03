@@ -28,6 +28,8 @@ pub enum IpcCommand {
     Stop,
     Status,
     Info,
+    MonitorList,
+    MonitorCurrent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -72,15 +72,21 @@ impl HasDisplayHandle for WaylandWindow {
     }
 }
 
+struct OutputInfo {
+    name: String,
+    width: u32,
+    height: u32,
+    scale_factor: i32,
+    wl_output: wl_output::WlOutput,
+}
+
 struct WaylandState {
     registry_state: RegistryState,
     output_state: OutputState,
     compositor_state: CompositorState,
     shm: Shm,
-    surfaces: Vec<LayerSurface>,
-    width: u32,
-    height: u32,
-    scale_factor: i32,
+    outputs: std::collections::HashMap<u32, OutputInfo>,
+    surfaces: Vec<(u32, LayerSurface)>,
 }
 
 impl ProvidesRegistryState for WaylandState {
@@ -97,9 +103,8 @@ impl CompositorHandler for WaylandState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _surface: &wl_surface::WlSurface,
-        new_factor: i32,
+        _new_factor: i32,
     ) {
-        self.scale_factor = new_factor;
     }
     fn transform_changed(
         &mut self,
@@ -153,17 +158,9 @@ impl LayerShellHandler for WaylandState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         layer: &LayerSurface,
-        configure: LayerSurfaceConfigure,
+        _configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        if configure.new_size.0 > 0 {
-            self.width = configure.new_size.0;
-        }
-        if configure.new_size.1 > 0 {
-            self.height = configure.new_size.1;
-        }
-        // Note: Input region is set once at creation and persists across
-        // configure events. The empty region ensures clicks pass through.
         layer.commit();
     }
 
@@ -184,22 +181,50 @@ impl OutputHandler for WaylandState {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
+        output: wl_output::WlOutput,
     ) {
+        let id = output.id().protocol_id();
+        let info = OutputInfo {
+            name: format!("output-{id}"),
+            width: 1920,
+            height: 1080,
+            scale_factor: 1,
+            wl_output: output,
+        };
+        self.outputs.insert(id, info);
     }
     fn update_output(
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
+        output: wl_output::WlOutput,
     ) {
+        let id = output.id().protocol_id();
+        if let Some(info) = self.outputs.get_mut(&id) {
+            if let Some(mode) = self
+                .output_state
+                .info(&output)
+                .and_then(|i| i.modes.iter().find(|m| m.current).cloned())
+            {
+                info.width = mode.dimensions.0 as u32;
+                info.height = mode.dimensions.1 as u32;
+            }
+            if let Some(info_data) = self.output_state.info(&output) {
+                info.scale_factor = info_data.scale_factor;
+                if !info.name.starts_with("output-") {
+                    info.name = info_data.name.clone().unwrap_or_else(|| info.name.clone());
+                }
+            }
+        }
     }
     fn output_destroyed(
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
+        output: wl_output::WlOutput,
     ) {
+        let id = output.id().protocol_id();
+        self.outputs.remove(&id);
     }
 }
 
@@ -849,26 +874,11 @@ impl Daemon {
             output_state: OutputState::new(&globals, &qh),
             compositor_state,
             shm,
+            outputs: std::collections::HashMap::new(),
             surfaces: Vec::new(),
-            width: 1920,
-            height: 1080,
-            scale_factor: 1,
         };
 
-        let wl_surface = wayland_state.compositor_state.create_surface(&qh);
-        let layer_surface = layer_shell.create_layer_surface(
-            &qh,
-            wl_surface,
-            Layer::Background,
-            Some("wallr"),
-            None,
-        );
-        layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-        layer_surface.set_exclusive_zone(-1); // Don't reserve space
-        layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None); // No keyboard
-
-        // CRITICAL: Empty input region so ALL clicks pass through to desktop
-        // Without this, the wallpaper blocks desktop interaction on KDE/Plasma
+        // Bind compositor once for creating empty input regions (passthrough).
         let compositor = globals
             .bind::<wl_compositor::WlCompositor, WaylandState, smithay_client_toolkit::globals::GlobalData>(
                 &qh,
@@ -876,13 +886,8 @@ impl Daemon {
                 smithay_client_toolkit::globals::GlobalData,
             )
             .map_err(|e| DaemonError::StartError(format!("compositor bind failed: {e:?}")))?;
-        let empty_region = compositor.create_region(&qh, ());
-        layer_surface
-            .wl_surface()
-            .set_input_region(Some(&empty_region));
-        layer_surface.commit();
-        empty_region.destroy();
 
+        // Two roundtrips: first discovers outputs, second gets their modes/scale.
         event_queue
             .roundtrip(&mut wayland_state)
             .map_err(|e| DaemonError::StartError(format!("roundtrip failed: {e:?}")))?;
@@ -890,111 +895,81 @@ impl Daemon {
             .roundtrip(&mut wayland_state)
             .map_err(|e| DaemonError::StartError(format!("roundtrip2 failed: {e:?}")))?;
 
-        let scale_factor = if wayland_state.scale_factor > 0 {
-            wayland_state.scale_factor
-        } else {
-            1
-        };
-        layer_surface.wl_surface().set_buffer_scale(scale_factor);
+        if wayland_state.outputs.is_empty() {
+            return Err(DaemonError::StartError(
+                "no outputs detected after roundtrip".into(),
+            ));
+        }
 
-        let width = wayland_state.width * scale_factor as u32;
-        let height = wayland_state.height * scale_factor as u32;
+        let renderer = std::sync::Arc::new(renderer);
 
-        let raw_surface = layer_surface.wl_surface().id().as_ptr() as *mut std::ffi::c_void;
-        wayland_state.surfaces.push(layer_surface);
+        // Create a LayerSurface, wgpu Surface, and RenderState for every
+        // known output. The key is the output's human-readable name (e.g.
+        // "DP-1", "eDP-1") so IPC can target a specific monitor.
+        let mut render_states: std::collections::HashMap<String, Arc<Mutex<RenderState>>> =
+            std::collections::HashMap::new();
 
-        let window_handle = WaylandWindow {
-            display: display_ptr,
-            surface: raw_surface,
-        };
-
-        let wgpu_surface = renderer
-            .instance
-            .create_surface(&window_handle)
-            .map_err(|e| DaemonError::StartError(format!("wgpu surface creation failed: {e:?}")))?;
-
-        let adapter = renderer
-            .instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                compatible_surface: Some(&wgpu_surface),
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                force_fallback_adapter: false,
+        // Collect output info first so we can pass &mut wayland_state to the
+        // helper (we need &mut to push LayerSurfaces into the surfaces vec).
+        let output_info: Vec<(u32, OutputInfo)> = wayland_state
+            .outputs
+            .iter()
+            .map(|(k, v)| {
+                (
+                    *k,
+                    OutputInfo {
+                        name: v.name.clone(),
+                        width: v.width,
+                        height: v.height,
+                        scale_factor: v.scale_factor,
+                        wl_output: v.wl_output.clone(),
+                    },
+                )
             })
-            .await;
-        let surf_format = adapter
-            .as_ref()
-            .map(|a| {
-                let caps = wgpu_surface.get_capabilities(a);
-                caps.formats
-                    .into_iter()
-                    .next()
-                    .unwrap_or(wgpu::TextureFormat::Bgra8UnormSrgb)
-            })
-            .unwrap_or(wgpu::TextureFormat::Bgra8UnormSrgb);
+            .collect();
 
-        let surf_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surf_format,
-            width,
-            height,
-            present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: wgpu::CompositeAlphaMode::Opaque,
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        wgpu_surface.configure(&renderer.device, &surf_config);
+        for (proto_id, info) in &output_info {
+            let name = info.name.clone();
+            let rs = Self::create_render_state_for_output(
+                &renderer,
+                display_ptr,
+                &mut wayland_state,
+                &qh,
+                &layer_shell,
+                &compositor,
+                info,
+                &self.config,
+            )
+            .await?;
+            let rs = Arc::new(Mutex::new(rs));
+            render_states.insert(name.clone(), rs.clone());
 
-        // SAFETY: We transmute the surface lifetime to 'static so it can be moved
-        // into the shared Arc. The surface is tied to window_handle / wayland_state
-        // both of which live as long as the process.
-        let wgpu_surface: wgpu::Surface<'static> = unsafe { std::mem::transmute(wgpu_surface) };
-        // The daemon lives for the whole process, so leaking one surface is fine
-        // and gives every detached transition task a stable reference to present
-        // to without holding the RenderState lock during the blocking acquire.
-        let surface: &'static wgpu::Surface<'static> = Box::leak(Box::new(wgpu_surface));
-
-        let render_state = Arc::new(Mutex::new(RenderState {
-            renderer: std::sync::Arc::new(renderer),
-            surface,
-            render_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
-            playback_gen: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            pacer: std::sync::Arc::new(LivePacer::new()),
-            current_bind: None,
-            current_tex: None,
-            width,
-            height,
-            current_width: 0,
-            current_height: 0,
-            format: surf_format,
-            video_playback: std::sync::Arc::new(crate::video::VideoPlayback::new()),
-            hw_accel: crate::video::HwAccel::from_config(&self.config.video.hw_decode),
-            scaling_mode: 0,
-        }));
-
-        {
+            // Restore per-output last wallpaper.
             let state_path = dirs::cache_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                .join("wallr/last_wallpaper");
+                .join(format!("wallr/last_wallpaper/{name}"));
             if let Ok(path_str) = std::fs::read_to_string(&state_path) {
                 let p = std::path::Path::new(path_str.trim());
                 if p.exists() {
-                    let mut rs = render_state.lock().await;
+                    let mut lock = rs.lock().await;
                     let effect =
                         crate::animation::Effect::Fade(crate::animation::FadeParams::default());
-                    let _ = rs.set_wallpaper(p, &effect, 0, 0).await;
+                    let _ = lock.set_wallpaper(p, &effect, 0, 0).await;
                 }
             }
+
+            tracing::info!("Output ready: {name} ({proto_id})");
         }
 
         let paused_clone = self.paused.clone();
         let engine_clone = self.engine.clone();
-        let render_state_clone = render_state.clone();
+        let render_states_clone = render_states.clone();
 
         // Graceful shutdown on POSIX signals: stop video decoding, remove the
         // IPC socket, and exit. The compositor releases the layer-shell
         // surface automatically when the process exits.
         {
-            let rs = render_state.clone();
+            let rs_map = render_states.clone();
             let socket_path = socket_path.clone();
             tokio::spawn(async move {
                 use tokio::signal::unix::{SignalKind, signal};
@@ -1007,8 +982,10 @@ impl Daemon {
                     _ = hup.recv() => {}
                 }
                 tracing::info!("Signal received, shutting down gracefully");
-                if let Ok(state) = rs.try_lock() {
-                    state.video_playback.stop();
+                for rs in rs_map.values() {
+                    if let Ok(state) = rs.try_lock() {
+                        state.video_playback.stop();
+                    }
                 }
                 let _ = std::fs::remove_file(&socket_path);
                 std::process::exit(0);
@@ -1019,14 +996,16 @@ impl Daemon {
         start_ipc_server(&socket_path, move |cmd| {
             let paused = paused_clone.clone();
             let engine = engine_clone.clone();
-            let rs = render_state_clone.clone();
+            let render_states = render_states_clone.clone();
             let stop_socket = ipc_socket_path.clone();
             async move {
                 match cmd {
                     IpcCommand::Pause => {
                         paused.store(true, Ordering::SeqCst);
-                        let rs_lock = rs.lock().await;
-                        rs_lock.video_playback.pause();
+                        for rs in render_states.values() {
+                            let rs_lock = rs.lock().await;
+                            rs_lock.video_playback.pause();
+                        }
                         IpcResponse {
                             success: true,
                             message: Some("Paused".into()),
@@ -1034,8 +1013,10 @@ impl Daemon {
                     }
                     IpcCommand::Resume => {
                         paused.store(false, Ordering::SeqCst);
-                        let rs_lock = rs.lock().await;
-                        rs_lock.video_playback.resume();
+                        for rs in render_states.values() {
+                            let rs_lock = rs.lock().await;
+                            rs_lock.video_playback.resume();
+                        }
                         IpcResponse {
                             success: true,
                             message: Some("Resumed".into()),
@@ -1077,13 +1058,45 @@ impl Daemon {
                             };
                         }
 
-                        let state_path = dirs::cache_dir()
-                            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                            .join("wallr/last_wallpaper");
-                        if let Some(parent) = state_path.parent() {
-                            let _ = std::fs::create_dir_all(parent);
+                        // Select target RenderState: explicit --monitor or first
+                        // output.
+                        let target_rs = if let Some(ref mon) = monitor {
+                            render_states
+                                .get(mon)
+                                .cloned()
+                                .or_else(|| render_states.values().next().cloned())
+                        } else {
+                            render_states.values().next().cloned()
+                        };
+                        let target_rs = match target_rs {
+                            Some(rs) => rs,
+                            None => {
+                                return IpcResponse {
+                                    success: false,
+                                    message: Some("No outputs available".into()),
+                                };
+                            }
+                        };
+
+                        // Persist per-output last wallpaper for all outputs (or
+                        // just the targeted one when --monitor is specified).
+                        let output_names: Vec<String> = if monitor.is_some() {
+                            monitor
+                                .as_ref()
+                                .map(|m| vec![m.clone()])
+                                .unwrap_or_default()
+                        } else {
+                            render_states.keys().cloned().collect()
+                        };
+                        for name in &output_names {
+                            let state_path = dirs::cache_dir()
+                                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                                .join(format!("wallr/last_wallpaper/{name}"));
+                            if let Some(parent) = state_path.parent() {
+                                let _ = std::fs::create_dir_all(parent);
+                            }
+                            let _ = std::fs::write(&state_path, &path);
                         }
-                        let _ = std::fs::write(&state_path, &path);
 
                         let effect = effect.unwrap_or_else(|| {
                             crate::animation::Effect::Fade(crate::animation::FadeParams::default())
@@ -1102,7 +1115,7 @@ impl Daemon {
                             crate::config::ScalingMode::Tile => 4,
                         };
 
-                        let rs_clone = rs.clone();
+                        let rs_clone = target_rs.clone();
                         let p_clone = p.clone();
                         let result = tokio::task::spawn_blocking(move || {
                             let rt = tokio::runtime::Handle::current();
@@ -1169,7 +1182,17 @@ impl Daemon {
                         }
                     }
                     IpcCommand::Seek { timestamp_ms } => {
-                        let rs_lock = rs.lock().await;
+                        let target_rs = render_states.values().next().cloned();
+                        let target_rs = match target_rs {
+                            Some(rs) => rs,
+                            None => {
+                                return IpcResponse {
+                                    success: false,
+                                    message: Some("No outputs available".into()),
+                                };
+                            }
+                        };
+                        let rs_lock = target_rs.lock().await;
                         match rs_lock
                             .video_playback
                             .seek(std::time::Duration::from_millis(timestamp_ms))
@@ -1185,7 +1208,17 @@ impl Daemon {
                         }
                     }
                     IpcCommand::Info => {
-                        let rs_lock = rs.lock().await;
+                        let target_rs = render_states.values().next().cloned();
+                        let target_rs = match target_rs {
+                            Some(rs) => rs,
+                            None => {
+                                return IpcResponse {
+                                    success: false,
+                                    message: Some("No outputs available".into()),
+                                };
+                            }
+                        };
+                        let rs_lock = target_rs.lock().await;
 
                         // Get GPU info from renderer
                         let gpu_info =
@@ -1194,8 +1227,13 @@ impl Daemon {
                         let mut lines = vec![
                             format!("wallr v{}", env!("CARGO_PKG_VERSION")),
                             String::new(),
-                            gpu_info,
+                            format!("Outputs: {}", render_states.len()),
                         ];
+                        for name in render_states.keys() {
+                            lines.push(format!("  - {name}"));
+                        }
+                        lines.push(String::new());
+                        lines.push(gpu_info);
 
                         match rs_lock.video_playback.metadata() {
                             Some(meta) => {
@@ -1250,6 +1288,39 @@ impl Daemon {
                             message: Some(lines.join("\n")),
                         }
                     }
+                    IpcCommand::MonitorList => {
+                        let mut lines = Vec::new();
+                        for (name, rs) in &render_states {
+                            let lock = rs.lock().await;
+                            lines.push(format!("{}: {}x{}", name, lock.width, lock.height));
+                        }
+                        if lines.is_empty() {
+                            IpcResponse {
+                                success: true,
+                                message: Some("No monitors connected".into()),
+                            }
+                        } else {
+                            IpcResponse {
+                                success: true,
+                                message: Some(lines.join("\n")),
+                            }
+                        }
+                    }
+                    IpcCommand::MonitorCurrent => {
+                        // Return info for the first output as "current".
+                        if let Some((name, rs)) = render_states.iter().next() {
+                            let lock = rs.lock().await;
+                            IpcResponse {
+                                success: true,
+                                message: Some(format!("{}: {}x{}", name, lock.width, lock.height)),
+                            }
+                        } else {
+                            IpcResponse {
+                                success: false,
+                                message: Some("No monitors connected".into()),
+                            }
+                        }
+                    }
                 }
             }
         })
@@ -1260,7 +1331,7 @@ impl Daemon {
             && let Some(ref watch_dir) = self.config.watch.dir
         {
             let watch_path = crate::config::expand_path(watch_dir);
-            self.start_watcher(watch_path, render_state.clone()).await?;
+            self.start_watcher(watch_path, render_states).await?;
         }
 
         tokio::task::spawn_blocking(move || {
@@ -1285,7 +1356,7 @@ impl Daemon {
     async fn start_watcher(
         &self,
         dir: PathBuf,
-        render_state: Arc<Mutex<RenderState>>,
+        render_states: std::collections::HashMap<String, Arc<Mutex<RenderState>>>,
     ) -> Result<(), DaemonError> {
         let engine = self.engine.clone();
         let paused = self.paused.clone();
@@ -1333,26 +1404,143 @@ impl Daemon {
                 }
                 last = Some((path.clone(), std::time::Instant::now()));
 
-                let rs = render_state.clone();
-                let eng = engine.clone();
-                let p = path.clone();
-                tokio::spawn(async move {
-                    let mut lock = rs.lock().await;
-                    let effect =
-                        crate::animation::Effect::Fade(crate::animation::FadeParams::default());
-                    let _ = lock.set_wallpaper(&p, &effect, 600, 0).await;
-                    drop(lock);
-                    let opts = SetOptions {
-                        no_theme: false,
-                        theme_provider: None,
-                        monitor: None,
-                    };
-                    let mut elock = eng.lock().await;
-                    let _ = elock.set_wallpaper(&p, &opts).await;
-                });
+                // Apply new wallpaper to every output.
+                for (name, rs) in &render_states {
+                    let rs = rs.clone();
+                    let eng = engine.clone();
+                    let p = path.clone();
+                    let name = name.clone();
+                    tokio::spawn(async move {
+                        let mut lock = rs.lock().await;
+                        let effect =
+                            crate::animation::Effect::Fade(crate::animation::FadeParams::default());
+                        let _ = lock.set_wallpaper(&p, &effect, 600, 0).await;
+                        drop(lock);
+                        let opts = SetOptions {
+                            no_theme: false,
+                            theme_provider: None,
+                            monitor: Some(name),
+                        };
+                        let mut elock = eng.lock().await;
+                        let _ = elock.set_wallpaper(&p, &opts).await;
+                    });
+                }
             }
         });
 
         Ok(())
+    }
+
+    /// Creates a LayerSurface, wgpu Surface, and RenderState for a single
+    /// Wayland output.
+    #[allow(clippy::too_many_arguments)]
+    async fn create_render_state_for_output(
+        renderer: &std::sync::Arc<Renderer>,
+        display_ptr: *mut std::ffi::c_void,
+        wayland_state: &mut WaylandState,
+        qh: &QueueHandle<WaylandState>,
+        layer_shell: &LayerShell,
+        compositor: &wl_compositor::WlCompositor,
+        output: &OutputInfo,
+        config: &WallrConfig,
+    ) -> Result<RenderState, DaemonError> {
+        let wl_surface = wayland_state.compositor_state.create_surface(qh);
+        let layer_surface = layer_shell.create_layer_surface(
+            qh,
+            wl_surface,
+            Layer::Background,
+            Some("wallr"),
+            Some(&output.wl_output),
+        );
+        layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer_surface.set_exclusive_zone(-1);
+        layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
+
+        // Empty input region so clicks pass through to the desktop.
+        let empty_region = compositor.create_region(qh, ());
+        layer_surface
+            .wl_surface()
+            .set_input_region(Some(&empty_region));
+        layer_surface.commit();
+        empty_region.destroy();
+
+        let scale_factor = if output.scale_factor > 0 {
+            output.scale_factor
+        } else {
+            1
+        };
+        layer_surface.wl_surface().set_buffer_scale(scale_factor);
+
+        let width = output.width * scale_factor as u32;
+        let height = output.height * scale_factor as u32;
+
+        let raw_surface = layer_surface.wl_surface().id().as_ptr() as *mut std::ffi::c_void;
+        wayland_state
+            .surfaces
+            .push((output.wl_output.id().protocol_id(), layer_surface));
+
+        let window_handle = WaylandWindow {
+            display: display_ptr,
+            surface: raw_surface,
+        };
+
+        let wgpu_surface = renderer
+            .instance
+            .create_surface(&window_handle)
+            .map_err(|e| DaemonError::StartError(format!("wgpu surface creation failed: {e:?}")))?;
+
+        let adapter = renderer
+            .instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                compatible_surface: Some(&wgpu_surface),
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                force_fallback_adapter: false,
+            })
+            .await;
+        let surf_format = adapter
+            .as_ref()
+            .map(|a| {
+                let caps = wgpu_surface.get_capabilities(a);
+                caps.formats
+                    .into_iter()
+                    .next()
+                    .unwrap_or(wgpu::TextureFormat::Bgra8UnormSrgb)
+            })
+            .unwrap_or(wgpu::TextureFormat::Bgra8UnormSrgb);
+
+        let surf_config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surf_format,
+            width,
+            height,
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        wgpu_surface.configure(&renderer.device, &surf_config);
+
+        // SAFETY: The surface is tied to wayland_state + window_handle, both
+        // of which live for the entire process.
+        let wgpu_surface: wgpu::Surface<'static> = unsafe { std::mem::transmute(wgpu_surface) };
+        let surface: &'static wgpu::Surface<'static> = Box::leak(Box::new(wgpu_surface));
+
+        Ok(RenderState {
+            renderer: renderer.clone(),
+            surface,
+            render_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
+            playback_gen: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            pacer: std::sync::Arc::new(LivePacer::new()),
+            current_bind: None,
+            current_tex: None,
+            width,
+            height,
+            current_width: 0,
+            current_height: 0,
+            format: surf_format,
+            video_playback: std::sync::Arc::new(crate::video::VideoPlayback::new()),
+            hw_accel: crate::video::HwAccel::from_config(&config.video.hw_decode),
+            scaling_mode: 0,
+        })
     }
 }
