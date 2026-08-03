@@ -12,30 +12,70 @@
 
 <p>
   <a href="https://github.com/programmersd21/wallr/stargazers">
-    <img alt="GitHub Stars" src="https://shieldcn.dev/github/stars/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/stars/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
+      <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/github/stars/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
+      <img alt="GitHub Stars" src="https://shieldcn.dev/github/stars/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
+    </picture>
   </a>
   <a href="https://github.com/programmersd21/wallr/releases/latest">
-    <img alt="Latest Release" src="https://shieldcn.dev/github/release/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/release/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
+      <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/github/release/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
+      <img alt="Latest Release" src="https://shieldcn.dev/github/release/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
+    </picture>
   </a>
   <a href="https://github.com/programmersd21/wallr/releases">
-    <img alt="Downloads" src="https://shieldcn.dev/github/downloads/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/downloads/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
+      <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/github/downloads/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
+      <img alt="Downloads" src="https://shieldcn.dev/github/downloads/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
+    </picture>
   </a>
   <a href="https://github.com/programmersd21/wallr/actions">
-    <img alt="CI" src="https://shieldcn.dev/github/ci/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/ci/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
+      <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/github/ci/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
+      <img alt="CI" src="https://shieldcn.dev/github/ci/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
+    </picture>
   </a>
   <a href="https://github.com/programmersd21/wallr/blob/main/LICENSE">
-    <img alt="License" src="https://shieldcn.dev/github/license/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/license/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
+      <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/github/license/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
+      <img alt="License" src="https://shieldcn.dev/github/license/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
+    </picture>
   </a>
 </p>
 
 <p>
   <a href="https://crates.io/crates/wallr">
-    <img alt="crates.io" src="https://shieldcn.dev/crates/wallr.svg?variant=ghost&mode=dark&font=geist&size=sm">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/crates/wallr.svg?variant=ghost&mode=dark&font=geist&size=sm">
+      <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/crates/wallr.svg?variant=ghost&mode=light&font=geist&size=sm">
+      <img alt="crates.io" src="https://shieldcn.dev/crates/wallr.svg?variant=ghost&mode=light&font=geist&size=sm">
+    </picture>
   </a>
-  <img alt="Wayland" src="https://shieldcn.dev/badge/Wayland-native-7c3aed.svg?variant=ghost&mode=dark&font=geist">
-  <img alt="wgpu" src="https://shieldcn.dev/badge/wgpu-renderer-8b5cf6.svg?variant=ghost&mode=dark&font=geist">
-  <img alt="Rust" src="https://shieldcn.dev/badge/Rust-memory_safe-f97316.svg?variant=ghost&mode=dark&font=geist">
-  <img alt="Linux" src="https://shieldcn.dev/badge/Linux-first-22c55e.svg?variant=ghost&mode=dark&font=geist">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/Wayland-native-7c3aed.svg?variant=ghost&mode=dark&font=geist">
+    <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/badge/Wayland-native-7c3aed.svg?variant=ghost&mode=light&font=geist">
+    <img alt="Wayland" src="https://shieldcn.dev/badge/Wayland-native-7c3aed.svg?variant=ghost&mode=light&font=geist">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/wgpu-renderer-8b5cf6.svg?variant=ghost&mode=dark&font=geist">
+    <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/badge/wgpu-renderer-8b5cf6.svg?variant=ghost&mode=light&font=geist">
+    <img alt="wgpu" src="https://shieldcn.dev/badge/wgpu-renderer-8b5cf6.svg?variant=ghost&mode=light&font=geist">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/Rust-memory_safe-f97316.svg?variant=ghost&mode=dark&font=geist">
+    <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/badge/Rust-memory_safe-f97316.svg?variant=ghost&mode=light&font=geist">
+    <img alt="Rust" src="https://shieldcn.dev/badge/Rust-memory_safe-f97316.svg?variant=ghost&mode=light&font=geist">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/Linux-first-22c55e.svg?variant=ghost&mode=dark&font=geist">
+    <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/badge/Linux-first-22c55e.svg?variant=ghost&mode=light&font=geist">
+    <img alt="Linux" src="https://shieldcn.dev/badge/Linux-first-22c55e.svg?variant=ghost&mode=light&font=geist">
+  </picture>
 </p>
 
 <p>
