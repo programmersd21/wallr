@@ -14,30 +14,30 @@
 <br><br>
 
 <a href="https://github.com/programmersd21/wallr/stargazers">
-  <img alt="Stars" src="https://shieldcn.dev/github/stars/programmersd21/wallr.svg?variant=outline&labelColor=000000&color=000000&font=geist">
+  <img alt="Stars" src="https://shieldcn.dev/github/stars/programmersd21/wallr.svg?variant=outline&labelColor=000000&color=000000&labelTextColor=ffffff&valueColor=ffffff&font=geist">
 </a>
 <a href="https://github.com/programmersd21/wallr/releases/latest">
-  <img alt="Release" src="https://shieldcn.dev/github/release/programmersd21/wallr.svg?variant=outline&labelColor=000000&color=000000&font=geist">
+  <img alt="Release" src="https://shieldcn.dev/github/release/programmersd21/wallr.svg?variant=outline&labelColor=000000&color=000000&labelTextColor=ffffff&valueColor=ffffff&font=geist">
 </a>
 <a href="https://github.com/programmersd21/wallr/releases">
-  <img alt="Downloads" src="https://shieldcn.dev/github/downloads/programmersd21/wallr.svg?variant=outline&labelColor=000000&color=000000&font=geist">
+  <img alt="Downloads" src="https://shieldcn.dev/github/downloads/programmersd21/wallr.svg?variant=outline&labelColor=000000&color=000000&labelTextColor=ffffff&valueColor=ffffff&font=geist">
 </a>
 <a href="https://github.com/programmersd21/wallr/actions">
-  <img alt="CI" src="https://shieldcn.dev/github/ci/programmersd21/wallr.svg?variant=outline&labelColor=000000&color=000000&font=geist">
+  <img alt="CI" src="https://shieldcn.dev/github/ci/programmersd21/wallr.svg?variant=outline&labelColor=000000&color=000000&labelTextColor=ffffff&valueColor=ffffff&font=geist">
 </a>
 <a href="https://github.com/programmersd21/wallr/blob/main/LICENSE">
-  <img alt="License" src="https://shieldcn.dev/github/license/programmersd21/wallr.svg?variant=outline&labelColor=000000&color=000000&font=geist">
+  <img alt="License" src="https://shieldcn.dev/github/license/programmersd21/wallr.svg?variant=outline&labelColor=000000&color=000000&labelTextColor=ffffff&valueColor=ffffff&font=geist">
 </a>
 
 <br>
 
 <a href="https://crates.io/crates/wallr">
-  <img alt="crates.io" src="https://shieldcn.dev/crates/wallr.svg?variant=ghost&labelColor=000000&color=000000&font=geist">
+  <img alt="crates.io" src="https://shieldcn.dev/crates/wallr.svg?variant=ghost&labelColor=000000&color=000000&labelTextColor=ffffff&valueColor=ffffff&font=geist">
 </a>
-<img alt="Wayland" src="https://shieldcn.dev/badge/Wayland-native-000000.svg?variant=ghost&labelColor=000000&font=geist">
-<img alt="wgpu" src="https://shieldcn.dev/badge/wgpu-renderer-000000.svg?variant=ghost&labelColor=000000&font=geist">
-<img alt="Rust" src="https://shieldcn.dev/badge/Rust-memory_safe-000000.svg?variant=ghost&labelColor=000000&font=geist">
-<img alt="Linux" src="https://shieldcn.dev/badge/Linux-first-000000.svg?variant=ghost&labelColor=000000&font=geist">
+<img alt="Wayland" src="https://shieldcn.dev/badge/Wayland-native-000000.svg?variant=ghost&labelColor=000000&labelTextColor=ffffff&valueColor=ffffff&font=geist">
+<img alt="wgpu" src="https://shieldcn.dev/badge/wgpu-renderer-000000.svg?variant=ghost&labelColor=000000&labelTextColor=ffffff&valueColor=ffffff&font=geist">
+<img alt="Rust" src="https://shieldcn.dev/badge/Rust-memory_safe-000000.svg?variant=ghost&labelColor=000000&labelTextColor=ffffff&valueColor=ffffff&font=geist">
+<img alt="Linux" src="https://shieldcn.dev/badge/Linux-first-000000.svg?variant=ghost&labelColor=000000&labelTextColor=ffffff&valueColor=ffffff&font=geist">
 
 <br><br>
 
