@@ -2,86 +2,84 @@
 
 # Wallr
 
-### Native Wayland wallpapers. GPU-rendered. Built with Rust.
+**Native Wayland wallpapers. GPU-rendered. Built with Rust.**
 
-<p>
-  <a href="https://github.com/programmersd21/wallr">
-    <img width="860" alt="Wallr Demo" src="https://raw.githubusercontent.com/programmersd21/wallr/main/assets/demo.gif">
-  </a>
-</p>
+<a href="https://github.com/programmersd21/wallr">
+  <img
+    src="https://raw.githubusercontent.com/programmersd21/wallr/main/assets/demo.gif"
+    alt="Wallr Demo"
+    width="860">
+</a>
 
-<p>
-  <a href="https://github.com/programmersd21/wallr/stargazers">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/stars/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
-      <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/github/stars/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
-      <img alt="GitHub Stars" src="https://shieldcn.dev/github/stars/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
-    </picture>
-  </a>
-  <a href="https://github.com/programmersd21/wallr/releases/latest">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/release/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
-      <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/github/release/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
-      <img alt="Latest Release" src="https://shieldcn.dev/github/release/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
-    </picture>
-  </a>
-  <a href="https://github.com/programmersd21/wallr/releases">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/downloads/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
-      <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/github/downloads/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
-      <img alt="Downloads" src="https://shieldcn.dev/github/downloads/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
-    </picture>
-  </a>
-  <a href="https://github.com/programmersd21/wallr/actions">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/ci/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
-      <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/github/ci/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
-      <img alt="CI" src="https://shieldcn.dev/github/ci/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
-    </picture>
-  </a>
-  <a href="https://github.com/programmersd21/wallr/blob/main/LICENSE">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/license/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
-      <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/github/license/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
-      <img alt="License" src="https://shieldcn.dev/github/license/programmersd21/wallr.svg?variant=outline&mode=light&font=geist&size=sm">
-    </picture>
-  </a>
-</p>
+<br><br>
 
-<p>
-  <a href="https://crates.io/crates/wallr">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/crates/wallr.svg?variant=ghost&mode=dark&font=geist&size=sm">
-      <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/crates/wallr.svg?variant=ghost&mode=light&font=geist&size=sm">
-      <img alt="crates.io" src="https://shieldcn.dev/crates/wallr.svg?variant=ghost&mode=light&font=geist&size=sm">
-    </picture>
-  </a>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/Wayland-native-7c3aed.svg?variant=ghost&mode=dark&font=geist">
-    <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/badge/Wayland-native-7c3aed.svg?variant=ghost&mode=light&font=geist">
-    <img alt="Wayland" src="https://shieldcn.dev/badge/Wayland-native-7c3aed.svg?variant=ghost&mode=light&font=geist">
-  </picture>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/wgpu-renderer-8b5cf6.svg?variant=ghost&mode=dark&font=geist">
-    <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/badge/wgpu-renderer-8b5cf6.svg?variant=ghost&mode=light&font=geist">
-    <img alt="wgpu" src="https://shieldcn.dev/badge/wgpu-renderer-8b5cf6.svg?variant=ghost&mode=light&font=geist">
-  </picture>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/Rust-memory_safe-f97316.svg?variant=ghost&mode=dark&font=geist">
-    <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/badge/Rust-memory_safe-f97316.svg?variant=ghost&mode=light&font=geist">
-    <img alt="Rust" src="https://shieldcn.dev/badge/Rust-memory_safe-f97316.svg?variant=ghost&mode=light&font=geist">
-  </picture>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/Linux-first-22c55e.svg?variant=ghost&mode=dark&font=geist">
-    <source media="(prefers-color-scheme: light)" srcset="https://shieldcn.dev/badge/Linux-first-22c55e.svg?variant=ghost&mode=light&font=geist">
-    <img alt="Linux" src="https://shieldcn.dev/badge/Linux-first-22c55e.svg?variant=ghost&mode=light&font=geist">
-  </picture>
-</p>
+<a href="https://github.com/programmersd21/wallr/stargazers">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/stars/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist">
+  <img alt="Stars" src="https://shieldcn.dev/github/stars/programmersd21/wallr.svg?variant=outline&mode=light&font=geist">
+</picture>
+</a>
 
-<p>
-  A lightweight wallpaper engine that renders its own <code>wl-layer-shell</code> surface using <b>wgpu</b>.<br>
-  Smooth GPU transitions, native Wayland rendering, and zero wrapper daemons.
-</p>
+<a href="https://github.com/programmersd21/wallr/releases/latest">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/release/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist">
+  <img alt="Release" src="https://shieldcn.dev/github/release/programmersd21/wallr.svg?variant=outline&mode=light&font=geist">
+</picture>
+</a>
+
+<a href="https://github.com/programmersd21/wallr/releases">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/downloads/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist">
+  <img alt="Downloads" src="https://shieldcn.dev/github/downloads/programmersd21/wallr.svg?variant=outline&mode=light&font=geist">
+</picture>
+</a>
+
+<a href="https://github.com/programmersd21/wallr/actions">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/ci/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist">
+  <img alt="CI" src="https://shieldcn.dev/github/ci/programmersd21/wallr.svg?variant=outline&mode=light&font=geist">
+</picture>
+</a>
+
+<a href="https://github.com/programmersd21/wallr/blob/main/LICENSE">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/github/license/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist">
+  <img alt="License" src="https://shieldcn.dev/github/license/programmersd21/wallr.svg?variant=outline&mode=light&font=geist">
+</picture>
+</a>
+
+<br>
+
+<a href="https://crates.io/crates/wallr">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/crates/wallr.svg?variant=ghost&mode=dark&font=geist">
+  <img alt="crates.io" src="https://shieldcn.dev/crates/wallr.svg?variant=ghost&mode=light&font=geist">
+</picture>
+</a>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/Wayland-native-7c3aed.svg?variant=ghost&mode=dark&font=geist">
+  <img alt="Wayland" src="https://shieldcn.dev/badge/Wayland-native-7c3aed.svg?variant=ghost&mode=light&font=geist">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/wgpu-renderer-8b5cf6.svg?variant=ghost&mode=dark&font=geist">
+  <img alt="wgpu" src="https://shieldcn.dev/badge/wgpu-renderer-8b5cf6.svg?variant=ghost&mode=light&font=geist">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/Rust-memory_safe-f97316.svg?variant=ghost&mode=dark&font=geist">
+  <img alt="Rust" src="https://shieldcn.dev/badge/Rust-memory_safe-f97316.svg?variant=ghost&mode=light&font=geist">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://shieldcn.dev/badge/Linux-first-22c55e.svg?variant=ghost&mode=dark&font=geist">
+  <img alt="Linux" src="https://shieldcn.dev/badge/Linux-first-22c55e.svg?variant=ghost&mode=light&font=geist">
+</picture>
+
+<br><br>
+
+> GPU-accelerated wallpaper engine for Wayland with native `wl-layer-shell` rendering powered by **wgpu**.
 
 </div>
 
