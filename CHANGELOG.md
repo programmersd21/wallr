@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1
+## 0.2.2
 
 - Shader-level scaling modes: `fill` (cover), `fit` (contain), `stretch`, `center` (1:1), `tile` (repeat). Applied via `--mode` on CLI or `wallpaper.mode` in config.
 - Fix NVIDIA hardware acceleration fallback: when both VAAPI and NVDEC are present, the decoder now tries all backends before falling back to software (fixes #4).
@@ -10,6 +10,11 @@
 - Remove dead code (`let _ = newest`, `thread_sleep` wrapper).
 - Remove restating doc comments across all video module files.
 - Clean up AI-generated comment patterns across the codebase.
+
+## 0.2.1
+
+- Pass `--mode` and `--monitor` through IPC instead of silently discarding them (fixes #3).
+- Fix NVIDIA hardware acceleration fallback.
 
 ## 0.2.0
 
