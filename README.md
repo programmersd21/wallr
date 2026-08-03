@@ -37,7 +37,7 @@
   <img alt="License" src="https://shieldcn.dev/github/license/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist">
 </a>
 
-<br>s
+<br>
 
 <a href="https://wayland.freedesktop.org/">
   <img alt="Wayland" src="https://shieldcn.dev/badge/Wayland-Native-violet.svg?variant=secondary&theme=zinc&font=geist">
