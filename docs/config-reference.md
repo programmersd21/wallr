@@ -15,3 +15,5 @@ watch: {enabled: false, dir: ~/Pictures/Wallpapers, debounce: 500ms}
 cache: {dir: ~/.cache/wallr, max_size: 512MB}
 plugins: {matugen: {enabled: false}, wallust: {enabled: false}, pywal: {enabled: false}}
 ```
+
+`wallpaper.mode` accepts: `fill` (cover, default), `fit` (contain with letterbox), `stretch`, `center` (1:1), or `tile` (repeat).

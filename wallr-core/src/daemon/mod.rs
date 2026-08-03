@@ -266,6 +266,8 @@ struct RenderState {
     video_playback: std::sync::Arc<crate::video::VideoPlayback>,
     /// Hardware backend to request for new decoders (from `video.hw_decode`).
     hw_accel: crate::video::HwAccel,
+    /// Current scaling mode for live playback.
+    scaling_mode: u32,
 }
 
 /// Everything the transition render task needs; the daemon state has already
@@ -288,6 +290,8 @@ struct CommitData {
     /// Playback generation captured at commit time; live playback stops when
     /// it no longer matches `RenderState::playback_gen`.
     generation: u64,
+    /// Scaling mode: 0=Fill, 1=Fit, 2=Stretch, 3=Center, 4=Tile.
+    scaling_mode: u32,
 }
 
 impl RenderState {
@@ -296,8 +300,10 @@ impl RenderState {
         path: &std::path::Path,
         effect: &crate::animation::Effect,
         duration_ms: u32,
+        scaling_mode: u32,
     ) -> anyhow::Result<()> {
-        let commit = self.commit_wallpaper(path)?;
+        self.scaling_mode = scaling_mode;
+        let commit = self.commit_wallpaper(path, scaling_mode)?;
         self.spawn_transition(commit, effect, duration_ms);
         Ok(())
     }
@@ -305,7 +311,11 @@ impl RenderState {
     /// Loads the new wallpaper and atomically promotes it to the current
     /// frame. The outgoing bind group stays alive for the transition, so the
     /// render task can keep drawing from it after this commit returns.
-    fn commit_wallpaper(&mut self, path: &std::path::Path) -> anyhow::Result<CommitData> {
+    fn commit_wallpaper(
+        &mut self,
+        path: &std::path::Path,
+        scaling_mode: u32,
+    ) -> anyhow::Result<CommitData> {
         use image::ImageReader;
 
         // Check if this is a video file FIRST
@@ -374,6 +384,7 @@ impl RenderState {
                 animated: None,
                 is_video: true,
                 generation,
+                scaling_mode,
             });
         }
 
@@ -433,6 +444,7 @@ impl RenderState {
             animated,
             is_video: false,
             generation,
+            scaling_mode,
         })
     }
 
@@ -509,6 +521,7 @@ fn render_transition(
             img_height: commit.img_height,
             old_img_width: commit.old_img_width,
             old_img_height: commit.old_img_height,
+            scaling_mode: commit.scaling_mode,
         });
         let status = match status {
             Ok(status) => status,
@@ -669,6 +682,7 @@ fn play_live(
             img_height: animated.height,
             old_img_width: animated.width,
             old_img_height: animated.height,
+            scaling_mode: commit.scaling_mode,
         });
         match status {
             Ok(crate::renderer::FrameStatus::Presented) => {}
@@ -767,6 +781,7 @@ fn play_video(
             img_height: height,
             old_img_width: width,
             old_img_height: height,
+            scaling_mode: commit.scaling_mode,
         });
 
         match status {
@@ -953,6 +968,7 @@ impl Daemon {
             format: surf_format,
             video_playback: std::sync::Arc::new(crate::video::VideoPlayback::new()),
             hw_accel: crate::video::HwAccel::from_config(&self.config.video.hw_decode),
+            scaling_mode: 0,
         }));
 
         {
@@ -965,7 +981,7 @@ impl Daemon {
                     let mut rs = render_state.lock().await;
                     let effect =
                         crate::animation::Effect::Fade(crate::animation::FadeParams::default());
-                    let _ = rs.set_wallpaper(p, &effect, 0).await;
+                    let _ = rs.set_wallpaper(p, &effect, 0, 0).await;
                 }
             }
         }
@@ -1045,7 +1061,7 @@ impl Daemon {
                         no_theme,
                         theme_override,
                         monitor,
-                        scaling_mode: _,
+                        scaling_mode,
                     } => {
                         if paused.load(Ordering::SeqCst) {
                             return IpcResponse {
@@ -1077,6 +1093,14 @@ impl Daemon {
                         // Default to a short fade unless the user asked for one.
                         let is_video = crate::video::VideoDecoder::is_video_file(&p);
                         let duration = duration_ms.unwrap_or(if is_video { 150 } else { 2000 });
+                        let sm = scaling_mode.unwrap_or(crate::config::ScalingMode::Fill);
+                        let scaling_mode_u32 = match sm {
+                            crate::config::ScalingMode::Fill => 0u32,
+                            crate::config::ScalingMode::Fit => 1,
+                            crate::config::ScalingMode::Stretch => 2,
+                            crate::config::ScalingMode::Center => 3,
+                            crate::config::ScalingMode::Tile => 4,
+                        };
 
                         let rs_clone = rs.clone();
                         let p_clone = p.clone();
@@ -1084,7 +1108,8 @@ impl Daemon {
                             let rt = tokio::runtime::Handle::current();
                             rt.block_on(async {
                                 let mut lock = rs_clone.lock().await;
-                                lock.set_wallpaper(&p_clone, &effect, duration).await
+                                lock.set_wallpaper(&p_clone, &effect, duration, scaling_mode_u32)
+                                    .await
                             })
                         })
                         .await;
@@ -1315,7 +1340,7 @@ impl Daemon {
                     let mut lock = rs.lock().await;
                     let effect =
                         crate::animation::Effect::Fade(crate::animation::FadeParams::default());
-                    let _ = lock.set_wallpaper(&p, &effect, 600).await;
+                    let _ = lock.set_wallpaper(&p, &effect, 600, 0).await;
                     drop(lock);
                     let opts = SetOptions {
                         no_theme: false,
