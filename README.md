@@ -1,6 +1,6 @@
 <div align="center">
 
-# Wallr
+### *Wallr*
 
 **Native Wayland wallpapers. GPU-rendered. Built with Rust.**
 
