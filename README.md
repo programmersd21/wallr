@@ -25,7 +25,7 @@
 <a href="https://wgpu.rs/"><img alt="wgpu" src="https://shieldcn.dev/badge/wgpu-Renderer-blue.svg?variant=secondary&theme=zinc&font=geist"></a>
 <a href="https://www.rust-lang.org/"><img alt="Rust" src="https://shieldcn.dev/badge/Rust-2024-orange.svg?variant=secondary&theme=zinc&font=geist"></a>
 
-<br><br>
+<br>
 
 GPU-accelerated wallpaper engine for Wayland with native `wl-layer-shell` rendering powered by **wgpu**.
 
