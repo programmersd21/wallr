@@ -23,7 +23,7 @@ struct Uniforms {
     origin: vec2<f32>,
     direction: vec2<f32>,
     easing: u32,
-    padding2: u32,
+    scaling_mode: u32, // 0=Fill, 1=Fit, 2=Stretch, 3=Center, 4=Tile
 };
 
 @group(2) @binding(0) var<uniform> uniforms: Uniforms;
@@ -93,6 +93,63 @@ fn cover_uv(uv: vec2<f32>, image_resolution: vec2<f32>, screen_resolution: vec2<
     return result;
 }
 
+fn fit_uv(uv: vec2<f32>, image_resolution: vec2<f32>, screen_resolution: vec2<f32>) -> vec2<f32> {
+    let screen_ratio = screen_resolution.x / max(screen_resolution.y, 1.0);
+    let image_ratio = image_resolution.x / max(image_resolution.y, 1.0);
+    var result = uv;
+    if (screen_ratio > image_ratio) {
+        // Screen is wider: pillarbox (scale image to fit height, add side bars)
+        let scale = screen_ratio / image_ratio;
+        result.x = (uv.x - 0.5) * scale + 0.5;
+    } else {
+        // Screen is taller: letterbox (scale image to fit width, add top/bottom bars)
+        let scale = image_ratio / screen_ratio;
+        result.y = (uv.y - 0.5) * scale + 0.5;
+    }
+    return result;
+}
+
+fn stretch_uv(uv: vec2<f32>) -> vec2<f32> {
+    return uv;
+}
+
+fn center_uv(uv: vec2<f32>, image_resolution: vec2<f32>, screen_resolution: vec2<f32>) -> vec2<f32> {
+    // Scale image to fit within the screen (no cropping), then center it.
+    let scale_x = screen_resolution.x / max(image_resolution.x, 1.0);
+    let scale_y = screen_resolution.y / max(image_resolution.y, 1.0);
+    let scale = min(scale_x, scale_y);
+    let img_w = image_resolution.x * scale / screen_resolution.x;
+    let img_h = image_resolution.y * scale / screen_resolution.y;
+    let offset_x = (1.0 - img_w) * 0.5;
+    let offset_y = (1.0 - img_h) * 0.5;
+    let result = (uv - vec2<f32>(offset_x, offset_y)) / vec2<f32>(max(img_w, 0.001), max(img_h, 0.001));
+    return result;
+}
+
+fn tile_uv(uv: vec2<f32>, image_resolution: vec2<f32>, screen_resolution: vec2<f32>) -> vec2<f32> {
+    let scale_x = screen_resolution.x / max(image_resolution.x, 1.0);
+    let scale_y = screen_resolution.y / max(image_resolution.y, 1.0);
+    let tiled = uv * vec2<f32>(scale_x, scale_y);
+    return fract(tiled);
+}
+
+fn scale_uv(uv: vec2<f32>, image_resolution: vec2<f32>, screen_resolution: vec2<f32>, mode: u32) -> vec2<f32> {
+    if (mode == 1u) {
+        return fit_uv(uv, image_resolution, screen_resolution);
+    }
+    if (mode == 2u) {
+        return stretch_uv(uv);
+    }
+    if (mode == 3u) {
+        return center_uv(uv, image_resolution, screen_resolution);
+    }
+    if (mode == 4u) {
+        return tile_uv(uv, image_resolution, screen_resolution);
+    }
+    // Default: 0 = Fill (cover)
+    return cover_uv(uv, image_resolution, screen_resolution);
+}
+
 // Quintic interpolation keeps the edge velocity at zero at both ends. It is
 // less mechanical than smoothstep for a large, visible wipe feather.
 fn smootherstep(edge0: f32, edge1: f32, value: f32) -> f32 {
@@ -154,11 +211,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let p = apply_easing(clamp(uniforms.progress, 0.0, 1.0), uniforms.easing);
     
     let screen_ratio = uniforms.resolution.x / max(uniforms.resolution.y, 1.0);
-    // Keep the two source images in their own cover rectangles. Reusing the
+    // Keep the two source images in their own scale rectangles. Reusing the
     // incoming image's crop for the outgoing image causes visible geometry
     // shifts whenever consecutive wallpapers have different aspect ratios.
-    let uv_old = cover_uv(uv, uniforms.old_image_resolution, uniforms.resolution);
-    let uv_new = cover_uv(uv, uniforms.image_resolution, uniforms.resolution);
+    let uv_old = scale_uv(uv, uniforms.old_image_resolution, uniforms.resolution, uniforms.scaling_mode);
+    let uv_new = scale_uv(uv, uniforms.image_resolution, uniforms.resolution, uniforms.scaling_mode);
 
     // Exact endpoint frames prevent a soft mask from leaving a one-pixel seam
     // at an edge or corner after the daemon promotes the incoming texture.

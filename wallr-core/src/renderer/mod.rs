@@ -33,7 +33,7 @@ pub struct Uniforms {
     pub origin: [f32; 2],
     pub direction: [f32; 2],
     pub easing: u32,
-    pub padding2: u32,
+    pub scaling_mode: u32,
 }
 
 impl Uniforms {
@@ -53,7 +53,7 @@ impl Uniforms {
             origin: effect.origin,
             direction: effect.direction,
             easing: effect.easing,
-            padding2: 0,
+            scaling_mode: 0,
         }
     }
 }
@@ -156,7 +156,7 @@ impl Renderer {
             origin: [0.5, 0.5],
             direction: [0.0, 0.0],
             easing: 3,
-            padding2: 0,
+            scaling_mode: 0,
         };
 
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -339,11 +339,13 @@ impl Renderer {
             img_height,
             old_img_width,
             old_img_height,
+            scaling_mode,
         } = request;
         let mut uniforms = Uniforms::from_effect(effect);
         uniforms.resolution = [width as f32, height as f32];
         uniforms.image_resolution = [img_width as f32, img_height as f32];
         uniforms.old_image_resolution = [old_img_width as f32, old_img_height as f32];
+        uniforms.scaling_mode = scaling_mode;
         self.update_uniforms(uniforms);
 
         let pipeline = self.get_pipeline(format);
@@ -426,4 +428,6 @@ pub struct FrameRequest<'a> {
     pub img_height: u32,
     pub old_img_width: u32,
     pub old_img_height: u32,
+    /// Scaling mode: 0=Fill, 1=Fit, 2=Stretch, 3=Center, 4=Tile.
+    pub scaling_mode: u32,
 }

@@ -29,6 +29,7 @@ Theme generation (Matugen, Wallust, Pywal) is supported as an optional step that
 - 11 built-in transitions: fade, blur, wipe, slide, zoom, pixelate, ripple, dissolve, wave, grow, outer.
 - GIF wallpapers, decoded once and cached to avoid re-decoding on loop.
 - Video wallpapers (MP4, WebM, MKV) with hardware-accelerated decoding via FFmpeg.
+- Five scaling modes: fill (cover), fit (contain), stretch, center (1:1), tile (repeat).
 - Transition duration is wall-clock based, independent of monitor refresh rate.
 - Background daemon (`wallr daemon`) that owns the surface over a Unix socket.
 - Directory watching (`wallr watch`) to apply new files automatically.

@@ -2,6 +2,7 @@
 
 ## 0.2.1
 
+- Shader-level scaling modes: `fill` (cover), `fit` (contain), `stretch`, `center` (1:1), `tile` (repeat). Applied via `--mode` on CLI or `wallpaper.mode` in config.
 - Fix NVIDIA hardware acceleration fallback: when both VAAPI and NVDEC are present, the decoder now tries all backends before falling back to software (fixes #4).
 - Pass `--mode` and `--monitor` through IPC instead of silently discarding them (fixes #3).
 - Remove dead `VideoSource` trait and duplicate impl blocks.

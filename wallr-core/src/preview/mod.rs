@@ -407,6 +407,7 @@ impl PreviewApp {
             img_height: img_h,
             old_img_width: old_w,
             old_img_height: old_h,
+            scaling_mode: 0,
         }) {
             Ok(crate::renderer::FrameStatus::TimedOut) => {
                 // The surface is not presenting right now (e.g. the window is
@@ -462,6 +463,7 @@ impl PreviewApp {
             img_height: h,
             old_img_width: w,
             old_img_height: h,
+            scaling_mode: 0,
         }) {
             Ok(crate::renderer::FrameStatus::TimedOut) => {}
             Err(e) => {
@@ -520,6 +522,7 @@ impl PreviewApp {
             img_height: anim.height,
             old_img_width: anim.width,
             old_img_height: anim.height,
+            scaling_mode: 0,
         }) {
             Ok(crate::renderer::FrameStatus::TimedOut) => {}
             Err(e) => {

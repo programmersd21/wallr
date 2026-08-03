@@ -156,7 +156,7 @@ async fn main() -> Result<()> {
                     no_theme,
                     theme_override: theme,
                     monitor,
-                    scaling_mode: mode,
+                    scaling_mode: mode.or(Some(config.wallpaper.mode.clone())),
                 },
             )
             .await?;
