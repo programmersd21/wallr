@@ -3,10 +3,12 @@
 ## 0.2.3
 
 - Per-monitor wallpaper support: each Wayland output gets its own LayerSurface, wgpu Surface, and RenderState. Wallpapers can be set per-output via `--monitor` on CLI.
-- `wallr monitor list` and `wallr monitor current` now query the daemon via IPC for real output info.
+- `wallr monitor list` and `wallr monitor current` query the daemon via IPC for real output info.
 - Per-output last wallpaper persistence: `wallr/last_wallpaper/{output_name}` instead of a single file.
 - File watcher applies new images to all connected outputs.
 - IPC `Pause`/`Resume` affect all outputs simultaneously.
+- Fix output name resolution: compositor-provided names (e.g. `DP-1`, `HDMI-A-1`) are now correctly applied. Fallback to description, then make+model, then generated ID.
+- Increase startup roundtrips from 2 to 5 to catch lazy compositor output events.
 
 ## 0.2.2
 
