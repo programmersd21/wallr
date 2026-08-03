@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.3
+
+- Per-monitor wallpaper support: each Wayland output gets its own LayerSurface, wgpu Surface, and RenderState. Wallpapers can be set per-output via `--monitor` on CLI.
+- `wallr monitor list` and `wallr monitor current` now query the daemon via IPC for real output info.
+- Per-output last wallpaper persistence: `wallr/last_wallpaper/{output_name}` instead of a single file.
+- File watcher applies new images to all connected outputs.
+- IPC `Pause`/`Resume` affect all outputs simultaneously.
+
 ## 0.2.2
 
 - Shader-level scaling modes: `fill` (cover), `fit` (contain), `stretch`, `center` (1:1), `tile` (repeat). Applied via `--mode` on CLI or `wallpaper.mode` in config.

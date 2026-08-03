@@ -2,19 +2,46 @@
 
 # Wallr
 
-Wallpaper engine for Wayland.
+### Native Wayland wallpapers. GPU-rendered. Built with Rust.
 
-![demo](https://raw.githubusercontent.com/programmersd21/wallr/main/assets/demo.gif)
+<p>
+  <a href="https://github.com/programmersd21/wallr">
+    <img width="860" alt="Wallr Demo" src="https://raw.githubusercontent.com/programmersd21/wallr/main/assets/demo.gif">
+  </a>
+</p>
 
-[![License](https://img.shields.io/badge/License-MIT-000000?style=for-the-badge&labelColor=000000&color=8b5cf6)](LICENSE)
-[![Rust](https://img.shields.io/badge/Rust-stable-000000?style=for-the-badge&labelColor=000000&color=dea584&logo=rust&logoColor=white)](https://www.rust-lang.org)
-[![Wayland](https://img.shields.io/badge/Wayland-native-000000?style=for-the-badge&labelColor=000000&color=22d3ee&logo=wayland&logoColor=white)](https://wayland.freedesktop.org)
-[![GPU](https://img.shields.io/badge/GPU-wgpu-000000?style=for-the-badge&labelColor=000000&color=4ade80)](https://wgpu.rs)
-[![Crates.io](https://img.shields.io/crates/v/wallr?style=for-the-badge&labelColor=000000&color=f97316&label=Crates.io)](https://crates.io/crates/wallr)
-[![CI](https://img.shields.io/github/actions/workflow/status/programmersd21/wallr/ci.yml?style=for-the-badge&labelColor=000000&color=22c55e&label=CI)](https://github.com/programmersd21/wallr/actions/workflows/ci.yml)
-[![Downloads](https://img.shields.io/github/downloads/programmersd21/wallr/total?style=for-the-badge&labelColor=000000&color=38bdf8&label=Downloads)](https://github.com/programmersd21/wallr/releases)
-[![Stars](https://img.shields.io/github/stars/programmersd21/wallr?style=for-the-badge&labelColor=000000&color=facc15&label=Stars)](https://github.com/programmersd21/wallr/stargazers)
-[![PRs Welcome](https://img.shields.io/badge/PRs%20Welcome-welcome-000000?style=for-the-badge&labelColor=000000&color=ec4899)](CONTRIBUTING.md)
+<p>
+  <a href="https://github.com/programmersd21/wallr/stargazers">
+    <img alt="GitHub Stars" src="https://shieldcn.dev/github/stars/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
+  </a>
+  <a href="https://github.com/programmersd21/wallr/releases/latest">
+    <img alt="Latest Release" src="https://shieldcn.dev/github/release/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
+  </a>
+  <a href="https://github.com/programmersd21/wallr/releases">
+    <img alt="Downloads" src="https://shieldcn.dev/github/downloads/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
+  </a>
+  <a href="https://github.com/programmersd21/wallr/actions">
+    <img alt="CI" src="https://shieldcn.dev/github/ci/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
+  </a>
+  <a href="https://github.com/programmersd21/wallr/blob/main/LICENSE">
+    <img alt="License" src="https://shieldcn.dev/github/license/programmersd21/wallr.svg?variant=outline&mode=dark&font=geist&size=sm">
+  </a>
+</p>
+
+<p>
+  <a href="https://crates.io/crates/wallr">
+    <img alt="crates.io" src="https://shieldcn.dev/crates/wallr.svg?variant=ghost&mode=dark&font=geist&size=sm">
+  </a>
+  <img alt="Wayland" src="https://shieldcn.dev/badge/Wayland-native-7c3aed.svg?variant=ghost&mode=dark&font=geist">
+  <img alt="wgpu" src="https://shieldcn.dev/badge/wgpu-renderer-8b5cf6.svg?variant=ghost&mode=dark&font=geist">
+  <img alt="Rust" src="https://shieldcn.dev/badge/Rust-memory_safe-f97316.svg?variant=ghost&mode=dark&font=geist">
+  <img alt="Linux" src="https://shieldcn.dev/badge/Linux-first-22c55e.svg?variant=ghost&mode=dark&font=geist">
+</p>
+
+<p>
+  A lightweight wallpaper engine that renders its own <code>wl-layer-shell</code> surface using <b>wgpu</b>.<br>
+  Smooth GPU transitions, native Wayland rendering, and zero wrapper daemons.
+</p>
 
 </div>
 
