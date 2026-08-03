@@ -8,7 +8,7 @@
   <img src="https://raw.githubusercontent.com/programmersd21/wallr/main/assets/demo.gif" alt="Wallr Demo" width="860">
 </a>
 
-<br><br>
+<br>
 
 <!-- Project stats -->
 <a href="https://github.com/programmersd21/wallr/stargazers"><img alt="Stars" src="https://shieldcn.dev/github/stars/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist"></a>
@@ -18,14 +18,10 @@
 <a href="https://github.com/programmersd21/wallr/actions"><img alt="CI" src="https://shieldcn.dev/github/ci/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist"></a>
 <a href="https://github.com/programmersd21/wallr/blob/main/LICENSE"><img alt="License" src="https://shieldcn.dev/github/license/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist"></a>
 
-<br>
-
 <!-- Tech stack -->
 <a href="https://wayland.freedesktop.org/"><img alt="Wayland" src="https://shieldcn.dev/badge/Wayland-Native-violet.svg?variant=secondary&theme=zinc&font=geist"></a>
 <a href="https://wgpu.rs/"><img alt="wgpu" src="https://shieldcn.dev/badge/wgpu-Renderer-blue.svg?variant=secondary&theme=zinc&font=geist"></a>
 <a href="https://www.rust-lang.org/"><img alt="Rust" src="https://shieldcn.dev/badge/Rust-2024-orange.svg?variant=secondary&theme=zinc&font=geist"></a>
-
-<br>
 
 GPU-accelerated wallpaper engine for Wayland with native `wl-layer-shell` rendering powered by **wgpu**.
 
