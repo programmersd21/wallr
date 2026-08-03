@@ -18,11 +18,12 @@ pub enum IpcCommand {
         duration_ms: Option<u32>,
         #[serde(default)]
         no_theme: bool,
-        /// Per-invocation theme provider override (wins over config).
         #[serde(default)]
         theme_override: Option<crate::config::ThemeProvider>,
         #[serde(default)]
         monitor: Option<String>,
+        #[serde(default)]
+        scaling_mode: Option<crate::config::ScalingMode>,
     },
     Stop,
     Status,

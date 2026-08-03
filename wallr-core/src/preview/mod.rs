@@ -421,9 +421,8 @@ impl PreviewApp {
         }
     }
 
-    /// Streams video frames into the preview window, mirroring the daemon's
-    /// `play_video` loop: pull the next displayable frame per vsync and
-    /// present it, never blocking on the bounded decoder queue.
+    /// Mirrors the daemon's `play_video` loop: pull the next displayable frame
+    /// per vsync and present it, never blocking on the bounded decoder queue.
     fn render_video_frame(&mut self, event_loop: &ActiveEventLoop) {
         let Some(renderer) = &self.renderer else {
             return;

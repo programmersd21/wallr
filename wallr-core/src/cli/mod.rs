@@ -75,7 +75,6 @@ impl EffectArgs {
         effect
     }
 
-    /// Convert the override flags into `EffectOverrides`.
     pub fn to_overrides(&self) -> EffectOverrides {
         let origin = self.origin.as_deref().and_then(parse_origin);
         EffectOverrides {
@@ -128,7 +127,6 @@ fn parse_vec2(s: &str) -> Option<[f32; 2]> {
     Some([x, y])
 }
 
-/// Wallr CLI configuration
 #[derive(Parser, Debug)]
 #[command(
     name = "wallr",

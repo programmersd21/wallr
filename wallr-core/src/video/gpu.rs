@@ -1,24 +1,14 @@
-//! GPU adapter detection and selection for hybrid GPU systems.
-//!
-//! Provides intelligent GPU selection to avoid forcing rendering on discrete GPUs
-//! when an integrated GPU is available and preferred.
-
 use crate::video::error::{VideoError, VideoResult};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// GPU selection preference.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum GpuSelection {
-    /// Automatically select the best GPU (prefer compositor GPU).
     #[default]
     Auto,
-    /// Prefer integrated GPU (Intel iGPU, AMD APU).
     Integrated,
-    /// Prefer discrete GPU (NVIDIA, AMD dGPU).
     Discrete,
-    /// Select a specific adapter by name.
     Named(String),
 }
 
@@ -33,7 +23,6 @@ impl fmt::Display for GpuSelection {
     }
 }
 
-/// Information about a detected GPU adapter.
 #[derive(Debug, Clone)]
 pub struct AdapterInfo {
     pub name: String,
@@ -44,12 +33,10 @@ pub struct AdapterInfo {
 }
 
 impl AdapterInfo {
-    /// Returns true if this adapter is an integrated GPU.
     pub fn is_integrated(&self) -> bool {
         self.device_type == wgpu::DeviceType::IntegratedGpu
     }
 
-    /// Returns true if this adapter is a discrete GPU.
     pub fn is_discrete(&self) -> bool {
         self.device_type == wgpu::DeviceType::DiscreteGpu
     }
@@ -65,10 +52,8 @@ impl fmt::Display for AdapterInfo {
     }
 }
 
-/// Detect all available GPU adapters.
 pub async fn detect_adapters(instance: &wgpu::Instance) -> Vec<AdapterInfo> {
     let mut adapters = Vec::new();
-
     for adapter in instance.enumerate_adapters(wgpu::Backends::all()) {
         let info = adapter.get_info();
         adapters.push(AdapterInfo {
@@ -79,56 +64,40 @@ pub async fn detect_adapters(instance: &wgpu::Instance) -> Vec<AdapterInfo> {
             driver_info: info.driver_info.clone(),
         });
     }
-
     tracing::info!("Detected {} GPU adapter(s)", adapters.len());
-    for (i, adapter) in adapters.iter().enumerate() {
-        tracing::info!("  [{}] {}", i, adapter);
+    for (i, a) in adapters.iter().enumerate() {
+        tracing::info!("  [{}] {}", i, a);
     }
-
     adapters
 }
 
-/// Select the best GPU adapter according to the given preference.
-///
-/// Selection strategy:
-/// - `Auto`: Prefer integrated GPU if available, otherwise use discrete
-/// - `Integrated`: Select the first integrated GPU
-/// - `Discrete`: Select the first discrete GPU
-/// - `Named`: Select by exact name match
-///
-/// Falls back gracefully if the requested adapter is not available.
 pub async fn select_adapter(
     instance: &wgpu::Instance,
     preference: &GpuSelection,
 ) -> VideoResult<wgpu::Adapter> {
     let adapters = detect_adapters(instance).await;
-
     if adapters.is_empty() {
         return Err(VideoError::AdapterNotFound(
             "No GPU adapters detected".to_string(),
         ));
     }
 
-    let selected_info = match preference {
-        GpuSelection::Auto => {
-            // Prefer integrated GPU to avoid unnecessary power consumption
-            adapters
-                .iter()
-                .find(|a| a.is_integrated())
-                .or_else(|| adapters.first())
-        }
+    let selected = match preference {
+        GpuSelection::Auto => adapters
+            .iter()
+            .find(|a| a.is_integrated())
+            .or_else(|| adapters.first()),
         GpuSelection::Integrated => adapters.iter().find(|a| a.is_integrated()),
         GpuSelection::Discrete => adapters.iter().find(|a| a.is_discrete()),
         GpuSelection::Named(name) => adapters.iter().find(|a| a.name.contains(name)),
     };
 
-    let selected_info = selected_info.ok_or_else(|| {
+    let selected = selected.ok_or_else(|| {
         VideoError::AdapterNotFound(format!("No adapter matching preference: {}", preference))
     })?;
 
-    tracing::info!("Selected GPU adapter: {}", selected_info);
+    tracing::info!("Selected GPU adapter: {}", selected);
 
-    // Now request the actual adapter from wgpu
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: match preference {
@@ -147,7 +116,6 @@ pub async fn select_adapter(
     Ok(adapter)
 }
 
-/// Get diagnostic information about the selected adapter for `wallr info`.
 pub fn adapter_diagnostics(adapter: &wgpu::Adapter) -> String {
     let info = adapter.get_info();
     format!(

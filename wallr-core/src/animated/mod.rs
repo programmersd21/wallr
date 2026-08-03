@@ -25,12 +25,10 @@ enum CachedFrame {
     Zstd(Vec<u8>),
 }
 
-/// A cursor over a GIF file that yields frames in order.
 struct GifReader {
     decoder: gif::Decoder<std::io::BufReader<std::fs::File>>,
 }
 
-/// A decoded frame with its placement metadata.
 struct DecodedFrame {
     left: u16,
     top: u16,
@@ -66,7 +64,6 @@ impl GifReader {
     }
 }
 
-/// Timeline metadata collected by the header scan.
 struct GifInfo {
     width: u32,
     height: u32,
@@ -76,7 +73,6 @@ struct GifInfo {
     opaque: bool,
 }
 
-/// An animated GIF streamed on demand during live playback.
 pub struct AnimatedImage {
     path: PathBuf,
     pub width: u32,
@@ -86,21 +82,17 @@ pub struct AnimatedImage {
     /// Per-frame cached data, `None` when not (yet) cached.
     cache: Vec<Option<CachedFrame>>,
     cache_bytes: usize,
-    /// Streaming decoder positioned after `next_index` frames.
     reader: Option<GifReader>,
     next_index: usize,
     /// Canvas for transparency compositing; also the scratch target for
     /// freshly decoded opaque frames.
     canvas: Vec<u8>,
-    /// Scratch buffer for zstd decompression.
     scratch: Vec<u8>,
     /// Persistent zstd context, reused across frames (creating one per call
     /// is measurably slower).
     decompressor: zstd::bulk::Decompressor<'static>,
-    /// Saved canvas region for `DisposalMethod::Previous` frames.
     prev_save: Vec<u8>,
     opaque: bool,
-    /// Cache mode: raw when the whole animation fits the budget.
     raw_cache: bool,
 }
 
@@ -269,7 +261,6 @@ impl AnimatedImage {
         self.frame_at(0)
     }
 
-    /// RGBA8 bytes of the frame at `index`.
     pub fn frame_at(&mut self, index: usize) -> &[u8] {
         let index = index.min(self.delays.len().saturating_sub(1));
         self.ensure_upto(index);
@@ -331,17 +322,14 @@ impl AnimatedImage {
         self.delays.iter().take(index).copied().sum()
     }
 
-    /// Total number of frames in the animation.
     pub fn frame_count(&self) -> usize {
         self.delays.len()
     }
 
-    /// Bytes currently held by the frame cache.
     pub fn cache_bytes(&self) -> usize {
         self.cache_bytes
     }
 
-    /// Number of frames stored uncompressed.
     pub fn raw_cached(&self) -> usize {
         self.cache
             .iter()
@@ -349,7 +337,6 @@ impl AnimatedImage {
             .count()
     }
 
-    /// Number of frames stored zstd-compressed.
     pub fn zstd_cached(&self) -> usize {
         self.cache
             .iter()
@@ -357,7 +344,6 @@ impl AnimatedImage {
             .count()
     }
 
-    /// Total duration of one full loop of the animation.
     pub fn total_duration(&self) -> Duration {
         self.total
     }

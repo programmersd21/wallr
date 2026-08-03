@@ -151,7 +151,6 @@ pub fn fetch_remote_package(reference: &str) -> Result<AnimationSpec, PackageErr
     let repo = subparts[1];
     let tag = "main";
 
-    // Check local cache first
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let cache_dir = PathBuf::from(home).join(".cache/wallr/packages");
     if !cache_dir.exists() {

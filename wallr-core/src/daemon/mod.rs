@@ -1045,6 +1045,7 @@ impl Daemon {
                         no_theme,
                         theme_override,
                         monitor,
+                        scaling_mode: _,
                     } => {
                         if paused.load(Ordering::SeqCst) {
                             return IpcResponse {

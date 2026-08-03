@@ -128,6 +128,7 @@ Details: [docs/architecture.md](docs/architecture.md)
 
 ## Documentation
 
+- [Changelog](CHANGELOG.md)
 - [CLI reference](docs/cli-reference.md)
 - [Configuration reference](docs/config-reference.md)
 - [Animation authoring](docs/animation-authoring.md)

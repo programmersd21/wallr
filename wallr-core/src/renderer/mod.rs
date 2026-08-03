@@ -189,7 +189,6 @@ impl Renderer {
         })
     }
 
-    /// Get or create a pipeline for the given surface texture format.
     fn get_pipeline(&self, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
         let mut cache = self.pipeline.lock().unwrap();
         if let Some((cached_fmt, ref pipeline)) = *cache
@@ -242,8 +241,6 @@ impl Renderer {
         pipeline
     }
 
-    /// Creates a reusable RGBA8 texture with a matching bind group. Live
-    /// wallpapers upload new frame data into it via `update_texture`.
     pub fn create_texture(&self, width: u32, height: u32) -> (wgpu::Texture, wgpu::BindGroup) {
         let size = wgpu::Extent3d {
             width,
@@ -291,7 +288,6 @@ impl Renderer {
         (texture, bind_group)
     }
 
-    /// Replaces the contents of a texture created by `create_texture`.
     pub fn update_texture(&self, texture: &wgpu::Texture, rgba: &[u8], width: u32, height: u32) {
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -330,8 +326,6 @@ impl Renderer {
             .write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
     }
 
-    /// Renders the given texture bind groups to a wgpu Surface for one frame.
-    /// bg_bind = old wallpaper, new_bind = new wallpaper, transitioned by effect.
     pub fn render_frame(&self, request: FrameRequest) -> anyhow::Result<FrameStatus> {
         let FrameRequest {
             surface,
