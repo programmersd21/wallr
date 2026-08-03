@@ -14,30 +14,42 @@
 <br><br>
 
 <a href="https://github.com/programmersd21/wallr/stargazers">
-  <img alt="GitHub Stars" src="https://shieldcn.dev/github/stars/programmersd21/wallr.svg?variant=secondary&theme=slate&font=geist">
-</a>
-<a href="https://github.com/programmersd21/wallr/releases/latest">
-  <img alt="Release" src="https://shieldcn.dev/github/release/programmersd21/wallr.svg?variant=secondary&theme=slate&font=geist">
-</a>
-<a href="https://github.com/programmersd21/wallr/releases">
-  <img alt="Downloads" src="https://shieldcn.dev/github/downloads/programmersd21/wallr.svg?variant=secondary&theme=slate&font=geist">
-</a>
-<a href="https://github.com/programmersd21/wallr/actions">
-  <img alt="CI" src="https://shieldcn.dev/github/ci/programmersd21/wallr.svg?variant=secondary&theme=slate&font=geist">
-</a>
-<a href="https://github.com/programmersd21/wallr/blob/main/LICENSE">
-  <img alt="License" src="https://shieldcn.dev/github/license/programmersd21/wallr.svg?variant=secondary&theme=slate&font=geist">
+  <img alt="Stars" src="https://shieldcn.dev/github/stars/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist">
 </a>
 
-<br>
+<a href="https://github.com/programmersd21/wallr/releases/latest">
+  <img alt="Release" src="https://shieldcn.dev/github/release/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist">
+</a>
+
+<a href="https://github.com/programmersd21/wallr/releases">
+  <img alt="Downloads" src="https://shieldcn.dev/github/downloads/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist">
+</a>
 
 <a href="https://crates.io/crates/wallr">
-  <img alt="crates.io" src="https://shieldcn.dev/crates/wallr.svg?variant=ghost&theme=slate&font=geist">
+  <img alt="Crates.io" src="https://shieldcn.dev/crates/wallr.svg?variant=secondary&theme=zinc&font=geist">
 </a>
-<img alt="Wayland" src="https://shieldcn.dev/badge/Wayland-native-violet.svg?variant=ghost&theme=slate&font=geist">
-<img alt="wgpu" src="https://shieldcn.dev/badge/wgpu-renderer-blue.svg?variant=ghost&theme=slate&font=geist">
-<img alt="Rust" src="https://shieldcn.dev/badge/Rust-memory_safe-orange.svg?variant=ghost&theme=slate&font=geist">
-<img alt="Linux" src="https://shieldcn.dev/badge/Linux-first-green.svg?variant=ghost&theme=slate&font=geist">
+
+<a href="https://github.com/programmersd21/wallr/actions">
+  <img alt="CI" src="https://shieldcn.dev/github/ci/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist">
+</a>
+
+<a href="https://github.com/programmersd21/wallr/blob/main/LICENSE">
+  <img alt="License" src="https://shieldcn.dev/github/license/programmersd21/wallr.svg?variant=secondary&theme=zinc&font=geist">
+</a>
+
+<br><br>
+
+<a href="https://wayland.freedesktop.org/">
+  <img alt="Wayland" src="https://shieldcn.dev/badge/Wayland-Native-violet.svg?variant=secondary&theme=zinc&font=geist">
+</a>
+
+<a href="https://wgpu.rs/">
+  <img alt="wgpu" src="https://shieldcn.dev/badge/wgpu-Renderer-blue.svg?variant=secondary&theme=zinc&font=geist">
+</a>
+
+<a href="https://www.rust-lang.org/">
+  <img alt="Rust" src="https://shieldcn.dev/badge/Rust-2024-orange.svg?variant=secondary&theme=zinc&font=geist">
+</a>
 
 <br><br>
 
