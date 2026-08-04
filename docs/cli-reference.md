@@ -18,7 +18,7 @@ wallr cache clear|info
 wallr reload
 wallr config get|set|path
 wallr monitor list|current
-wallr ipc pause|resume|reload|preview|stop|status|info|seek <timestamp>
+wallr ipc pause|resume|reload|preview|stop|status|info|seek <timestamp>|blank|restore
 wallr quit
 ```
 
@@ -26,7 +26,7 @@ wallr quit
 
 `--mode <SCALING>` sets the image scaling mode: `fill` (cover, crops to fill), `fit` (contain, letterbox/pillarbox), `stretch` (ignores aspect ratio), `center` (1:1 centered), `tile` (repeat). Default is `fill`. The mode is applied at the shader level, so transitions and live playback both use it.
 
-`wallr ipc info` reports version, GPU, decoder state, and playback position; `wallr ipc seek` accepts `HH:MM:SS`, `M:SS`, or plain seconds. `wallr quit` is an alias for `wallr ipc stop` and removes the daemon socket before exiting.
+`wallr ipc info` reports version, GPU, decoder state, and playback position; `wallr ipc seek` accepts `HH:MM:SS`, `M:SS`, or plain seconds. `wallr ipc blank` displays black without replacing the persisted wallpaper; `wallr ipc restore` returns to the previous image. All IPC commands accept `--monitor <name>` for per-output control. `wallr quit` is an alias for `wallr ipc stop` and removes the daemon socket before exiting.
 
 `wallr monitor list` queries the daemon for all connected outputs and prints each output's name and resolution. `wallr monitor current` returns the primary output. Output names are resolved from the compositor (e.g. `DP-1`, `HDMI-A-1`, `eDP-1`); if the compositor doesn't provide names, a fallback based on make/model or a generated ID is used.
 

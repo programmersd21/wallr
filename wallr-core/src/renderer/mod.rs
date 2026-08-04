@@ -8,12 +8,17 @@ pub struct Renderer {
     pub queue: wgpu::Queue,
     pub bind_group_layout_tex: wgpu::BindGroupLayout,
     pub bind_group_layout_uni: wgpu::BindGroupLayout,
-    pub uniform_buffer: wgpu::Buffer,
-    pub uniform_bind_group: wgpu::BindGroup,
     pipeline_layout: wgpu::PipelineLayout,
     shader: wgpu::ShaderModule,
     /// Cached pipeline for a specific surface format. Created lazily.
     pipeline: std::sync::Mutex<Option<(wgpu::TextureFormat, wgpu::RenderPipeline)>>,
+}
+
+/// Per-output uniform buffer and bind group. Each output gets its own so
+/// concurrent renders never race on shared GPU state.
+pub struct PerOutputUniforms {
+    pub buffer: wgpu::Buffer,
+    pub bind_group: wgpu::BindGroup,
 }
 
 #[repr(C)]
@@ -53,6 +58,28 @@ impl Uniforms {
             origin: effect.origin,
             direction: effect.direction,
             easing: effect.easing,
+            scaling_mode: 0,
+        }
+    }
+}
+
+impl Default for Uniforms {
+    fn default() -> Self {
+        Self {
+            time: 0.0,
+            progress: 0.0,
+            effect_type: 0,
+            padding: 0,
+            resolution: [1920.0, 1080.0],
+            image_resolution: [1920.0, 1080.0],
+            old_image_resolution: [1920.0, 1080.0],
+            param_a: 0.0,
+            param_b: 0.0,
+            param_c: 0.0,
+            param_d: 0.0,
+            origin: [0.5, 0.5],
+            direction: [0.0, 0.0],
+            easing: 3,
             scaling_mode: 0,
         }
     }
@@ -141,39 +168,6 @@ impl Renderer {
             push_constant_ranges: &[],
         });
 
-        let uniforms = Uniforms {
-            time: 0.0,
-            progress: 0.0,
-            effect_type: 0,
-            padding: 0,
-            resolution: [1920.0, 1080.0],
-            image_resolution: [1920.0, 1080.0],
-            old_image_resolution: [1920.0, 1080.0],
-            param_a: 0.0,
-            param_b: 0.0,
-            param_c: 0.0,
-            param_d: 0.0,
-            origin: [0.5, 0.5],
-            direction: [0.0, 0.0],
-            easing: 3,
-            scaling_mode: 0,
-        };
-
-        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Uniform Buffer"),
-            contents: bytemuck::cast_slice(&[uniforms]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &bind_group_layout_uni,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
-            label: Some("uniform_bind_group"),
-        });
-
         Ok(Self {
             instance,
             adapter,
@@ -183,10 +177,30 @@ impl Renderer {
             shader,
             bind_group_layout_tex,
             bind_group_layout_uni,
-            uniform_buffer,
-            uniform_bind_group,
             pipeline: std::sync::Mutex::new(None),
         })
+    }
+
+    /// Create a per-output uniform buffer and bind group so each output
+    /// renders with its own GPU state, eliminating cross-output races.
+    pub fn create_per_output_uniforms(&self) -> PerOutputUniforms {
+        let uniforms = Uniforms::default();
+        let buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Per-Output Uniform Buffer"),
+                contents: bytemuck::cast_slice(&[uniforms]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &self.bind_group_layout_uni,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+            label: Some("per_output_uniform_bind_group"),
+        });
+        PerOutputUniforms { buffer, bind_group }
     }
 
     fn get_pipeline(&self, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
@@ -321,12 +335,16 @@ impl Renderer {
         Ok((texture, bind_group))
     }
 
-    pub fn update_uniforms(&self, uniforms: Uniforms) {
+    pub fn update_uniforms(&self, buffer: &wgpu::Buffer, uniforms: Uniforms) {
         self.queue
-            .write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+            .write_buffer(buffer, 0, bytemuck::cast_slice(&[uniforms]));
     }
 
-    pub fn render_frame(&self, request: FrameRequest) -> anyhow::Result<FrameStatus> {
+    pub fn render_frame(
+        &self,
+        request: FrameRequest,
+        per_output: &PerOutputUniforms,
+    ) -> anyhow::Result<FrameStatus> {
         let FrameRequest {
             surface,
             format,
@@ -346,7 +364,7 @@ impl Renderer {
         uniforms.image_resolution = [img_width as f32, img_height as f32];
         uniforms.old_image_resolution = [old_img_width as f32, old_img_height as f32];
         uniforms.scaling_mode = scaling_mode;
-        self.update_uniforms(uniforms);
+        self.update_uniforms(&per_output.buffer, uniforms);
 
         let pipeline = self.get_pipeline(format);
         // `get_current_texture` blocks until the compositor presents (Fifo),
@@ -391,7 +409,7 @@ impl Renderer {
             render_pass.set_pipeline(&pipeline);
             render_pass.set_bind_group(0, bg_bind, &[]);
             render_pass.set_bind_group(1, new_bind, &[]);
-            render_pass.set_bind_group(2, &self.uniform_bind_group, &[]);
+            render_pass.set_bind_group(2, &per_output.bind_group, &[]);
             // The vertex shader generates a fullscreen triangle from vertex_index 0..3
             render_pass.draw(0..3, 0..1);
         }

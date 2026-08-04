@@ -303,9 +303,17 @@ pub enum MonitorCommands {
 #[derive(Subcommand, Debug)]
 pub enum IpcCommands {
     /// Pause animations
-    Pause,
+    Pause {
+        /// Target specific monitor (default: all)
+        #[arg(long)]
+        monitor: Option<String>,
+    },
     /// Resume animations
-    Resume,
+    Resume {
+        /// Target specific monitor (default: all)
+        #[arg(long)]
+        monitor: Option<String>,
+    },
     /// Reload wallpaper
     Reload,
     /// Preview animation
@@ -315,10 +323,29 @@ pub enum IpcCommands {
     /// Get daemon status
     Status,
     /// Get video decoder and GPU information
-    Info,
+    Info {
+        /// Target specific monitor (default: all outputs)
+        #[arg(long)]
+        monitor: Option<String>,
+    },
     /// Seek video to timestamp (format: HH:MM:SS or seconds)
     Seek {
         /// Timestamp in format HH:MM:SS or seconds
         timestamp: String,
+        /// Target specific monitor (default: first output)
+        #[arg(long)]
+        monitor: Option<String>,
+    },
+    /// Blank an output without replacing persisted wallpaper
+    Blank {
+        /// Target specific monitor (default: all)
+        #[arg(long)]
+        monitor: Option<String>,
+    },
+    /// Restore a previously blanked output
+    Restore {
+        /// Target specific monitor (default: all)
+        #[arg(long)]
+        monitor: Option<String>,
     },
 }
