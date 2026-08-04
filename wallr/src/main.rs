@@ -336,8 +336,8 @@ async fn main() -> Result<()> {
         Commands::Ipc { subcommand } => {
             let socket_path = config::expand_path(&config.daemon.socket);
             let cmd = match subcommand {
-                IpcCommands::Pause => IpcCommand::Pause,
-                IpcCommands::Resume => IpcCommand::Resume,
+                IpcCommands::Pause { monitor } => IpcCommand::Pause { monitor },
+                IpcCommands::Resume { monitor } => IpcCommand::Resume { monitor },
                 IpcCommands::Reload => IpcCommand::Reload,
                 IpcCommands::Preview => IpcCommand::Preview {
                     path: "".to_string(),
@@ -350,8 +350,8 @@ async fn main() -> Result<()> {
                 },
                 IpcCommands::Stop => IpcCommand::Stop,
                 IpcCommands::Status => IpcCommand::Status,
-                IpcCommands::Info => IpcCommand::Info,
-                IpcCommands::Seek { timestamp } => {
+                IpcCommands::Info { monitor } => IpcCommand::Info { monitor },
+                IpcCommands::Seek { timestamp, monitor } => {
                     // Parse timestamp: HH:MM:SS or seconds
                     let ms = if timestamp.contains(':') {
                         let parts: Vec<&str> = timestamp.split(':').collect();
@@ -376,8 +376,13 @@ async fn main() -> Result<()> {
                         let sec: f64 = timestamp.parse()?;
                         (sec * 1000.0) as u64
                     };
-                    IpcCommand::Seek { timestamp_ms: ms }
+                    IpcCommand::Seek {
+                        timestamp_ms: ms,
+                        monitor,
+                    }
                 }
+                IpcCommands::Blank { monitor } => IpcCommand::Blank { monitor },
+                IpcCommands::Restore { monitor } => IpcCommand::Restore { monitor },
             };
             let resp = send_ipc_command(socket_path, cmd).await?;
             if let Some(msg) = resp.message {

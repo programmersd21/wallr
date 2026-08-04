@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.5
+
+- **#9 Fix renderer race condition**: Per-output uniform buffers eliminate cross-output GPU state races. Each output renders independently with its own uniform bind group.
+- **#6 Fix monitor targeting**: Unknown `--monitor` names now return an error instead of silently targeting the first output. Without `--monitor`, `set`/`preview` applies to all connected outputs deterministically.
+- **#8 Monitor-scoped playback controls**: Added `--monitor` to `pause`, `resume`, `seek`, and `info` IPC commands. Info without `--monitor` reports all outputs.
+- **#10 Non-destructive blank/restore**: Added `wallr ipc blank` and `wallr ipc restore` commands. Blank displays black without replacing the persisted wallpaper; restore returns to the previous image. Supports `--monitor` for per-output control.
+- **#7 Output hotplug**: Disconnected outputs are cleaned up automatically. Stale render states are removed when Wayland signals output removal.
+
 ## 0.2.4
 
 - Fix output name resolution: compositor-provided names (e.g. `DP-1`, `HDMI-A-1`) are now correctly applied instead of always showing `output-{id}`.

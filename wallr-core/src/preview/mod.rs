@@ -96,6 +96,7 @@ struct PreviewApp {
     video_tex: Option<wgpu::Texture>,
     video_bind: Option<wgpu::BindGroup>,
     video_size: (u32, u32),
+    per_output_uniforms: Option<crate::renderer::PerOutputUniforms>,
 }
 
 impl PreviewApp {
@@ -123,6 +124,7 @@ impl PreviewApp {
             video_tex: None,
             video_bind: None,
             video_size: (1, 1),
+            per_output_uniforms: None,
         }
     }
 
@@ -218,6 +220,7 @@ impl ApplicationHandler for PreviewApp {
                     self.video_bind = Some(bind);
                     self.video_size = (w, h);
                     self.window = Some(window);
+                    self.per_output_uniforms = Some(renderer.create_per_output_uniforms());
                     self.renderer = Some(renderer);
                     self.surface = Some(surface);
                     self.surface_format = Some(format);
@@ -307,6 +310,7 @@ impl ApplicationHandler for PreviewApp {
         }
 
         self.window = Some(window);
+        self.per_output_uniforms = Some(renderer.create_per_output_uniforms());
         self.renderer = Some(renderer);
         self.surface = Some(surface);
         self.surface_format = Some(format);
@@ -395,20 +399,23 @@ impl PreviewApp {
 
         let uniforms = compute_effect_uniforms(&self.effect, progress);
 
-        match renderer.render_frame(crate::renderer::FrameRequest {
-            surface,
-            format,
-            bg_bind: bg,
-            new_bind,
-            effect: &uniforms,
-            width: size.width,
-            height: size.height,
-            img_width: img_w,
-            img_height: img_h,
-            old_img_width: old_w,
-            old_img_height: old_h,
-            scaling_mode: 0,
-        }) {
+        match renderer.render_frame(
+            crate::renderer::FrameRequest {
+                surface,
+                format,
+                bg_bind: bg,
+                new_bind,
+                effect: &uniforms,
+                width: size.width,
+                height: size.height,
+                img_width: img_w,
+                img_height: img_h,
+                old_img_width: old_w,
+                old_img_height: old_h,
+                scaling_mode: 0,
+            },
+            self.per_output_uniforms.as_ref().unwrap(),
+        ) {
             Ok(crate::renderer::FrameStatus::TimedOut) => {
                 // The surface is not presenting right now (e.g. the window is
                 // hidden or the monitor is off); keep polling so the preview
@@ -451,20 +458,23 @@ impl PreviewApp {
         }
 
         let uniforms = compute_effect_uniforms(&self.effect, 1.0);
-        match renderer.render_frame(crate::renderer::FrameRequest {
-            surface,
-            format,
-            bg_bind: bind,
-            new_bind: bind,
-            effect: &uniforms,
-            width: size.width.max(1),
-            height: size.height.max(1),
-            img_width: w,
-            img_height: h,
-            old_img_width: w,
-            old_img_height: h,
-            scaling_mode: 0,
-        }) {
+        match renderer.render_frame(
+            crate::renderer::FrameRequest {
+                surface,
+                format,
+                bg_bind: bind,
+                new_bind: bind,
+                effect: &uniforms,
+                width: size.width.max(1),
+                height: size.height.max(1),
+                img_width: w,
+                img_height: h,
+                old_img_width: w,
+                old_img_height: h,
+                scaling_mode: 0,
+            },
+            self.per_output_uniforms.as_ref().unwrap(),
+        ) {
             Ok(crate::renderer::FrameStatus::TimedOut) => {}
             Err(e) => {
                 eprintln!("render error: {e}");
@@ -510,20 +520,23 @@ impl PreviewApp {
         }
 
         let uniforms = compute_effect_uniforms(&self.effect, 1.0);
-        match renderer.render_frame(crate::renderer::FrameRequest {
-            surface,
-            format,
-            bg_bind: bind,
-            new_bind: bind,
-            effect: &uniforms,
-            width: size.width,
-            height: size.height,
-            img_width: anim.width,
-            img_height: anim.height,
-            old_img_width: anim.width,
-            old_img_height: anim.height,
-            scaling_mode: 0,
-        }) {
+        match renderer.render_frame(
+            crate::renderer::FrameRequest {
+                surface,
+                format,
+                bg_bind: bind,
+                new_bind: bind,
+                effect: &uniforms,
+                width: size.width,
+                height: size.height,
+                img_width: anim.width,
+                img_height: anim.height,
+                old_img_width: anim.width,
+                old_img_height: anim.height,
+                scaling_mode: 0,
+            },
+            self.per_output_uniforms.as_ref().unwrap(),
+        ) {
             Ok(crate::renderer::FrameStatus::TimedOut) => {}
             Err(e) => {
                 eprintln!("render error: {e}");

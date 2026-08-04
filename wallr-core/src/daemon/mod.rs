@@ -87,6 +87,9 @@ struct WaylandState {
     shm: Shm,
     outputs: std::collections::HashMap<u32, OutputInfo>,
     surfaces: Vec<(u32, LayerSurface)>,
+    /// Sender for output destruction events. The daemon monitors this to clean
+    /// up stale render states when an output is removed.
+    output_destroy_tx: tokio::sync::mpsc::UnboundedSender<String>,
 }
 
 impl ProvidesRegistryState for WaylandState {
@@ -254,7 +257,10 @@ impl OutputHandler for WaylandState {
         output: wl_output::WlOutput,
     ) {
         let id = output.id().protocol_id();
-        self.outputs.remove(&id);
+        if let Some(info) = self.outputs.remove(&id) {
+            tracing::info!("Output disconnected: {} (protocol_id={})", info.name, id);
+            let _ = self.output_destroy_tx.send(info.name);
+        }
     }
 }
 
@@ -323,6 +329,14 @@ struct RenderState {
     hw_accel: crate::video::HwAccel,
     /// Current scaling mode for live playback.
     scaling_mode: u32,
+    /// Per-output uniform buffer + bind group (Issue #9 race fix).
+    per_output_uniforms: std::sync::Arc<crate::renderer::PerOutputUniforms>,
+    /// Path of the last wallpaper set on this output (for restore).
+    last_wallpaper: Option<std::path::PathBuf>,
+    /// Previous wallpaper state before blank (for restore).
+    pre_blank: Option<(std::path::PathBuf, u32)>,
+    /// Whether this output is currently blanked.
+    blanked: bool,
 }
 
 /// Everything the transition render task needs; the daemon state has already
@@ -519,6 +533,7 @@ impl RenderState {
         let playback_gen = self.playback_gen.clone();
         let pacer = self.pacer.clone();
         let video_playback = self.video_playback.clone();
+        let per_output_uniforms = std::sync::Arc::clone(&self.per_output_uniforms);
         let effect = effect.clone();
         drop(tokio::task::spawn_blocking(move || {
             render_transition(
@@ -531,6 +546,7 @@ impl RenderState {
                 commit,
                 effect,
                 duration_ms,
+                &per_output_uniforms,
             );
         }));
     }
@@ -554,6 +570,7 @@ fn render_transition(
     mut commit: CommitData,
     effect: crate::animation::Effect,
     duration_ms: u32,
+    per_output_uniforms: &crate::renderer::PerOutputUniforms,
 ) {
     let _guard = render_lock
         .lock()
@@ -564,20 +581,23 @@ fn render_transition(
     loop {
         let progress = start.elapsed().as_secs_f32() / duration.as_secs_f32();
         let uniforms = crate::animation::compute_effect_uniforms(&effect, progress.clamp(0.0, 1.0));
-        let status = renderer.render_frame(crate::renderer::FrameRequest {
-            surface,
-            format: commit.format,
-            bg_bind: &commit.bg_bind,
-            new_bind: &commit.new_bind,
-            effect: &uniforms,
-            width: commit.width,
-            height: commit.height,
-            img_width: commit.img_width,
-            img_height: commit.img_height,
-            old_img_width: commit.old_img_width,
-            old_img_height: commit.old_img_height,
-            scaling_mode: commit.scaling_mode,
-        });
+        let status = renderer.render_frame(
+            crate::renderer::FrameRequest {
+                surface,
+                format: commit.format,
+                bg_bind: &commit.bg_bind,
+                new_bind: &commit.new_bind,
+                effect: &uniforms,
+                width: commit.width,
+                height: commit.height,
+                img_width: commit.img_width,
+                img_height: commit.img_height,
+                old_img_width: commit.old_img_width,
+                old_img_height: commit.old_img_height,
+                scaling_mode: commit.scaling_mode,
+            },
+            per_output_uniforms,
+        );
         let status = match status {
             Ok(status) => status,
             Err(err) => {
@@ -597,9 +617,24 @@ fn render_transition(
     if let Some(animated) = animated.as_mut()
         && playback_gen.load(Ordering::SeqCst) == commit.generation
     {
-        play_live(&renderer, surface, &commit, animated, &playback_gen, &pacer);
+        play_live(
+            &renderer,
+            surface,
+            &commit,
+            animated,
+            &playback_gen,
+            &pacer,
+            per_output_uniforms,
+        );
     } else if commit.is_video && playback_gen.load(Ordering::SeqCst) == commit.generation {
-        play_video(&renderer, surface, &commit, &video_playback, &playback_gen);
+        play_video(
+            &renderer,
+            surface,
+            &commit,
+            &video_playback,
+            &playback_gen,
+            per_output_uniforms,
+        );
     }
 }
 
@@ -615,6 +650,7 @@ fn play_live(
     animated: &mut crate::animated::AnimatedImage,
     playback_gen: &std::sync::atomic::AtomicU64,
     pacer: &LivePacer,
+    per_output_uniforms: &crate::renderer::PerOutputUniforms,
 ) {
     let (tex_a, bind_a) = renderer.create_texture(animated.width, animated.height);
     let (tex_b, bind_b) = renderer.create_texture(animated.width, animated.height);
@@ -725,25 +761,25 @@ fn play_live(
             cur_frame = index;
         }
         let uniforms = crate::animation::compute_effect_uniforms(&static_effect, 1.0);
-        let status = renderer.render_frame(crate::renderer::FrameRequest {
-            surface,
-            format: commit.format,
-            bg_bind: &binds[cur],
-            new_bind: &binds[cur],
-            effect: &uniforms,
-            width: commit.width,
-            height: commit.height,
-            img_width: animated.width,
-            img_height: animated.height,
-            old_img_width: animated.width,
-            old_img_height: animated.height,
-            scaling_mode: commit.scaling_mode,
-        });
+        let status = renderer.render_frame(
+            crate::renderer::FrameRequest {
+                surface,
+                format: commit.format,
+                bg_bind: &binds[cur],
+                new_bind: &binds[cur],
+                effect: &uniforms,
+                width: commit.width,
+                height: commit.height,
+                img_width: animated.width,
+                img_height: animated.height,
+                old_img_width: animated.width,
+                old_img_height: animated.height,
+                scaling_mode: commit.scaling_mode,
+            },
+            per_output_uniforms,
+        );
         match status {
             Ok(crate::renderer::FrameStatus::Presented) => {}
-            // A stalled present parks inside the acquire; a Timeout or error
-            // means the surface is unusable, so give up and let the next
-            // transition take over.
             _ => return,
         }
 
@@ -778,6 +814,7 @@ fn play_video(
     commit: &CommitData,
     video_playback: &std::sync::Arc<crate::video::VideoPlayback>,
     playback_gen: &std::sync::atomic::AtomicU64,
+    per_output_uniforms: &crate::renderer::PerOutputUniforms,
 ) {
     // Get initial frame dimensions
     let (width, height) = match video_playback.metadata() {
@@ -824,20 +861,23 @@ fn play_video(
         }
 
         let uniforms = crate::animation::compute_effect_uniforms(&static_effect, 1.0);
-        let status = renderer.render_frame(crate::renderer::FrameRequest {
-            surface,
-            format: commit.format,
-            bg_bind: &bind,
-            new_bind: &bind,
-            effect: &uniforms,
-            width: commit.width,
-            height: commit.height,
-            img_width: width,
-            img_height: height,
-            old_img_width: width,
-            old_img_height: height,
-            scaling_mode: commit.scaling_mode,
-        });
+        let status = renderer.render_frame(
+            crate::renderer::FrameRequest {
+                surface,
+                format: commit.format,
+                bg_bind: &bind,
+                new_bind: &bind,
+                effect: &uniforms,
+                width: commit.width,
+                height: commit.height,
+                img_width: width,
+                img_height: height,
+                old_img_width: width,
+                old_img_height: height,
+                scaling_mode: commit.scaling_mode,
+            },
+            per_output_uniforms,
+        );
 
         match status {
             Ok(crate::renderer::FrameStatus::Presented) => {}
@@ -849,6 +889,29 @@ fn play_video(
                 return;
             }
         }
+    }
+}
+
+/// Resolve target render states from an optional monitor name.
+/// Returns all states when `monitor` is None, or the specific named state.
+/// Returns an empty vec for unknown monitor names (letting callers return
+/// an error).
+async fn resolve_targets(
+    render_states: &std::collections::HashMap<
+        String,
+        std::sync::Arc<tokio::sync::Mutex<RenderState>>,
+    >,
+    monitor: Option<&str>,
+) -> Vec<std::sync::Arc<tokio::sync::Mutex<RenderState>>> {
+    match monitor {
+        Some(name) => {
+            if let Some(rs) = render_states.get(name) {
+                vec![rs.clone()]
+            } else {
+                Vec::new()
+            }
+        }
+        None => render_states.values().cloned().collect(),
     }
 }
 
@@ -899,6 +962,9 @@ impl Daemon {
         let shm = Shm::bind(&globals, &qh)
             .map_err(|e| DaemonError::StartError(format!("shm bind failed: {e:?}")))?;
 
+        let (output_destroy_tx, mut output_destroy_rx) =
+            tokio::sync::mpsc::unbounded_channel::<String>();
+
         let mut wayland_state = WaylandState {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
@@ -906,6 +972,7 @@ impl Daemon {
             shm,
             outputs: std::collections::HashMap::new(),
             surfaces: Vec::new(),
+            output_destroy_tx,
         };
 
         // Bind compositor once for creating empty input regions (passthrough).
@@ -1041,9 +1108,18 @@ impl Daemon {
             let stop_socket = ipc_socket_path.clone();
             async move {
                 match cmd {
-                    IpcCommand::Pause => {
-                        paused.store(true, Ordering::SeqCst);
-                        for rs in render_states.values() {
+                    IpcCommand::Pause { monitor } => {
+                        let targets = resolve_targets(&render_states, monitor.as_deref()).await;
+                        if targets.is_empty() {
+                            return IpcResponse {
+                                success: false,
+                                message: Some("No matching outputs".into()),
+                            };
+                        }
+                        if monitor.is_none() {
+                            paused.store(true, Ordering::SeqCst);
+                        }
+                        for rs in targets {
                             let rs_lock = rs.lock().await;
                             rs_lock.video_playback.pause();
                         }
@@ -1052,9 +1128,18 @@ impl Daemon {
                             message: Some("Paused".into()),
                         }
                     }
-                    IpcCommand::Resume => {
-                        paused.store(false, Ordering::SeqCst);
-                        for rs in render_states.values() {
+                    IpcCommand::Resume { monitor } => {
+                        let targets = resolve_targets(&render_states, monitor.as_deref()).await;
+                        if targets.is_empty() {
+                            return IpcResponse {
+                                success: false,
+                                message: Some("No matching outputs".into()),
+                            };
+                        }
+                        if monitor.is_none() {
+                            paused.store(false, Ordering::SeqCst);
+                        }
+                        for rs in targets {
                             let rs_lock = rs.lock().await;
                             rs_lock.video_playback.resume();
                         }
@@ -1099,44 +1184,33 @@ impl Daemon {
                             };
                         }
 
-                        // Select target RenderState: explicit --monitor or first
-                        // output.
-                        let target_rs = if let Some(ref mon) = monitor {
-                            render_states
-                                .get(mon)
-                                .cloned()
-                                .or_else(|| render_states.values().next().cloned())
-                        } else {
-                            render_states.values().next().cloned()
-                        };
-                        let target_rs = match target_rs {
-                            Some(rs) => rs,
-                            None => {
-                                return IpcResponse {
-                                    success: false,
-                                    message: Some("No outputs available".into()),
-                                };
-                            }
-                        };
+                        // Resolve targets: unknown monitor = error, no monitor = all outputs.
+                        let targets = resolve_targets(&render_states, monitor.as_deref()).await;
+                        if targets.is_empty() {
+                            return IpcResponse {
+                                success: false,
+                                message: match &monitor {
+                                    Some(name) => Some(format!("Unknown monitor: {name}")),
+                                    None => Some("No outputs available".into()),
+                                },
+                            };
+                        }
 
-                        // Persist per-output last wallpaper for all outputs (or
-                        // just the targeted one when --monitor is specified).
-                        let output_names: Vec<String> = if monitor.is_some() {
-                            monitor
-                                .as_ref()
-                                .map(|m| vec![m.clone()])
-                                .unwrap_or_default()
-                        } else {
-                            render_states.keys().cloned().collect()
-                        };
-                        for name in &output_names {
-                            let state_path = dirs::cache_dir()
-                                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                                .join(format!("wallr/last_wallpaper/{name}"));
-                            if let Some(parent) = state_path.parent() {
-                                let _ = std::fs::create_dir_all(parent);
+                        // Persist per-output last wallpaper for all targeted outputs.
+                        {
+                            let persist_names: Vec<&str> = match &monitor {
+                                Some(name) => vec![name.as_str()],
+                                None => render_states.keys().map(|s| s.as_str()).collect(),
+                            };
+                            for name in persist_names {
+                                let state_path = dirs::cache_dir()
+                                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                                    .join(format!("wallr/last_wallpaper/{name}"));
+                                if let Some(parent) = state_path.parent() {
+                                    let _ = std::fs::create_dir_all(parent);
+                                }
+                                let _ = std::fs::write(&state_path, &path);
                             }
-                            let _ = std::fs::write(&state_path, &path);
                         }
 
                         let effect = effect.unwrap_or_else(|| {
@@ -1156,20 +1230,41 @@ impl Daemon {
                             crate::config::ScalingMode::Tile => 4,
                         };
 
-                        let rs_clone = target_rs.clone();
-                        let p_clone = p.clone();
-                        let result = tokio::task::spawn_blocking(move || {
-                            let rt = tokio::runtime::Handle::current();
-                            rt.block_on(async {
-                                let mut lock = rs_clone.lock().await;
-                                lock.set_wallpaper(&p_clone, &effect, duration, scaling_mode_u32)
+                        let mut last_err = None;
+                        for rs in &targets {
+                            let rs_clone = rs.clone();
+                            let p_clone = p.clone();
+                            let effect_clone = effect.clone();
+                            let result = tokio::task::spawn_blocking(move || {
+                                let rt = tokio::runtime::Handle::current();
+                                rt.block_on(async {
+                                    let mut lock = rs_clone.lock().await;
+                                    lock.set_wallpaper(
+                                        &p_clone,
+                                        &effect_clone,
+                                        duration,
+                                        scaling_mode_u32,
+                                    )
                                     .await
+                                })
                             })
-                        })
-                        .await;
+                            .await;
 
-                        match result {
-                            Ok(Ok(())) => {
+                            if let Err(e) = result {
+                                last_err = Some(format!("Task spawn failed: {e}"));
+                                continue;
+                            }
+                            if let Err(e) = result.unwrap() {
+                                last_err = Some(format!("Render failed: {e}"));
+                            }
+                        }
+
+                        match last_err {
+                            Some(e) => IpcResponse {
+                                success: false,
+                                message: Some(e),
+                            },
+                            None => {
                                 let opts = SetOptions {
                                     no_theme,
                                     theme_provider: theme_override,
@@ -1189,14 +1284,6 @@ impl Daemon {
                                     },
                                 }
                             }
-                            Ok(Err(e)) => IpcResponse {
-                                success: false,
-                                message: Some(format!("Render failed: {}", e)),
-                            },
-                            Err(e) => IpcResponse {
-                                success: false,
-                                message: Some(format!("Task spawn failed: {}", e)),
-                            },
                         }
                     }
                     IpcCommand::Stop => {
@@ -1222,17 +1309,22 @@ impl Daemon {
                             message: Some(format!("wallr daemon {}", state)),
                         }
                     }
-                    IpcCommand::Seek { timestamp_ms } => {
-                        let target_rs = render_states.values().next().cloned();
-                        let target_rs = match target_rs {
-                            Some(rs) => rs,
-                            None => {
-                                return IpcResponse {
-                                    success: false,
-                                    message: Some("No outputs available".into()),
-                                };
-                            }
-                        };
+                    IpcCommand::Seek {
+                        timestamp_ms,
+                        monitor,
+                    } => {
+                        let targets = resolve_targets(&render_states, monitor.as_deref()).await;
+                        if targets.is_empty() {
+                            return IpcResponse {
+                                success: false,
+                                message: match &monitor {
+                                    Some(name) => Some(format!("Unknown monitor: {name}")),
+                                    None => Some("No outputs available".into()),
+                                },
+                            };
+                        }
+                        // Seek on the first matching output (seek is per-output).
+                        let target_rs = targets.into_iter().next().unwrap();
                         let rs_lock = target_rs.lock().await;
                         match rs_lock
                             .video_playback
@@ -1248,22 +1340,17 @@ impl Daemon {
                             },
                         }
                     }
-                    IpcCommand::Info => {
-                        let target_rs = render_states.values().next().cloned();
-                        let target_rs = match target_rs {
-                            Some(rs) => rs,
-                            None => {
-                                return IpcResponse {
-                                    success: false,
-                                    message: Some("No outputs available".into()),
-                                };
-                            }
-                        };
-                        let rs_lock = target_rs.lock().await;
-
-                        // Get GPU info from renderer
-                        let gpu_info =
-                            crate::video::gpu::adapter_diagnostics(&rs_lock.renderer.adapter);
+                    IpcCommand::Info { monitor } => {
+                        let targets = resolve_targets(&render_states, monitor.as_deref()).await;
+                        if targets.is_empty() {
+                            return IpcResponse {
+                                success: false,
+                                message: match &monitor {
+                                    Some(name) => Some(format!("Unknown monitor: {name}")),
+                                    None => Some("No outputs available".into()),
+                                },
+                            };
+                        }
 
                         let mut lines = vec![
                             format!("wallr v{}", env!("CARGO_PKG_VERSION")),
@@ -1273,54 +1360,69 @@ impl Daemon {
                         for name in render_states.keys() {
                             lines.push(format!("  - {name}"));
                         }
-                        lines.push(String::new());
-                        lines.push(gpu_info);
 
-                        match rs_lock.video_playback.metadata() {
-                            Some(meta) => {
-                                let decoder_info = rs_lock.video_playback.decoder_info();
-                                let hw = rs_lock.video_playback.hw_accel_in_use();
-                                let state = if rs_lock.video_playback.is_paused() {
-                                    "paused"
-                                } else {
-                                    "playing"
-                                };
-                                let position = rs_lock
-                                    .video_playback
-                                    .position()
-                                    .map(|p| format!("{:.2}s", p.as_secs_f64()))
-                                    .unwrap_or_else(|| "?".to_string());
-                                lines.push(String::new());
-                                lines.push("Video:".into());
-                                lines.push(format!("  Resolution: {}x{}", meta.width, meta.height));
-                                lines.push(format!("  FPS: {:.2}", meta.fps));
-                                lines.push(format!(
-                                    "  Duration: {:.2}s",
-                                    meta.duration.as_secs_f64()
-                                ));
-                                lines.push(format!(
-                                    "  Codec: {}",
-                                    decoder_info
-                                        .as_ref()
-                                        .map(|d| d.codec_name.as_str())
-                                        .unwrap_or("unknown")
-                                ));
-                                lines.push(format!("  Container: {}", meta.format));
-                                lines.push(format!("  Decoder: {}", hw.name()));
-                                lines.push(format!(
-                                    "  GPU Decode: {}",
-                                    if hw == crate::video::HwAccel::Software {
-                                        "disabled"
-                                    } else {
-                                        "enabled"
-                                    }
-                                ));
-                                lines.push(format!("  State: {} @ {}", state, position));
+                        // Collect target output info
+                        for (name, rs) in &render_states {
+                            if monitor.is_some() && monitor.as_deref() != Some(name.as_str()) {
+                                continue;
                             }
-                            None => {
-                                lines.push(String::new());
-                                lines.push("Video: none active".into());
-                                lines.push("Decoder: idle".into());
+                            let rs_lock = rs.lock().await;
+                            let gpu_info =
+                                crate::video::gpu::adapter_diagnostics(&rs_lock.renderer.adapter);
+
+                            lines.push(String::new());
+                            lines.push(format!("[{name}] {}x{}", rs_lock.width, rs_lock.height));
+                            lines.push(gpu_info);
+
+                            match rs_lock.video_playback.metadata() {
+                                Some(meta) => {
+                                    let decoder_info = rs_lock.video_playback.decoder_info();
+                                    let hw = rs_lock.video_playback.hw_accel_in_use();
+                                    let state = if rs_lock.video_playback.is_paused() {
+                                        "paused"
+                                    } else {
+                                        "playing"
+                                    };
+                                    let position = rs_lock
+                                        .video_playback
+                                        .position()
+                                        .map(|p| format!("{:.2}s", p.as_secs_f64()))
+                                        .unwrap_or_else(|| "?".to_string());
+                                    lines.push(String::new());
+                                    lines.push("Video:".into());
+                                    lines.push(format!(
+                                        "  Resolution: {}x{}",
+                                        meta.width, meta.height
+                                    ));
+                                    lines.push(format!("  FPS: {:.2}", meta.fps));
+                                    lines.push(format!(
+                                        "  Duration: {:.2}s",
+                                        meta.duration.as_secs_f64()
+                                    ));
+                                    lines.push(format!(
+                                        "  Codec: {}",
+                                        decoder_info
+                                            .as_ref()
+                                            .map(|d| d.codec_name.as_str())
+                                            .unwrap_or("unknown")
+                                    ));
+                                    lines.push(format!("  Container: {}", meta.format));
+                                    lines.push(format!("  Decoder: {}", hw.name()));
+                                    lines.push(format!(
+                                        "  GPU Decode: {}",
+                                        if hw == crate::video::HwAccel::Software {
+                                            "disabled"
+                                        } else {
+                                            "enabled"
+                                        }
+                                    ));
+                                    lines.push(format!("  State: {} @ {}", state, position));
+                                }
+                                None => {
+                                    lines.push(String::new());
+                                    lines.push("Video: none active".into());
+                                    lines.push("Decoder: idle".into());
+                                }
                             }
                         }
 
@@ -1362,10 +1464,109 @@ impl Daemon {
                             }
                         }
                     }
+                    IpcCommand::Blank { monitor } => {
+                        let targets = resolve_targets(&render_states, monitor.as_deref()).await;
+                        if targets.is_empty() {
+                            return IpcResponse {
+                                success: false,
+                                message: match &monitor {
+                                    Some(name) => Some(format!("Unknown monitor: {name}")),
+                                    None => Some("No outputs available".into()),
+                                },
+                            };
+                        }
+                        let mut blanked_count = 0u32;
+                        for (name, rs) in &render_states {
+                            if monitor.as_deref() != Some(name.as_str()) && monitor.is_some() {
+                                continue;
+                            }
+                            let mut lock = rs.lock().await;
+                            if lock.blanked {
+                                continue;
+                            }
+                            // Save current wallpaper for restore.
+                            lock.pre_blank = Some((
+                                lock.last_wallpaper.clone().unwrap_or_default(),
+                                lock.scaling_mode,
+                            ));
+                            lock.blanked = true;
+                            // Display a 1x1 black image.
+                            let black_effect = crate::animation::Effect::Fade(
+                                crate::animation::FadeParams::default(),
+                            );
+                            // Create a temporary black PNG.
+                            let tmp = std::env::temp_dir().join("wallr_blank.png");
+                            {
+                                let img =
+                                    image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 255]));
+                                let _ = img.save(&tmp);
+                            }
+                            let _ = lock.set_wallpaper(&tmp, &black_effect, 200, 0).await;
+                            blanked_count += 1;
+                        }
+                        IpcResponse {
+                            success: true,
+                            message: Some(format!("Blanked {blanked_count} output(s)")),
+                        }
+                    }
+                    IpcCommand::Restore { monitor } => {
+                        let targets = resolve_targets(&render_states, monitor.as_deref()).await;
+                        if targets.is_empty() {
+                            return IpcResponse {
+                                success: false,
+                                message: match &monitor {
+                                    Some(name) => Some(format!("Unknown monitor: {name}")),
+                                    None => Some("No outputs available".into()),
+                                },
+                            };
+                        }
+                        let mut restored_count = 0u32;
+                        for (name, rs) in &render_states {
+                            if monitor.as_deref() != Some(name.as_str()) && monitor.is_some() {
+                                continue;
+                            }
+                            let mut lock = rs.lock().await;
+                            if !lock.blanked {
+                                continue;
+                            }
+                            lock.blanked = false;
+                            if let Some((ref path, scaling_mode)) = lock.pre_blank.clone() {
+                                let restore_effect = crate::animation::Effect::Fade(
+                                    crate::animation::FadeParams::default(),
+                                );
+                                let _ = lock
+                                    .set_wallpaper(
+                                        std::path::Path::new(&path),
+                                        &restore_effect,
+                                        200,
+                                        scaling_mode,
+                                    )
+                                    .await;
+                            }
+                            lock.pre_blank = None;
+                            restored_count += 1;
+                        }
+                        IpcResponse {
+                            success: true,
+                            message: Some(format!("Restored {restored_count} output(s)")),
+                        }
+                    }
                 }
             }
         })
         .await?;
+
+        // Clean up render states when outputs are removed.
+        let mut render_states_cleanup = render_states.clone();
+        tokio::spawn(async move {
+            while let Some(name) = output_destroy_rx.recv().await {
+                tracing::info!("Cleaning up render state for removed output: {name}");
+                if let Some(rs) = render_states_cleanup.remove(&name) {
+                    let lock = rs.lock().await;
+                    lock.video_playback.stop();
+                }
+            }
+        });
 
         // Start file watcher if configured
         if self.config.watch.enabled
@@ -1582,6 +1783,10 @@ impl Daemon {
             video_playback: std::sync::Arc::new(crate::video::VideoPlayback::new()),
             hw_accel: crate::video::HwAccel::from_config(&config.video.hw_decode),
             scaling_mode: 0,
+            per_output_uniforms: std::sync::Arc::new(renderer.create_per_output_uniforms()),
+            last_wallpaper: None,
+            pre_blank: None,
+            blanked: false,
         })
     }
 }

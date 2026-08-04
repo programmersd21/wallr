@@ -6,11 +6,19 @@ use tokio::net::{UnixListener, UnixStream};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum IpcCommand {
-    Pause,
-    Resume,
+    Pause {
+        #[serde(default)]
+        monitor: Option<String>,
+    },
+    Resume {
+        #[serde(default)]
+        monitor: Option<String>,
+    },
     Reload,
     Seek {
         timestamp_ms: u64,
+        #[serde(default)]
+        monitor: Option<String>,
     },
     Preview {
         path: String,
@@ -27,9 +35,20 @@ pub enum IpcCommand {
     },
     Stop,
     Status,
-    Info,
+    Info {
+        #[serde(default)]
+        monitor: Option<String>,
+    },
     MonitorList,
     MonitorCurrent,
+    Blank {
+        #[serde(default)]
+        monitor: Option<String>,
+    },
+    Restore {
+        #[serde(default)]
+        monitor: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
