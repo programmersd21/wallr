@@ -488,6 +488,8 @@ struct RenderState {
     pre_blank: Option<(std::path::PathBuf, u32)>,
     /// Whether this output is currently blanked.
     blanked: bool,
+    /// GIF playback paused state (shared with play_live task).
+    gif_paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Everything the transition render task needs; the daemon state has already
@@ -525,6 +527,8 @@ impl RenderState {
         self.scaling_mode = scaling_mode;
         let commit = self.commit_wallpaper(path, scaling_mode)?;
         self.spawn_transition(commit, effect, duration_ms);
+        // Update last_wallpaper after successful commit
+        self.last_wallpaper = Some(path.to_path_buf());
         Ok(())
     }
 
@@ -685,6 +689,7 @@ impl RenderState {
         let pacer = self.pacer.clone();
         let video_playback = self.video_playback.clone();
         let per_output_uniforms = std::sync::Arc::clone(&self.per_output_uniforms);
+        let gif_paused = self.gif_paused.clone();
         let effect = effect.clone();
         drop(tokio::task::spawn_blocking(move || {
             render_transition(
@@ -694,6 +699,7 @@ impl RenderState {
                 playback_gen,
                 pacer,
                 video_playback,
+                gif_paused,
                 commit,
                 effect,
                 duration_ms,
@@ -718,6 +724,7 @@ fn render_transition(
     playback_gen: std::sync::Arc<std::sync::atomic::AtomicU64>,
     pacer: std::sync::Arc<LivePacer>,
     video_playback: std::sync::Arc<crate::video::VideoPlayback>,
+    gif_paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
     mut commit: CommitData,
     effect: crate::animation::Effect,
     duration_ms: u32,
@@ -775,6 +782,7 @@ fn render_transition(
             animated,
             &playback_gen,
             &pacer,
+            &gif_paused,
             per_output_uniforms,
         );
     } else if commit.is_video && playback_gen.load(Ordering::SeqCst) == commit.generation {
@@ -801,6 +809,7 @@ fn play_live(
     animated: &mut crate::animated::AnimatedImage,
     playback_gen: &std::sync::atomic::AtomicU64,
     pacer: &LivePacer,
+    gif_paused: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     per_output_uniforms: &crate::renderer::PerOutputUniforms,
 ) {
     let (tex_a, bind_a) = renderer.create_texture(animated.width, animated.height);
@@ -896,12 +905,46 @@ fn play_live(
     let mut next_frame = 0usize; // frame index currently in the idle texture
     let mut slot = 0usize; // staging ring slot for the next upload
     let start = std::time::Instant::now();
+    let mut paused_elapsed = std::time::Duration::ZERO; // Accumulated pause time
     let static_effect = crate::animation::Effect::Fade(crate::animation::FadeParams::default());
     loop {
         if playback_gen.load(Ordering::SeqCst) != commit.generation {
             return;
         }
-        let index = animated.frame_index_at(start.elapsed());
+        
+        // Check if paused - if so, keep presenting the current frame but don't advance
+        if gif_paused.load(Ordering::SeqCst) {
+            let pause_start = std::time::Instant::now();
+            // Keep presenting the current frame while paused
+            let uniforms = crate::animation::compute_effect_uniforms(&static_effect, 1.0);
+            let status = renderer.render_frame(
+                crate::renderer::FrameRequest {
+                    surface,
+                    format: commit.format,
+                    bg_bind: &binds[cur],
+                    new_bind: &binds[cur],
+                    effect: &uniforms,
+                    width: commit.width,
+                    height: commit.height,
+                    img_width: animated.width,
+                    img_height: animated.height,
+                    old_img_width: animated.width,
+                    old_img_height: animated.height,
+                    scaling_mode: commit.scaling_mode,
+                },
+                per_output_uniforms,
+            );
+            match status {
+                Ok(crate::renderer::FrameStatus::Presented) => {}
+                _ => return,
+            }
+            // Wait a bit before checking again
+            std::thread::sleep(std::time::Duration::from_millis(16));
+            paused_elapsed += pause_start.elapsed();
+            continue;
+        }
+        
+        let index = animated.frame_index_at(start.elapsed() - paused_elapsed);
         if index != cur_frame {
             if next_frame != index {
                 upload(renderer, cur ^ 1, index, slot, animated);
@@ -941,7 +984,7 @@ fn play_live(
         // so add the completed loops) to stay correct after the animation
         // wraps. While waiting, warm the idle texture with the next frame so
         // the wake path stays on the hot critical section.
-        let elapsed = start.elapsed();
+        let elapsed = start.elapsed() - paused_elapsed;
         let total: std::time::Duration = animated.total_duration();
         let loops = (elapsed.as_millis() / total.as_millis().max(1)) as u64;
         let next_change = animated.frame_start(index + 1) + total * (loops as u32);
@@ -1294,6 +1337,7 @@ impl Daemon {
                         for rs in targets {
                             let rs_lock = rs.lock().await;
                             rs_lock.video_playback.pause();
+                            rs_lock.gif_paused.store(true, Ordering::SeqCst);
                         }
                         IpcResponse {
                             success: true,
@@ -1314,6 +1358,7 @@ impl Daemon {
                         for rs in targets {
                             let rs_lock = rs.lock().await;
                             rs_lock.video_playback.resume();
+                            rs_lock.gif_paused.store(false, Ordering::SeqCst);
                         }
                         IpcResponse {
                             success: true,
@@ -1495,21 +1540,47 @@ impl Daemon {
                                 },
                             };
                         }
-                        // Seek on the first matching output (seek is per-output).
-                        let target_rs = targets.into_iter().next().unwrap();
-                        let rs_lock = target_rs.lock().await;
-                        match rs_lock
-                            .video_playback
-                            .seek(std::time::Duration::from_millis(timestamp_ms))
-                        {
-                            Ok(()) => IpcResponse {
-                                success: true,
-                                message: Some(format!("Seeked to {}ms", timestamp_ms)),
-                            },
-                            Err(e) => IpcResponse {
+                        // When monitor is unspecified, seek all outputs
+                        let mut seek_count = 0u32;
+                        let mut errors = Vec::new();
+                        for (name, rs) in render_states.iter() {
+                            if monitor.as_deref() != Some(name.as_str()) && monitor.is_some() {
+                                continue;
+                            }
+                            let rs_lock = rs.lock().await;
+                            match rs_lock
+                                .video_playback
+                                .seek(std::time::Duration::from_millis(timestamp_ms))
+                            {
+                                Ok(()) => {
+                                    seek_count += 1;
+                                }
+                                Err(e) => {
+                                    errors.push(format!("{}: {}", name, e));
+                                }
+                            }
+                        }
+                        if seek_count == 0 {
+                            IpcResponse {
                                 success: false,
-                                message: Some(format!("Seek failed: {}", e)),
-                            },
+                                message: Some(format!("Seek failed on all outputs: {}", errors.join("; "))),
+                            }
+                        } else if !errors.is_empty() {
+                            IpcResponse {
+                                success: true,
+                                message: Some(format!(
+                                    "Seeked {} output(s) to {}ms, {} failed: {}",
+                                    seek_count,
+                                    timestamp_ms,
+                                    errors.len(),
+                                    errors.join("; ")
+                                )),
+                            }
+                        } else {
+                            IpcResponse {
+                                success: true,
+                                message: Some(format!("Seeked {} output(s) to {}ms", seek_count, timestamp_ms)),
+                            }
                         }
                     }
                     IpcCommand::Info { monitor } => {
@@ -1693,6 +1764,7 @@ impl Daemon {
                             };
                         }
                         let mut restored_count = 0u32;
+                        let mut errors = Vec::new();
                         for (name, rs) in render_states.iter() {
                             if monitor.as_deref() != Some(name.as_str()) && monitor.is_some() {
                                 continue;
@@ -1701,26 +1773,57 @@ impl Daemon {
                             if !lock.blanked {
                                 continue;
                             }
-                            lock.blanked = false;
                             if let Some((ref path, scaling_mode)) = lock.pre_blank.clone() {
+                                // Validate path exists before attempting restore
+                                if !path.exists() {
+                                    errors.push(format!("{}: wallpaper path no longer exists", name));
+                                    lock.blanked = false;
+                                    lock.pre_blank = None;
+                                    continue;
+                                }
                                 let restore_effect = crate::animation::Effect::Fade(
                                     crate::animation::FadeParams::default(),
                                 );
-                                let _ = lock
+                                match lock
                                     .set_wallpaper(
                                         std::path::Path::new(&path),
                                         &restore_effect,
                                         200,
                                         scaling_mode,
                                     )
-                                    .await;
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        lock.blanked = false;
+                                        lock.pre_blank = None;
+                                        restored_count += 1;
+                                    }
+                                    Err(e) => {
+                                        errors.push(format!("{}: restore failed: {}", name, e));
+                                        lock.blanked = false;
+                                        lock.pre_blank = None;
+                                    }
+                                }
+                            } else {
+                                errors.push(format!("{}: no previous wallpaper to restore", name));
+                                lock.blanked = false;
                             }
-                            lock.pre_blank = None;
-                            restored_count += 1;
                         }
-                        IpcResponse {
-                            success: true,
-                            message: Some(format!("Restored {restored_count} output(s)")),
+                        if !errors.is_empty() {
+                            IpcResponse {
+                                success: restored_count > 0,
+                                message: Some(format!(
+                                    "Restored {} output(s), {} error(s): {}",
+                                    restored_count,
+                                    errors.len(),
+                                    errors.join("; ")
+                                )),
+                            }
+                        } else {
+                            IpcResponse {
+                                success: true,
+                                message: Some(format!("Restored {restored_count} output(s)")),
+                            }
                         }
                     }
                 }
@@ -1949,6 +2052,7 @@ impl Daemon {
             last_wallpaper: None,
             pre_blank: None,
             blanked: false,
+            gif_paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 }
@@ -2052,5 +2156,6 @@ fn create_render_state_for_output_sync(
         last_wallpaper: None,
         pre_blank: None,
         blanked: false,
+        gif_paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     })
 }

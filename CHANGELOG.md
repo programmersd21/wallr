@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.7
+
+- **Fix restore command**: `wallr ipc restore` now properly tracks the last set wallpaper and validates paths before attempting restore. Errors during restore are reported instead of being silently ignored.
+- **GIF pause/resume support**: `wallr ipc pause` and `wallr ipc resume` now correctly pause and resume GIF playback in addition to video playback. GIF timeline position is preserved when paused.
+- **Fix seek command**: `wallr ipc seek` without `--monitor` now applies to all connected outputs instead of arbitrarily selecting the first output from an unordered map.
+- **Hardware acceleration fallback improvements**: 
+  - New `auto` mode tries all hardware backends (NVDEC, VAAPI, VideoToolbox) in priority order before falling back to software
+  - Explicit backend requests (e.g., `nvdec`, `vaapi`) now correctly try the requested backend first, then fall back to software
+  - `software` mode now uses software-only decoding without attempting hardware backends first
+  - Active decoder backend is reported immediately after successful initialization instead of only when the decoder thread exits
+- **Better error reporting**: Restore and seek commands now provide detailed error messages per-output when operations fail.
+
 ## 0.2.6
 
 - **#7 Full output hotplug**: Outputs that connect after daemon startup are automatically detected, and a LayerSurface + wgpu surface + render state is created for them. Disconnected outputs are cleaned up (playback stopped, render state removed, surfaces released). Output resolution, scale, and transform changes reconfigure the wgpu surface on the fly. `wallr monitor list` stays synchronized without restarting the daemon. Commands targeting disconnected outputs return an error.

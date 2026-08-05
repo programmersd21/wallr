@@ -8,15 +8,18 @@ MP4, WebM, MKV, MOV, and AVI. Anything FFmpeg can demux is a candidate; the FFmp
 
 ## Decoding
 
-- Hardware acceleration is selected automatically: VAAPI on Intel and AMD, NVDEC on NVIDIA, with a software fallback.
-- `video.hw_decode` forces `auto`, `vaapi`, `nvdec`, or `software`.
+- Hardware acceleration mode can be set via `video.hw_decode`:
+  - `auto` (default): tries all hardware backends (NVDEC, VAAPI, VideoToolbox) in priority order before falling back to software
+  - `vaapi`, `nvdec`, or `videotoolbox`: tries the specified backend first, then falls back to software if unavailable
+  - `software`: uses software-only decoding without attempting hardware backends
 - `video.preferred_gpu` controls adapter selection when both integrated and discrete GPUs are present.
 - Frames are decoded ahead into a small bounded queue and presented on PTS timing, so playback stays in sync without buffering the whole file.
 - `wallpaper.loop_video` (default `true`) restarts the stream when it ends, producing a continuous loop.
+- The active decoder backend is reported immediately in `wallr ipc info` after successful initialization.
 
 ## Playback control
 
-Control runs through the IPC channel:
+Control runs through the IPC channel and works for both video and GIF wallpapers:
 
 ```bash
 wallr ipc pause              # pause video or GIF playback
@@ -24,6 +27,8 @@ wallr ipc resume             # resume playback
 wallr ipc seek 1:30          # seek to 1 minute 30 seconds (HH:MM:SS or seconds)
 wallr ipc info               # version, GPU, decoder, and position
 ```
+
+All commands support `--monitor` to target a specific output. Without `--monitor`, pause/resume/seek applies to all connected outputs.
 
 ## Configuration
 

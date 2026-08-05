@@ -11,6 +11,8 @@ use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HwAccel {
+    /// Try all hardware backends in priority order, then software
+    Auto,
     Vaapi,
     Nvdec,
     VideoToolbox,
@@ -20,6 +22,7 @@ pub enum HwAccel {
 impl HwAccel {
     pub fn name(&self) -> &'static str {
         match self {
+            HwAccel::Auto => "Auto",
             HwAccel::Vaapi => "VAAPI",
             HwAccel::Nvdec => "NVDEC",
             HwAccel::VideoToolbox => "VideoToolbox",
@@ -29,6 +32,7 @@ impl HwAccel {
 
     const fn code(self) -> u8 {
         match self {
+            HwAccel::Auto => 0,
             HwAccel::Software => 1,
             HwAccel::Vaapi => 2,
             HwAccel::Nvdec => 3,
@@ -41,7 +45,8 @@ impl HwAccel {
             2 => HwAccel::Vaapi,
             3 => HwAccel::Nvdec,
             4 => HwAccel::VideoToolbox,
-            _ => HwAccel::Software,
+            1 => HwAccel::Software,
+            _ => HwAccel::Auto,
         }
     }
 
@@ -50,30 +55,13 @@ impl HwAccel {
             "vaapi" => HwAccel::Vaapi,
             "nvdec" | "nvidia" | "cuda" => HwAccel::Nvdec,
             "software" | "none" | "off" => HwAccel::Software,
-            _ => HwAccel::detect_available(),
+            _ => HwAccel::Auto,
         }
-    }
-
-    /// NVDEC preferred on Linux (common primary GPU on hybrid systems),
-    /// then VAAPI, then VideoToolbox on macOS.
-    pub fn detect_available() -> HwAccel {
-        #[cfg(target_os = "linux")]
-        {
-            if Path::new("/dev/nvidia0").exists() {
-                return HwAccel::Nvdec;
-            }
-            if Path::new("/dev/dri/renderD128").exists() {
-                return HwAccel::Vaapi;
-            }
-        }
-        #[cfg(target_os = "macos")]
-        {
-            return HwAccel::VideoToolbox;
-        }
-        HwAccel::Software
     }
 
     /// All hardware backends in priority order for auto-detection fallback.
+    /// NVDEC preferred on Linux (common primary GPU on hybrid systems),
+    /// then VAAPI, then VideoToolbox on macOS.
     fn all_hardware() -> &'static [HwAccel] {
         &[HwAccel::Nvdec, HwAccel::Vaapi, HwAccel::VideoToolbox]
     }
@@ -157,7 +145,7 @@ impl VideoDecoder {
         let decode_thread = thread::Builder::new()
             .name("wallr-video-decoder".to_string())
             .spawn(move || {
-                let used = Self::decode_loop(path, hw_accel, frame_tx, control_rx, stop_flag_clone);
+                let used = Self::decode_loop(path, hw_accel, frame_tx, control_rx, stop_flag_clone, hw_in_use_clone.clone());
                 let used = match used {
                     Ok(used) => used,
                     Err(e) => {
@@ -166,6 +154,7 @@ impl VideoDecoder {
                     }
                 };
                 tracing::info!("Decode thread exited (backend: {})", used.name());
+                // Update again on exit in case it wasn't set during init
                 hw_in_use_clone.store(used.code(), Ordering::Relaxed);
             })
             .map_err(|e| VideoError::SoftwareDecoderInit(e.into()))?;
@@ -245,7 +234,7 @@ impl VideoDecoder {
             HwAccel::Vaapi => ("vaapi", Some(c"/dev/dri/renderD128")),
             HwAccel::Nvdec => ("cuda", Some(c"0")),
             HwAccel::VideoToolbox => ("videotoolbox", None),
-            HwAccel::Software => return None,
+            HwAccel::Software | HwAccel::Auto => return None,
         };
 
         let type_name_c = CString::new(type_name).ok()?;
@@ -303,24 +292,40 @@ impl VideoDecoder {
         }
     }
 
-    /// Build a decoder, trying all hardware backends before software.
+    /// Build a decoder with appropriate hardware acceleration fallback.
+    /// 
+    /// - Auto: Try all hardware backends in priority order, then software
+    /// - Explicit backend (Vaapi, Nvdec, VideoToolbox): Try that backend, then software
+    /// - Software: Use software decoder only (no hardware attempts)
     fn build_decoder(
         stream: &ffmpeg::format::stream::Stream,
         hw_accel: HwAccel,
     ) -> (ffmpeg::codec::decoder::Video, HwAccel) {
-        // If a specific hardware backend was requested, try it first.
-        if hw_accel != HwAccel::Software {
-            if let Some(result) = Self::try_hw_decoder(stream, hw_accel) {
-                return result;
+        match hw_accel {
+            HwAccel::Auto => {
+                // Try all hardware backends in priority order
+                for &backend in HwAccel::all_hardware() {
+                    if let Some(result) = Self::try_hw_decoder(stream, backend) {
+                        return result;
+                    }
+                }
+                // Fall back to software
+                tracing::info!("All hardware backends failed, using software decoder");
             }
-        }
-
-        // In auto mode, try all remaining hardware backends before software.
-        if hw_accel == HwAccel::Software {
-            for &backend in HwAccel::all_hardware() {
-                if let Some(result) = Self::try_hw_decoder(stream, backend) {
+            HwAccel::Software => {
+                // Explicit software request: skip hardware entirely
+                tracing::info!("Software decoder explicitly requested");
+            }
+            specific => {
+                // Try the requested hardware backend first
+                if let Some(result) = Self::try_hw_decoder(stream, specific) {
                     return result;
                 }
+                // Fall back to software
+                tracing::info!(
+                    "{} hardware decoder failed, falling back to software",
+                    specific.name()
+                );
             }
         }
 
@@ -338,6 +343,7 @@ impl VideoDecoder {
         frame_tx: Sender<VideoFrame>,
         control_rx: Receiver<DecoderControl>,
         stop_flag: Arc<AtomicBool>,
+        hw_in_use: Arc<AtomicU8>,
     ) -> VideoResult<HwAccel> {
         let mut ictx = ffmpeg::format::input(&path).map_err(|e| VideoError::FileOpen {
             path: path.clone(),
@@ -354,6 +360,9 @@ impl VideoDecoder {
 
         let (mut decoder, used_hw) = Self::build_decoder(&stream, hw_accel);
         tracing::info!("Decoder in use: {}", used_hw.name());
+        
+        // Report the active backend immediately after successful initialization
+        hw_in_use.store(used_hw.code(), Ordering::Relaxed);
 
         let mut scaler: Option<ffmpeg::software::scaling::Context> = None;
         let mut scaler_src: Option<ffmpeg::format::Pixel> = None;
