@@ -647,9 +647,7 @@ mod tests {
         assert_eq!(HwAccel::from_config("vaapi"), HwAccel::Vaapi);
         assert_eq!(HwAccel::from_config("nvdec"), HwAccel::Nvdec);
         assert_eq!(HwAccel::from_config("software"), HwAccel::Software);
-        assert!(matches!(
-            HwAccel::from_config("auto"),
-            HwAccel::Vaapi | HwAccel::Nvdec | HwAccel::VideoToolbox | HwAccel::Software
-        ));
+        assert_eq!(HwAccel::from_config("auto"), HwAccel::Auto);
+        assert_eq!(HwAccel::from_config("unknown"), HwAccel::Auto);
     }
 }
