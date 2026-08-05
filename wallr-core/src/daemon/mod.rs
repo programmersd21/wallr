@@ -72,6 +72,7 @@ impl HasDisplayHandle for WaylandWindow {
     }
 }
 
+#[derive(Clone)]
 struct OutputInfo {
     name: String,
     width: u32,
@@ -87,9 +88,36 @@ struct WaylandState {
     shm: Shm,
     outputs: std::collections::HashMap<u32, OutputInfo>,
     surfaces: Vec<(u32, LayerSurface)>,
-    /// Sender for output destruction events. The daemon monitors this to clean
-    /// up stale render states when an output is removed.
-    output_destroy_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    /// Layer shell protocol object for creating background surfaces.
+    layer_shell: LayerShell,
+    /// Compositor protocol object for creating input regions.
+    compositor: wl_compositor::WlCompositor,
+    /// Shared daemon context for hotplug: creates and destroys render states
+    /// when outputs appear or disappear.
+    hotplug: Option<DaemonHotplug>,
+}
+
+/// Wrapper around `*mut c_void` that implements `Send`. The pointer is a
+/// Wayland display pointer that lives for the entire process lifetime.
+struct SendDisplayPtr(*mut std::ffi::c_void);
+unsafe impl Send for SendDisplayPtr {}
+
+/// Shared context for hotplug operations. Stored in `WaylandState` so the
+/// output callbacks can create/destroy render states without needing access
+/// to the full `Daemon` state.
+struct DaemonHotplug {
+    renderer: std::sync::Arc<Renderer>,
+    config: crate::config::WallrConfig,
+    display_ptr: SendDisplayPtr,
+    /// Shared render-state map. Protected by `tokio::sync::Mutex` so the IPC
+    /// handler (async) and the Wayland callbacks (sync, via `blocking_dispatch`)
+    /// can both access it. The Wayland thread never holds this across an await,
+    /// so there is no risk of deadlocking the event loop.
+    render_states: std::sync::Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<RenderState>>>,
+        >,
+    >,
 }
 
 impl ProvidesRegistryState for WaylandState {
@@ -188,14 +216,85 @@ impl OutputHandler for WaylandState {
     ) {
         let id = output.id().protocol_id();
         tracing::info!("Output detected: protocol_id={id}");
-        let info = OutputInfo {
+
+        let mut info = OutputInfo {
             name: format!("output-{id}"),
             width: 1920,
             height: 1080,
             scale_factor: 1,
             wl_output: output,
         };
-        self.outputs.insert(id, info);
+
+        // Resolve the compositor-provided name (e.g. "DP-1", "HDMI-A-1").
+        if let Some(info_data) = self.output_state.info(&info.wl_output) {
+            if let Some(mode) = info_data.modes.iter().find(|m| m.current) {
+                info.width = mode.dimensions.0 as u32;
+                info.height = mode.dimensions.1 as u32;
+            }
+            info.scale_factor = info_data.scale_factor;
+            let resolved = info_data
+                .name
+                .as_deref()
+                .filter(|n| !n.is_empty())
+                .or(info_data.description.as_deref().filter(|n| !n.is_empty()));
+            if let Some(real_name) = resolved {
+                info.name = real_name.to_string();
+            } else if !info_data.make.is_empty() || !info_data.model.is_empty() {
+                let fallback = format!("{} {}", info_data.make, info_data.model)
+                    .trim()
+                    .to_string();
+                if !fallback.is_empty() {
+                    info.name = fallback;
+                }
+            }
+        }
+
+        self.outputs.insert(id, info.clone());
+
+        // Create a render state for the new output.
+        // Extract values from hotplug before passing &mut self to avoid
+        // borrow checker conflicts (hotplug is inside self).
+        if self.hotplug.is_some() {
+            let name = info.name.clone();
+            let renderer = self.hotplug.as_ref().unwrap().renderer.clone();
+            let display_ptr = self.hotplug.as_ref().unwrap().display_ptr.0;
+            let config = self.hotplug.as_ref().unwrap().config.clone();
+            let render_states = self.hotplug.as_ref().unwrap().render_states.clone();
+            match create_render_state_for_output_sync(
+                &renderer,
+                display_ptr,
+                self,
+                _qh,
+                &info,
+                &config,
+            ) {
+                Ok(rs) => {
+                    let rs = std::sync::Arc::new(tokio::sync::Mutex::new(rs));
+                    tokio::spawn(async move {
+                        render_states.lock().await.insert(name.clone(), rs.clone());
+
+                        // Restore per-output last wallpaper.
+                        let state_path = dirs::cache_dir()
+                            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                            .join(format!("wallr/last_wallpaper/{name}"));
+                        if let Ok(path_str) = std::fs::read_to_string(&state_path) {
+                            let p = std::path::Path::new(path_str.trim());
+                            if p.exists() {
+                                let mut lock = rs.lock().await;
+                                let effect = crate::animation::Effect::Fade(
+                                    crate::animation::FadeParams::default(),
+                                );
+                                let _ = lock.set_wallpaper(p, &effect, 0, 0).await;
+                            }
+                        }
+                        tracing::info!("Hotplug: output {name} ready");
+                    });
+                }
+                Err(e) => {
+                    tracing::error!("Hotplug: failed to create render state for {name}: {e}");
+                }
+            }
+        }
     }
     fn update_output(
         &mut self,
@@ -205,19 +304,20 @@ impl OutputHandler for WaylandState {
     ) {
         let id = output.id().protocol_id();
         if let Some(info) = self.outputs.get_mut(&id) {
+            let mut new_width = info.width;
+            let mut new_height = info.height;
+            let mut new_scale = info.scale_factor;
+
             if let Some(mode) = self
                 .output_state
                 .info(&output)
                 .and_then(|i| i.modes.iter().find(|m| m.current).cloned())
             {
-                info.width = mode.dimensions.0 as u32;
-                info.height = mode.dimensions.1 as u32;
+                new_width = mode.dimensions.0 as u32;
+                new_height = mode.dimensions.1 as u32;
             }
             if let Some(info_data) = self.output_state.info(&output) {
-                info.scale_factor = info_data.scale_factor;
-                // Always try to apply the real output name from the
-                // compositor (e.g. "DP-1", "HDMI-A-1", "eDP-1").
-                // Fall back to description, then to make+model.
+                new_scale = info_data.scale_factor;
                 let resolved = info_data
                     .name
                     .as_deref()
@@ -248,6 +348,44 @@ impl OutputHandler for WaylandState {
                     }
                 }
             }
+
+            let new_w = new_width * new_scale as u32;
+            let new_h = new_height * new_scale as u32;
+            let changed =
+                new_w != info.width || new_h != info.height || new_scale != info.scale_factor;
+
+            info.width = new_width;
+            info.height = new_height;
+            info.scale_factor = new_scale;
+
+            // Reconfigure the wgpu surface when dimensions or scale change.
+            if changed {
+                let name = info.name.clone();
+                if let Some(ref hotplug) = self.hotplug {
+                    let render_states = hotplug.render_states.clone();
+                    let renderer = hotplug.renderer.clone();
+                    tokio::spawn(async move {
+                        let states = render_states.lock().await;
+                        if let Some(rs) = states.get(&name) {
+                            let mut lock = rs.lock().await;
+                            lock.width = new_w;
+                            lock.height = new_h;
+                            let surf_config = wgpu::SurfaceConfiguration {
+                                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                                format: lock.format,
+                                width: new_w,
+                                height: new_h,
+                                present_mode: wgpu::PresentMode::Fifo,
+                                alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+                                view_formats: vec![],
+                                desired_maximum_frame_latency: 2,
+                            };
+                            lock.surface.configure(&renderer.device, &surf_config);
+                            tracing::info!("Hotplug: reconfigured {name} to {new_w}x{new_h}");
+                        }
+                    });
+                }
+            }
         }
     }
     fn output_destroyed(
@@ -259,7 +397,20 @@ impl OutputHandler for WaylandState {
         let id = output.id().protocol_id();
         if let Some(info) = self.outputs.remove(&id) {
             tracing::info!("Output disconnected: {} (protocol_id={})", info.name, id);
-            let _ = self.output_destroy_tx.send(info.name);
+            // Remove the LayerSurface from our tracking list.
+            self.surfaces.retain(|(pid, _)| *pid != id);
+            // Remove the render state from the shared map and stop playback.
+            if let Some(ref hotplug) = self.hotplug {
+                let name = info.name.clone();
+                let render_states = hotplug.render_states.clone();
+                tokio::spawn(async move {
+                    if let Some(rs) = render_states.lock().await.remove(&name) {
+                        let lock = rs.lock().await;
+                        lock.video_playback.stop();
+                        tracing::info!("Hotplug: cleaned up render state for {name}");
+                    }
+                });
+            }
         }
     }
 }
@@ -962,19 +1113,6 @@ impl Daemon {
         let shm = Shm::bind(&globals, &qh)
             .map_err(|e| DaemonError::StartError(format!("shm bind failed: {e:?}")))?;
 
-        let (output_destroy_tx, mut output_destroy_rx) =
-            tokio::sync::mpsc::unbounded_channel::<String>();
-
-        let mut wayland_state = WaylandState {
-            registry_state: RegistryState::new(&globals),
-            output_state: OutputState::new(&globals, &qh),
-            compositor_state,
-            shm,
-            outputs: std::collections::HashMap::new(),
-            surfaces: Vec::new(),
-            output_destroy_tx,
-        };
-
         // Bind compositor once for creating empty input regions (passthrough).
         let compositor = globals
             .bind::<wl_compositor::WlCompositor, WaylandState, smithay_client_toolkit::globals::GlobalData>(
@@ -983,6 +1121,18 @@ impl Daemon {
                 smithay_client_toolkit::globals::GlobalData,
             )
             .map_err(|e| DaemonError::StartError(format!("compositor bind failed: {e:?}")))?;
+
+        let mut wayland_state = WaylandState {
+            registry_state: RegistryState::new(&globals),
+            output_state: OutputState::new(&globals, &qh),
+            compositor_state,
+            shm,
+            outputs: std::collections::HashMap::new(),
+            surfaces: Vec::new(),
+            layer_shell,
+            compositor,
+            hotplug: None,
+        };
 
         // Multiple roundtrips: some compositors deliver output events lazily
         // across several dispatch cycles. Five roundtrips ensures all outputs
@@ -1014,7 +1164,7 @@ impl Daemon {
         // Create a LayerSurface, wgpu Surface, and RenderState for every
         // known output. The key is the output's human-readable name (e.g.
         // "DP-1", "eDP-1") so IPC can target a specific monitor.
-        let mut render_states: std::collections::HashMap<String, Arc<Mutex<RenderState>>> =
+        let mut render_states_map: std::collections::HashMap<String, Arc<Mutex<RenderState>>> =
             std::collections::HashMap::new();
 
         // Collect output info first so we can pass &mut wayland_state to the
@@ -1043,14 +1193,12 @@ impl Daemon {
                 display_ptr,
                 &mut wayland_state,
                 &qh,
-                &layer_shell,
-                &compositor,
                 info,
                 &self.config,
             )
             .await?;
             let rs = Arc::new(Mutex::new(rs));
-            render_states.insert(name.clone(), rs.clone());
+            render_states_map.insert(name.clone(), rs.clone());
 
             // Restore per-output last wallpaper.
             let state_path = dirs::cache_dir()
@@ -1068,6 +1216,27 @@ impl Daemon {
 
             tracing::info!("Output ready: {name} ({proto_id})");
         }
+
+        // Wrap the render-state map in Arc<Mutex<...>> so it can be shared
+        // between the Wayland event loop (hotplug) and the IPC handler.
+        let render_states: std::sync::Arc<
+            tokio::sync::Mutex<std::collections::HashMap<String, Arc<Mutex<RenderState>>>>,
+        > = std::sync::Arc::new(tokio::sync::Mutex::new(render_states_map));
+
+        // Store the hotplug context in WaylandState so output callbacks can
+        // create/destroy render states when outputs appear or disappear.
+        wayland_state.hotplug = Some(DaemonHotplug {
+            renderer: renderer.clone(),
+            config: self.config.clone(),
+            display_ptr: SendDisplayPtr(display_ptr),
+            render_states: render_states.clone(),
+        });
+
+        // One more roundtrip to catch outputs that appeared between the
+        // initial roundtrips and the hotplug context being stored.
+        event_queue
+            .roundtrip(&mut wayland_state)
+            .map_err(|e| DaemonError::StartError(format!("hotplug roundtrip failed: {e:?}")))?;
 
         let paused_clone = self.paused.clone();
         let engine_clone = self.engine.clone();
@@ -1090,11 +1259,13 @@ impl Daemon {
                     _ = hup.recv() => {}
                 }
                 tracing::info!("Signal received, shutting down gracefully");
-                for rs in rs_map.values() {
+                let states = rs_map.lock().await;
+                for rs in states.values() {
                     if let Ok(state) = rs.try_lock() {
                         state.video_playback.stop();
                     }
                 }
+                drop(states);
                 let _ = std::fs::remove_file(&socket_path);
                 std::process::exit(0);
             });
@@ -1107,6 +1278,7 @@ impl Daemon {
             let render_states = render_states_clone.clone();
             let stop_socket = ipc_socket_path.clone();
             async move {
+                let render_states = render_states.lock().await;
                 match cmd {
                     IpcCommand::Pause { monitor } => {
                         let targets = resolve_targets(&render_states, monitor.as_deref()).await;
@@ -1362,7 +1534,7 @@ impl Daemon {
                         }
 
                         // Collect target output info
-                        for (name, rs) in &render_states {
+                        for (name, rs) in render_states.iter() {
                             if monitor.is_some() && monitor.as_deref() != Some(name.as_str()) {
                                 continue;
                             }
@@ -1433,7 +1605,7 @@ impl Daemon {
                     }
                     IpcCommand::MonitorList => {
                         let mut lines = Vec::new();
-                        for (name, rs) in &render_states {
+                        for (name, rs) in render_states.iter() {
                             let lock = rs.lock().await;
                             lines.push(format!("{}: {}x{}", name, lock.width, lock.height));
                         }
@@ -1476,7 +1648,7 @@ impl Daemon {
                             };
                         }
                         let mut blanked_count = 0u32;
-                        for (name, rs) in &render_states {
+                        for (name, rs) in render_states.iter() {
                             if monitor.as_deref() != Some(name.as_str()) && monitor.is_some() {
                                 continue;
                             }
@@ -1521,7 +1693,7 @@ impl Daemon {
                             };
                         }
                         let mut restored_count = 0u32;
-                        for (name, rs) in &render_states {
+                        for (name, rs) in render_states.iter() {
                             if monitor.as_deref() != Some(name.as_str()) && monitor.is_some() {
                                 continue;
                             }
@@ -1556,24 +1728,13 @@ impl Daemon {
         })
         .await?;
 
-        // Clean up render states when outputs are removed.
-        let mut render_states_cleanup = render_states.clone();
-        tokio::spawn(async move {
-            while let Some(name) = output_destroy_rx.recv().await {
-                tracing::info!("Cleaning up render state for removed output: {name}");
-                if let Some(rs) = render_states_cleanup.remove(&name) {
-                    let lock = rs.lock().await;
-                    lock.video_playback.stop();
-                }
-            }
-        });
-
         // Start file watcher if configured
         if self.config.watch.enabled
             && let Some(ref watch_dir) = self.config.watch.dir
         {
             let watch_path = crate::config::expand_path(watch_dir);
-            self.start_watcher(watch_path, render_states).await?;
+            self.start_watcher(watch_path, render_states.clone())
+                .await?;
         }
 
         tokio::task::spawn_blocking(move || {
@@ -1598,7 +1759,9 @@ impl Daemon {
     async fn start_watcher(
         &self,
         dir: PathBuf,
-        render_states: std::collections::HashMap<String, Arc<Mutex<RenderState>>>,
+        render_states: std::sync::Arc<
+            tokio::sync::Mutex<std::collections::HashMap<String, Arc<Mutex<RenderState>>>>,
+        >,
     ) -> Result<(), DaemonError> {
         let engine = self.engine.clone();
         let paused = self.paused.clone();
@@ -1646,8 +1809,9 @@ impl Daemon {
                 }
                 last = Some((path.clone(), std::time::Instant::now()));
 
-                // Apply new wallpaper to every output.
-                for (name, rs) in &render_states {
+                // Apply new wallpaper to every connected output.
+                let states = render_states.lock().await;
+                for (name, rs) in states.iter() {
                     let rs = rs.clone();
                     let eng = engine.clone();
                     let p = path.clone();
@@ -1681,13 +1845,11 @@ impl Daemon {
         display_ptr: *mut std::ffi::c_void,
         wayland_state: &mut WaylandState,
         qh: &QueueHandle<WaylandState>,
-        layer_shell: &LayerShell,
-        compositor: &wl_compositor::WlCompositor,
         output: &OutputInfo,
         config: &WallrConfig,
     ) -> Result<RenderState, DaemonError> {
         let wl_surface = wayland_state.compositor_state.create_surface(qh);
-        let layer_surface = layer_shell.create_layer_surface(
+        let layer_surface = wayland_state.layer_shell.create_layer_surface(
             qh,
             wl_surface,
             Layer::Background,
@@ -1699,7 +1861,7 @@ impl Daemon {
         layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
 
         // Empty input region so clicks pass through to the desktop.
-        let empty_region = compositor.create_region(qh, ());
+        let empty_region = wayland_state.compositor.create_region(qh, ());
         layer_surface
             .wl_surface()
             .set_input_region(Some(&empty_region));
@@ -1789,4 +1951,106 @@ impl Daemon {
             blanked: false,
         })
     }
+}
+
+/// Synchronous version of `Daemon::create_render_state_for_output` for hotplug.
+/// Reuses the existing adapter from the renderer instead of requesting a
+/// new one, avoiding the async requirement.
+#[allow(clippy::too_many_arguments)]
+fn create_render_state_for_output_sync(
+    renderer: &std::sync::Arc<Renderer>,
+    display_ptr: *mut std::ffi::c_void,
+    wayland_state: &mut WaylandState,
+    qh: &QueueHandle<WaylandState>,
+    output: &OutputInfo,
+    config: &WallrConfig,
+) -> Result<RenderState, DaemonError> {
+    let wl_surface = wayland_state.compositor_state.create_surface(qh);
+    let layer_surface = wayland_state.layer_shell.create_layer_surface(
+        qh,
+        wl_surface,
+        Layer::Background,
+        Some("wallr"),
+        Some(&output.wl_output),
+    );
+    layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+    layer_surface.set_exclusive_zone(-1);
+    layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
+
+    let empty_region = wayland_state.compositor.create_region(qh, ());
+    layer_surface
+        .wl_surface()
+        .set_input_region(Some(&empty_region));
+    layer_surface.commit();
+    empty_region.destroy();
+
+    let scale_factor = if output.scale_factor > 0 {
+        output.scale_factor
+    } else {
+        1
+    };
+    layer_surface.wl_surface().set_buffer_scale(scale_factor);
+
+    let width = output.width * scale_factor as u32;
+    let height = output.height * scale_factor as u32;
+
+    let raw_surface = layer_surface.wl_surface().id().as_ptr() as *mut std::ffi::c_void;
+    wayland_state
+        .surfaces
+        .push((output.wl_output.id().protocol_id(), layer_surface));
+
+    let window_handle = WaylandWindow {
+        display: display_ptr,
+        surface: raw_surface,
+    };
+
+    let wgpu_surface = renderer
+        .instance
+        .create_surface(&window_handle)
+        .map_err(|e| DaemonError::StartError(format!("wgpu surface creation failed: {e:?}")))?;
+
+    let surf_format = {
+        let caps = wgpu_surface.get_capabilities(&renderer.adapter);
+        caps.formats
+            .into_iter()
+            .next()
+            .unwrap_or(wgpu::TextureFormat::Bgra8UnormSrgb)
+    };
+
+    let surf_config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format: surf_format,
+        width,
+        height,
+        present_mode: wgpu::PresentMode::Fifo,
+        alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+        view_formats: vec![],
+        desired_maximum_frame_latency: 2,
+    };
+    wgpu_surface.configure(&renderer.device, &surf_config);
+
+    let wgpu_surface: wgpu::Surface<'static> = unsafe { std::mem::transmute(wgpu_surface) };
+    let surface: &'static wgpu::Surface<'static> = Box::leak(Box::new(wgpu_surface));
+
+    Ok(RenderState {
+        renderer: renderer.clone(),
+        surface,
+        render_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
+        playback_gen: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        pacer: std::sync::Arc::new(LivePacer::new()),
+        current_bind: None,
+        current_tex: None,
+        width,
+        height,
+        current_width: 0,
+        current_height: 0,
+        format: surf_format,
+        video_playback: std::sync::Arc::new(crate::video::VideoPlayback::new()),
+        hw_accel: crate::video::HwAccel::from_config(&config.video.hw_decode),
+        scaling_mode: 0,
+        per_output_uniforms: std::sync::Arc::new(renderer.create_per_output_uniforms()),
+        last_wallpaper: None,
+        pre_blank: None,
+        blanked: false,
+    })
 }
