@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.8
+
+- **Fix surface size crash on fractional scale**: Compositors using non-integer scale factors (e.g. 1.25 on niri, Hyprland) no longer multiply physical dimensions by `scale_factor`, which caused surfaces to exceed GPU texture limits (e.g. 3840x2160 at scale 1.25 was incorrectly rendered as 7680x4320). `mode.dimensions` already returns physical pixels; the redundant multiplication has been removed from all three surface creation paths.
+
 ## 0.2.7
 
 - **Fix restore command**: `wallr ipc restore` now properly tracks the last set wallpaper and validates paths before attempting restore. Errors during restore are reported instead of being silently ignored.

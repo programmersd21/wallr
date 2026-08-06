@@ -145,7 +145,14 @@ impl VideoDecoder {
         let decode_thread = thread::Builder::new()
             .name("wallr-video-decoder".to_string())
             .spawn(move || {
-                let used = Self::decode_loop(path, hw_accel, frame_tx, control_rx, stop_flag_clone, hw_in_use_clone.clone());
+                let used = Self::decode_loop(
+                    path,
+                    hw_accel,
+                    frame_tx,
+                    control_rx,
+                    stop_flag_clone,
+                    hw_in_use_clone.clone(),
+                );
                 let used = match used {
                     Ok(used) => used,
                     Err(e) => {
@@ -293,7 +300,7 @@ impl VideoDecoder {
     }
 
     /// Build a decoder with appropriate hardware acceleration fallback.
-    /// 
+    ///
     /// - Auto: Try all hardware backends in priority order, then software
     /// - Explicit backend (Vaapi, Nvdec, VideoToolbox): Try that backend, then software
     /// - Software: Use software decoder only (no hardware attempts)
@@ -360,7 +367,7 @@ impl VideoDecoder {
 
         let (mut decoder, used_hw) = Self::build_decoder(&stream, hw_accel);
         tracing::info!("Decoder in use: {}", used_hw.name());
-        
+
         // Report the active backend immediately after successful initialization
         hw_in_use.store(used_hw.code(), Ordering::Relaxed);
 

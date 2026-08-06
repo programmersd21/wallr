@@ -349,10 +349,9 @@ impl OutputHandler for WaylandState {
                 }
             }
 
-            let new_w = new_width * new_scale as u32;
-            let new_h = new_height * new_scale as u32;
-            let changed =
-                new_w != info.width || new_h != info.height || new_scale != info.scale_factor;
+            let changed = new_width != info.width
+                || new_height != info.height
+                || new_scale != info.scale_factor;
 
             info.width = new_width;
             info.height = new_height;
@@ -368,20 +367,22 @@ impl OutputHandler for WaylandState {
                         let states = render_states.lock().await;
                         if let Some(rs) = states.get(&name) {
                             let mut lock = rs.lock().await;
-                            lock.width = new_w;
-                            lock.height = new_h;
+                            lock.width = new_width;
+                            lock.height = new_height;
                             let surf_config = wgpu::SurfaceConfiguration {
                                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                                 format: lock.format,
-                                width: new_w,
-                                height: new_h,
+                                width: new_width,
+                                height: new_height,
                                 present_mode: wgpu::PresentMode::Fifo,
                                 alpha_mode: wgpu::CompositeAlphaMode::Opaque,
                                 view_formats: vec![],
                                 desired_maximum_frame_latency: 2,
                             };
                             lock.surface.configure(&renderer.device, &surf_config);
-                            tracing::info!("Hotplug: reconfigured {name} to {new_w}x{new_h}");
+                            tracing::info!(
+                                "Hotplug: reconfigured {name} to {new_width}x{new_height}"
+                            );
                         }
                     });
                 }
@@ -802,6 +803,7 @@ fn render_transition(
 /// Two textures are double-buffered and frames are decompressed directly
 /// into a mapped staging ring (no intermediate copy), so the wake path only
 /// presents and the pacing sleep hides the decode/upload entirely.
+#[allow(clippy::too_many_arguments)]
 fn play_live(
     renderer: &Renderer,
     surface: &'static wgpu::Surface<'static>,
@@ -911,7 +913,7 @@ fn play_live(
         if playback_gen.load(Ordering::SeqCst) != commit.generation {
             return;
         }
-        
+
         // Check if paused - if so, keep presenting the current frame but don't advance
         if gif_paused.load(Ordering::SeqCst) {
             let pause_start = std::time::Instant::now();
@@ -943,7 +945,7 @@ fn play_live(
             paused_elapsed += pause_start.elapsed();
             continue;
         }
-        
+
         let index = animated.frame_index_at(start.elapsed() - paused_elapsed);
         if index != cur_frame {
             if next_frame != index {
@@ -1563,7 +1565,10 @@ impl Daemon {
                         if seek_count == 0 {
                             IpcResponse {
                                 success: false,
-                                message: Some(format!("Seek failed on all outputs: {}", errors.join("; "))),
+                                message: Some(format!(
+                                    "Seek failed on all outputs: {}",
+                                    errors.join("; ")
+                                )),
                             }
                         } else if !errors.is_empty() {
                             IpcResponse {
@@ -1579,7 +1584,10 @@ impl Daemon {
                         } else {
                             IpcResponse {
                                 success: true,
-                                message: Some(format!("Seeked {} output(s) to {}ms", seek_count, timestamp_ms)),
+                                message: Some(format!(
+                                    "Seeked {} output(s) to {}ms",
+                                    seek_count, timestamp_ms
+                                )),
                             }
                         }
                     }
@@ -1776,7 +1784,8 @@ impl Daemon {
                             if let Some((ref path, scaling_mode)) = lock.pre_blank.clone() {
                                 // Validate path exists before attempting restore
                                 if !path.exists() {
-                                    errors.push(format!("{}: wallpaper path no longer exists", name));
+                                    errors
+                                        .push(format!("{}: wallpaper path no longer exists", name));
                                     lock.blanked = false;
                                     lock.pre_blank = None;
                                     continue;
@@ -1978,8 +1987,9 @@ impl Daemon {
         };
         layer_surface.wl_surface().set_buffer_scale(scale_factor);
 
-        let width = output.width * scale_factor as u32;
-        let height = output.height * scale_factor as u32;
+        // mode.dimensions already returns physical pixels; do not multiply by scale.
+        let width = output.width;
+        let height = output.height;
 
         let raw_surface = layer_surface.wl_surface().id().as_ptr() as *mut std::ffi::c_void;
         wayland_state
@@ -2095,8 +2105,9 @@ fn create_render_state_for_output_sync(
     };
     layer_surface.wl_surface().set_buffer_scale(scale_factor);
 
-    let width = output.width * scale_factor as u32;
-    let height = output.height * scale_factor as u32;
+    // mode.dimensions already returns physical pixels; do not multiply by scale.
+    let width = output.width;
+    let height = output.height;
 
     let raw_surface = layer_surface.wl_surface().id().as_ptr() as *mut std::ffi::c_void;
     wayland_state
