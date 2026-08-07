@@ -225,7 +225,11 @@ pub enum Commands {
 
     // Core Daemon & Package commands
     /// Start the background wallpaper daemon
-    Daemon,
+    Daemon {
+        /// Override the target frame rate limit (FPS)
+        #[arg(long)]
+        max_fps: Option<u32>,
+    },
     /// Create a working animation package starter.
     New {
         /// Package name or output directory.
@@ -341,11 +345,15 @@ pub enum IpcCommands {
         /// Target specific monitor (default: all)
         #[arg(long)]
         monitor: Option<String>,
+        #[command(flatten)]
+        effect_args: EffectArgs,
     },
     /// Restore a previously blanked output
     Restore {
         /// Target specific monitor (default: all)
         #[arg(long)]
         monitor: Option<String>,
+        #[command(flatten)]
+        effect_args: EffectArgs,
     },
 }

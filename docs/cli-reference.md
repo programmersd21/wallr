@@ -6,7 +6,7 @@ The CLI is implemented with Clap. The current commands are:
 wallr img <path> [--mode <fill|fit|stretch|center|tile>] [--no-theme] [--theme <matugen|wallust|pywal|none>] [--monitor <name>] [--animation <package>] [--duration <800ms|1.2s>]
 wallr set <path> [same options as img]
 wallr new <name> [--shader]
-wallr daemon
+wallr daemon [--max-fps <fps>]
 wallr watch <directory>
 wallr preview <path> [--watch] [--animation <package|yaml>] [--mode <fill|fit|stretch|center|tile>] [effect flags]
 wallr validate <animation.yaml>
@@ -18,7 +18,7 @@ wallr cache clear|info
 wallr reload
 wallr config get|set|path
 wallr monitor list|current
-wallr ipc pause|resume|reload|preview|stop|status|info|seek <timestamp>|blank|restore
+wallr ipc pause|resume|reload|preview|stop|status|info|seek <timestamp>|blank|restore [effect flags]
 wallr quit
 ```
 
@@ -26,7 +26,9 @@ wallr quit
 
 `--mode <SCALING>` sets the image scaling mode: `fill` (cover, crops to fill), `fit` (contain, letterbox/pillarbox), `stretch` (ignores aspect ratio), `center` (1:1 centered), `tile` (repeat). Default is `fill`. The mode is applied at the shader level, so transitions and live playback both use it.
 
-`wallr ipc info` reports version, GPU, decoder state, and playback position; `wallr ipc seek` accepts `HH:MM:SS`, `M:SS`, or plain seconds. `wallr ipc pause` and `wallr ipc resume` work for both video and GIF playback, preserving timeline position when paused. `wallr ipc blank` displays black without replacing the persisted wallpaper; `wallr ipc restore` returns to the previous image (validates paths and reports errors if restoration fails). All IPC commands accept `--monitor <name>` for per-output control; without `--monitor`, pause/resume/seek/blank/restore apply to all connected outputs. `wallr quit` is an alias for `wallr ipc stop` and removes the daemon socket before exiting.
+`wallr daemon --max-fps <FPS>` sets a maximum rendering frame rate cap for video/GIF pacing and transitions (overriding `daemon.max_fps` in config).
+
+`wallr ipc info` reports version, GPU, decoder state, and playback position; `wallr ipc seek` accepts `HH:MM:SS`, `M:SS`, or plain seconds. `wallr ipc pause` and `wallr ipc resume` work for both video and GIF playback, preserving timeline position when paused. `wallr ipc blank` displays black without replacing the persisted wallpaper; `wallr ipc restore` returns to the previous image. Both support custom transition effect flags (`--effect`, `--duration`, etc.). All IPC commands accept `--monitor <name>` for per-output control; without `--monitor`, pause/resume/seek/blank/restore apply to all connected outputs. `wallr quit` is an alias for `wallr ipc stop` and removes the daemon socket before exiting.
 
 `wallr monitor list` queries the daemon for all connected outputs and prints each output's name and resolution. `wallr monitor current` returns the primary output. Output names are resolved from the compositor (e.g. `DP-1`, `HDMI-A-1`, `eDP-1`); if the compositor doesn't provide names, a fallback based on make/model or a generated ID is used.
 

@@ -44,10 +44,18 @@ pub enum IpcCommand {
     Blank {
         #[serde(default)]
         monitor: Option<String>,
+        #[serde(default)]
+        effect: Option<crate::animation::Effect>,
+        #[serde(default)]
+        duration_ms: Option<u32>,
     },
     Restore {
         #[serde(default)]
         monitor: Option<String>,
+        #[serde(default)]
+        effect: Option<crate::animation::Effect>,
+        #[serde(default)]
+        duration_ms: Option<u32>,
     },
 }
 

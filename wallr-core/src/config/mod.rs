@@ -201,6 +201,8 @@ pub struct DaemonConfig {
     pub auto_start: bool,
     #[serde(default = "default_socket")]
     pub socket: String,
+    #[serde(default = "default_max_fps")]
+    pub max_fps: Option<u32>,
 }
 
 impl Default for DaemonConfig {
@@ -208,8 +210,13 @@ impl Default for DaemonConfig {
         Self {
             auto_start: true,
             socket: "$XDG_RUNTIME_DIR/wallr.sock".to_string(),
+            max_fps: Some(60),
         }
     }
+}
+
+fn default_max_fps() -> Option<u32> {
+    Some(60)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

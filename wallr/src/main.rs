@@ -304,8 +304,12 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Daemon => {
-            let daemon = Daemon::new(config)?;
+        Commands::Daemon { max_fps } => {
+            let mut final_config = config;
+            if let Some(fps) = max_fps {
+                final_config.daemon.max_fps = Some(fps);
+            }
+            let daemon = Daemon::new(final_config)?;
             daemon.start().await?;
         }
 
@@ -381,8 +385,44 @@ async fn main() -> Result<()> {
                         monitor,
                     }
                 }
-                IpcCommands::Blank { monitor } => IpcCommand::Blank { monitor },
-                IpcCommands::Restore { monitor } => IpcCommand::Restore { monitor },
+                IpcCommands::Blank {
+                    monitor,
+                    effect_args,
+                } => {
+                    let (effect, duration_ms) = pick_effect(None, &effect_args)?;
+                    let opt_effect = if effect_args.effect.is_some()
+                        || effect_args.from.is_some()
+                        || effect_args.to.is_some()
+                    {
+                        Some(effect)
+                    } else {
+                        None
+                    };
+                    IpcCommand::Blank {
+                        monitor,
+                        effect: opt_effect,
+                        duration_ms,
+                    }
+                }
+                IpcCommands::Restore {
+                    monitor,
+                    effect_args,
+                } => {
+                    let (effect, duration_ms) = pick_effect(None, &effect_args)?;
+                    let opt_effect = if effect_args.effect.is_some()
+                        || effect_args.from.is_some()
+                        || effect_args.to.is_some()
+                    {
+                        Some(effect)
+                    } else {
+                        None
+                    };
+                    IpcCommand::Restore {
+                        monitor,
+                        effect: opt_effect,
+                        duration_ms,
+                    }
+                }
             };
             let resp = send_ipc_command(socket_path, cmd).await?;
             if let Some(msg) = resp.message {

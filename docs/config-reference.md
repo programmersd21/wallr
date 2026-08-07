@@ -10,7 +10,7 @@ matugen: {enabled: true, mode: dark, scheme: scheme-tonal-spot, contrast: 0, wai
 video: {hw_decode: auto, preferred_gpu: auto, preload_frames: 2}
 hooks: {before: [], after: [], error: []}
 reload: []
-daemon: {auto_start: true, socket: "$XDG_RUNTIME_DIR/wallr.sock"}
+daemon: {auto_start: true, socket: "$XDG_RUNTIME_DIR/wallr.sock", max_fps: 60}
 watch: {enabled: false, dir: ~/Pictures/Wallpapers, debounce: 500ms}
 cache: {dir: ~/.cache/wallr, max_size: 512MB}
 plugins: {matugen: {enabled: false}, wallust: {enabled: false}, pywal: {enabled: false}}

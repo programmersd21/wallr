@@ -284,7 +284,7 @@ impl OutputHandler for WaylandState {
                                 let effect = crate::animation::Effect::Fade(
                                     crate::animation::FadeParams::default(),
                                 );
-                                let _ = lock.set_wallpaper(p, &effect, 0, 0).await;
+                                let _ = lock.set_wallpaper(p, &effect, 1000, 0).await;
                             }
                         }
                         tracing::info!("Hotplug: output {name} ready");
@@ -1255,7 +1255,7 @@ impl Daemon {
                     let mut lock = rs.lock().await;
                     let effect =
                         crate::animation::Effect::Fade(crate::animation::FadeParams::default());
-                    let _ = lock.set_wallpaper(p, &effect, 0, 0).await;
+                    let _ = lock.set_wallpaper(p, &effect, 1000, 0).await;
                 }
             }
 
@@ -1715,7 +1715,11 @@ impl Daemon {
                             }
                         }
                     }
-                    IpcCommand::Blank { monitor } => {
+                    IpcCommand::Blank {
+                        monitor,
+                        effect,
+                        duration_ms,
+                    } => {
                         let targets = resolve_targets(&render_states, monitor.as_deref()).await;
                         if targets.is_empty() {
                             return IpcResponse {
@@ -1727,6 +1731,11 @@ impl Daemon {
                             };
                         }
                         let mut blanked_count = 0u32;
+                        let black_effect = effect.unwrap_or_else(|| {
+                            crate::animation::Effect::Fade(crate::animation::FadeParams::default())
+                        });
+                        let duration = duration_ms.unwrap_or(800);
+
                         for (name, rs) in render_states.iter() {
                             if monitor.as_deref() != Some(name.as_str()) && monitor.is_some() {
                                 continue;
@@ -1735,24 +1744,18 @@ impl Daemon {
                             if lock.blanked {
                                 continue;
                             }
-                            // Save current wallpaper for restore.
                             lock.pre_blank = Some((
                                 lock.last_wallpaper.clone().unwrap_or_default(),
                                 lock.scaling_mode,
                             ));
                             lock.blanked = true;
-                            // Display a 1x1 black image.
-                            let black_effect = crate::animation::Effect::Fade(
-                                crate::animation::FadeParams::default(),
-                            );
-                            // Create a temporary black PNG.
                             let tmp = std::env::temp_dir().join("wallr_blank.png");
                             {
                                 let img =
                                     image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 255]));
                                 let _ = img.save(&tmp);
                             }
-                            let _ = lock.set_wallpaper(&tmp, &black_effect, 200, 0).await;
+                            let _ = lock.set_wallpaper(&tmp, &black_effect, duration, 0).await;
                             blanked_count += 1;
                         }
                         IpcResponse {
@@ -1760,7 +1763,11 @@ impl Daemon {
                             message: Some(format!("Blanked {blanked_count} output(s)")),
                         }
                     }
-                    IpcCommand::Restore { monitor } => {
+                    IpcCommand::Restore {
+                        monitor,
+                        effect,
+                        duration_ms,
+                    } => {
                         let targets = resolve_targets(&render_states, monitor.as_deref()).await;
                         if targets.is_empty() {
                             return IpcResponse {
@@ -1773,6 +1780,11 @@ impl Daemon {
                         }
                         let mut restored_count = 0u32;
                         let mut errors = Vec::new();
+                        let restore_effect = effect.unwrap_or_else(|| {
+                            crate::animation::Effect::Fade(crate::animation::FadeParams::default())
+                        });
+                        let duration = duration_ms.unwrap_or(800);
+
                         for (name, rs) in render_states.iter() {
                             if monitor.as_deref() != Some(name.as_str()) && monitor.is_some() {
                                 continue;
@@ -1782,7 +1794,6 @@ impl Daemon {
                                 continue;
                             }
                             if let Some((ref path, scaling_mode)) = lock.pre_blank.clone() {
-                                // Validate path exists before attempting restore
                                 if !path.exists() {
                                     errors
                                         .push(format!("{}: wallpaper path no longer exists", name));
@@ -1790,14 +1801,11 @@ impl Daemon {
                                     lock.pre_blank = None;
                                     continue;
                                 }
-                                let restore_effect = crate::animation::Effect::Fade(
-                                    crate::animation::FadeParams::default(),
-                                );
                                 match lock
                                     .set_wallpaper(
                                         std::path::Path::new(&path),
                                         &restore_effect,
-                                        200,
+                                        duration,
                                         scaling_mode,
                                     )
                                     .await

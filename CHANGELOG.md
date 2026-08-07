@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.9
+
+- **Cinematic Blank & Restore Transitions**: Added support for custom transition effects and durations to `wallr ipc blank` and `wallr ipc restore` commands via CLI effect flags (e.g. `wallr ipc blank --duration 1.5s --effect blur`).
+- **Smooth Desktop Startup Fade-in**: Daemon wallpaper restoration on startup and display hotplug now fades in smoothly over `1s` instead of snapping instantly.
+- **Daemon Frame Rate Limit (`--max-fps`)**: Added `--max-fps` CLI flag to `wallr daemon` and `daemon.max_fps` configuration property to tune rendering performance and power consumption.
+
 ## 0.2.8
 
 - **Fix surface size crash on fractional scale**: Compositors using non-integer scale factors (e.g. 1.25 on niri, Hyprland) no longer multiply physical dimensions by `scale_factor`, which caused surfaces to exceed GPU texture limits (e.g. 3840x2160 at scale 1.25 was incorrectly rendered as 7680x4320). `mode.dimensions` already returns physical pixels; the redundant multiplication has been removed from all three surface creation paths.
