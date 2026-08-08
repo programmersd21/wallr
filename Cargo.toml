@@ -87,5 +87,5 @@ hex = "0.4"
 humansize = "2"
 
 # Video support
-ffmpeg-next = { version = "8.1", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
+ffmpeg-next = { version = "9.0", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
 crossbeam-channel = "0.5"
