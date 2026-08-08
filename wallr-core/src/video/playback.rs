@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 pub struct VideoPlayback {
     decoder: Mutex<Option<VideoDecoder>>,
     scheduler: Mutex<Option<FrameScheduler>>,
+    pending_frame: Mutex<Option<VideoFrame>>,
     current_frame: Mutex<Option<VideoFrame>>,
 }
 
@@ -16,6 +17,7 @@ impl VideoPlayback {
         Self {
             decoder: Mutex::new(None),
             scheduler: Mutex::new(None),
+            pending_frame: Mutex::new(None),
             current_frame: Mutex::new(None),
         }
     }
@@ -44,6 +46,7 @@ impl VideoPlayback {
     pub fn stop(&self) {
         *self.lock_decoder() = None;
         *self.lock_scheduler() = None;
+        *self.lock_pending() = None;
         *self.lock_current() = None;
     }
 
@@ -66,18 +69,20 @@ impl VideoPlayback {
     }
 
     pub fn seek(&self, timestamp: Duration) -> Result<(), crate::video::error::VideoError> {
-        {
-            let mut decoder = self.lock_decoder();
-            let mut scheduler = self.lock_scheduler();
-            let scheduler = scheduler.as_mut().ok_or_else(|| {
-                VideoError::SeekFailed(timestamp, anyhow::anyhow!("no video is playing"))
-            })?;
-            scheduler.seek(timestamp)?;
-            if let Some(d) = decoder.as_mut() {
-                d.seek(timestamp);
-                d.drain();
-            }
+        let mut decoder = self.lock_decoder();
+        let mut scheduler = self.lock_scheduler();
+        let mut pending = self.lock_pending();
+        let mut current = self.lock_current();
+        let scheduler = scheduler.as_mut().ok_or_else(|| {
+            VideoError::SeekFailed(timestamp, anyhow::anyhow!("no video is playing"))
+        })?;
+        scheduler.seek(timestamp)?;
+        if let Some(d) = decoder.as_mut() {
+            d.seek(timestamp);
+            d.drain();
         }
+        *pending = None;
+        *current = None;
         tracing::info!("Video seeked to {:?}", timestamp);
         Ok(())
     }
@@ -85,16 +90,16 @@ impl VideoPlayback {
     pub fn next_frame(&self) -> Option<VideoFrame> {
         let mut decoder = self.lock_decoder();
         let mut scheduler = self.lock_scheduler();
+        let mut pending = self.lock_pending();
         let (Some(decoder), Some(scheduler)) = (decoder.as_mut(), scheduler.as_mut()) else {
             return None;
         };
-        while let Some(frame) = decoder.next_frame() {
-            if scheduler.should_display(frame.pts) && scheduler.should_upload(frame.pts) {
-                *self.lock_current() = Some(frame.clone());
-                return Some(frame);
-            }
+
+        let frame = take_due_frame(scheduler, &mut pending, || decoder.next_frame());
+        if let Some(frame) = &frame {
+            *self.lock_current() = Some(frame.clone());
         }
-        None
+        frame
     }
 
     pub fn wait_first_frame(&self, timeout: Duration) -> Option<VideoFrame> {
@@ -153,13 +158,91 @@ impl VideoPlayback {
         self.scheduler.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    fn lock_pending(&self) -> std::sync::MutexGuard<'_, Option<VideoFrame>> {
+        self.pending_frame.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     fn lock_current(&self) -> std::sync::MutexGuard<'_, Option<VideoFrame>> {
         self.current_frame.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
 
+fn take_due_frame(
+    scheduler: &mut FrameScheduler,
+    pending: &mut Option<VideoFrame>,
+    mut next_frame: impl FnMut() -> Option<VideoFrame>,
+) -> Option<VideoFrame> {
+    let mut selected = None;
+
+    if let Some(frame) = pending.take() {
+        if !scheduler.should_display(frame.pts) {
+            *pending = Some(frame);
+            return None;
+        }
+        if scheduler.should_upload(frame.pts) {
+            selected = Some(frame);
+        }
+    }
+
+    while let Some(frame) = next_frame() {
+        if !scheduler.should_display(frame.pts) {
+            *pending = Some(frame);
+            break;
+        }
+        if scheduler.should_upload(frame.pts) {
+            selected = Some(frame);
+        }
+    }
+
+    selected
+}
+
 impl Default for VideoPlayback {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    fn frame(pts_ms: u64) -> VideoFrame {
+        VideoFrame {
+            data: vec![pts_ms as u8],
+            width: 1,
+            height: 1,
+            pts: Duration::from_millis(pts_ms),
+            index: pts_ms,
+        }
+    }
+
+    #[test]
+    fn retains_future_frame_until_due() {
+        let mut scheduler = FrameScheduler::new(Duration::from_secs(1));
+        let mut pending = None;
+        let mut frames = VecDeque::from([frame(0), frame(100)]);
+
+        let first = take_due_frame(&mut scheduler, &mut pending, || frames.pop_front()).unwrap();
+        assert_eq!(first.pts, Duration::ZERO);
+        assert_eq!(pending.as_ref().unwrap().pts, Duration::from_millis(100));
+
+        scheduler.seek(Duration::from_millis(110)).unwrap();
+        let second = take_due_frame(&mut scheduler, &mut pending, || None).unwrap();
+        assert_eq!(second.pts, Duration::from_millis(100));
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn selects_latest_due_frame() {
+        let mut scheduler = FrameScheduler::new(Duration::from_secs(1));
+        scheduler.seek(Duration::from_millis(50)).unwrap();
+        let mut pending = None;
+        let mut frames = VecDeque::from([frame(0), frame(16), frame(32), frame(100)]);
+
+        let selected = take_due_frame(&mut scheduler, &mut pending, || frames.pop_front()).unwrap();
+        assert_eq!(selected.pts, Duration::from_millis(32));
+        assert_eq!(pending.as_ref().unwrap().pts, Duration::from_millis(100));
     }
 }
