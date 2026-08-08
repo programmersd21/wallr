@@ -88,6 +88,8 @@ struct WaylandState {
     shm: Shm,
     outputs: std::collections::HashMap<u32, OutputInfo>,
     surfaces: Vec<(u32, LayerSurface)>,
+    pending_restores:
+        std::collections::HashMap<u32, (String, std::sync::Arc<tokio::sync::Mutex<RenderState>>)>,
     /// Layer shell protocol object for creating background surfaces.
     layer_shell: LayerShell,
     /// Compositor protocol object for creating input regions.
@@ -192,7 +194,31 @@ impl LayerShellHandler for WaylandState {
         _configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        layer.commit();
+        // SCTK acknowledges the configure. wgpu owns subsequent buffer commits,
+        // which must not race with a bufferless commit when explicit sync is active.
+        let output_id = self.surfaces.iter().find_map(|(output_id, surface)| {
+            (surface.wl_surface().id() == layer.wl_surface().id()).then_some(*output_id)
+        });
+        let Some((name, render_state)) = output_id.and_then(|id| self.pending_restores.remove(&id))
+        else {
+            return;
+        };
+        let Some(render_states) = self
+            .hotplug
+            .as_ref()
+            .map(|hotplug| hotplug.render_states.clone())
+        else {
+            return;
+        };
+
+        tokio::spawn(async move {
+            render_states
+                .lock()
+                .await
+                .insert(name.clone(), render_state.clone());
+            restore_cached_wallpaper(&name, &render_state).await;
+            tracing::info!("Output configured: {name}");
+        });
     }
 
     fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {}
@@ -259,7 +285,6 @@ impl OutputHandler for WaylandState {
             let renderer = self.hotplug.as_ref().unwrap().renderer.clone();
             let display_ptr = self.hotplug.as_ref().unwrap().display_ptr.0;
             let config = self.hotplug.as_ref().unwrap().config.clone();
-            let render_states = self.hotplug.as_ref().unwrap().render_states.clone();
             match create_render_state_for_output_sync(
                 &renderer,
                 display_ptr,
@@ -270,25 +295,7 @@ impl OutputHandler for WaylandState {
             ) {
                 Ok(rs) => {
                     let rs = std::sync::Arc::new(tokio::sync::Mutex::new(rs));
-                    tokio::spawn(async move {
-                        render_states.lock().await.insert(name.clone(), rs.clone());
-
-                        // Restore per-output last wallpaper.
-                        let state_path = dirs::cache_dir()
-                            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                            .join(format!("wallr/last_wallpaper/{name}"));
-                        if let Ok(path_str) = std::fs::read_to_string(&state_path) {
-                            let p = std::path::Path::new(path_str.trim());
-                            if p.exists() {
-                                let mut lock = rs.lock().await;
-                                let effect = crate::animation::Effect::Fade(
-                                    crate::animation::FadeParams::default(),
-                                );
-                                let _ = lock.set_wallpaper(p, &effect, 1000, 0).await;
-                            }
-                        }
-                        tracing::info!("Hotplug: output {name} ready");
-                    });
+                    self.pending_restores.insert(id, (name, rs));
                 }
                 Err(e) => {
                     tracing::error!("Hotplug: failed to create render state for {name}: {e}");
@@ -707,6 +714,25 @@ impl RenderState {
                 &per_output_uniforms,
             );
         }));
+    }
+}
+
+async fn restore_cached_wallpaper(name: &str, render_state: &Arc<Mutex<RenderState>>) {
+    let state_path = dirs::cache_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join(format!("wallr/last_wallpaper/{name}"));
+    let Ok(path_str) = std::fs::read_to_string(state_path) else {
+        return;
+    };
+    let path = std::path::Path::new(path_str.trim());
+    if !path.exists() {
+        return;
+    }
+
+    let mut state = render_state.lock().await;
+    let effect = crate::animation::Effect::Fade(crate::animation::FadeParams::default());
+    if let Err(err) = state.set_wallpaper(path, &effect, 1000, 0).await {
+        tracing::warn!("Failed to restore wallpaper for {name}: {err}");
     }
 }
 
@@ -1174,6 +1200,7 @@ impl Daemon {
             shm,
             outputs: std::collections::HashMap::new(),
             surfaces: Vec::new(),
+            pending_restores: std::collections::HashMap::new(),
             layer_shell,
             compositor,
             hotplug: None,
@@ -1244,20 +1271,9 @@ impl Daemon {
             .await?;
             let rs = Arc::new(Mutex::new(rs));
             render_states_map.insert(name.clone(), rs.clone());
-
-            // Restore per-output last wallpaper.
-            let state_path = dirs::cache_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                .join(format!("wallr/last_wallpaper/{name}"));
-            if let Ok(path_str) = std::fs::read_to_string(&state_path) {
-                let p = std::path::Path::new(path_str.trim());
-                if p.exists() {
-                    let mut lock = rs.lock().await;
-                    let effect =
-                        crate::animation::Effect::Fade(crate::animation::FadeParams::default());
-                    let _ = lock.set_wallpaper(p, &effect, 1000, 0).await;
-                }
-            }
+            wayland_state
+                .pending_restores
+                .insert(*proto_id, (name.clone(), rs));
 
             tracing::info!("Output ready: {name} ({proto_id})");
         }
@@ -1506,6 +1522,12 @@ impl Daemon {
                         }
                     }
                     IpcCommand::Stop => {
+                        for rs in render_states.values() {
+                            let state = rs.lock().await;
+                            state.playback_gen.fetch_add(1, Ordering::SeqCst);
+                            state.pacer.notify();
+                            state.video_playback.stop();
+                        }
                         let sp = stop_socket.clone();
                         tokio::spawn(async move {
                             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -1985,15 +2007,14 @@ impl Daemon {
         layer_surface
             .wl_surface()
             .set_input_region(Some(&empty_region));
-        layer_surface.commit();
-        empty_region.destroy();
-
         let scale_factor = if output.scale_factor > 0 {
             output.scale_factor
         } else {
             1
         };
         layer_surface.wl_surface().set_buffer_scale(scale_factor);
+        layer_surface.commit();
+        empty_region.destroy();
 
         // mode.dimensions already returns physical pixels; do not multiply by scale.
         let width = output.width;
@@ -2103,15 +2124,14 @@ fn create_render_state_for_output_sync(
     layer_surface
         .wl_surface()
         .set_input_region(Some(&empty_region));
-    layer_surface.commit();
-    empty_region.destroy();
-
     let scale_factor = if output.scale_factor > 0 {
         output.scale_factor
     } else {
         1
     };
     layer_surface.wl_surface().set_buffer_scale(scale_factor);
+    layer_surface.commit();
+    empty_region.destroy();
 
     // mode.dimensions already returns physical pixels; do not multiply by scale.
     let width = output.width;
