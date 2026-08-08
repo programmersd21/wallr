@@ -26,9 +26,13 @@ use smithay_client_toolkit::{
     shm::{Shm, ShmHandler},
 };
 use wayland_client::{
-    Connection, Proxy, QueueHandle,
+    Connection, Dispatch, Proxy, QueueHandle,
     globals::registry_queue_init,
     protocol::{wl_compositor, wl_output, wl_surface},
+};
+use wayland_protocols::wp::viewporter::client::{
+    wp_viewport::{self, WpViewport},
+    wp_viewporter::{self, WpViewporter},
 };
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
@@ -95,6 +99,8 @@ struct WaylandState {
     shm: Shm,
     outputs: std::collections::HashMap<u32, OutputInfo>,
     surfaces: Vec<(u32, LayerSurface)>,
+    viewporter: Option<WpViewporter>,
+    viewports: std::collections::HashMap<u32, WpViewport>,
     output_lifecycles: std::collections::HashMap<u32, OutputLifecycle>,
     pending_restores: std::collections::HashSet<u32>,
     /// Layer shell protocol object for creating background surfaces.
@@ -192,13 +198,84 @@ impl wayland_client::Dispatch<wayland_client::protocol::wl_region::WlRegion, ()>
     }
 }
 
+impl Dispatch<WpViewporter, ()> for WaylandState {
+    fn event(
+        _state: &mut WaylandState,
+        _proxy: &WpViewporter,
+        _event: wp_viewporter::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<WaylandState>,
+    ) {
+    }
+}
+
+impl Dispatch<WpViewport, ()> for WaylandState {
+    fn event(
+        _state: &mut WaylandState,
+        _proxy: &WpViewport,
+        _event: wp_viewport::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<WaylandState>,
+    ) {
+    }
+}
+
+fn viewport_destination(configured: (u32, u32), physical: (u32, u32)) -> Option<(i32, i32)> {
+    let (width, height) = configured;
+    let (physical_width, physical_height) = physical;
+    match (width, height) {
+        (0, 0) => None,
+        (0, height) if physical_height > 0 => {
+            let width = (u64::from(height) * u64::from(physical_width)
+                + u64::from(physical_height) / 2)
+                / u64::from(physical_height);
+            Some((i32::try_from(width).ok()?, i32::try_from(height).ok()?))
+        }
+        (width, 0) if physical_width > 0 => {
+            let height = (u64::from(width) * u64::from(physical_height)
+                + u64::from(physical_width) / 2)
+                / u64::from(physical_width);
+            Some((i32::try_from(width).ok()?, i32::try_from(height).ok()?))
+        }
+        (width, height) => Some((i32::try_from(width).ok()?, i32::try_from(height).ok()?)),
+    }
+}
+
+#[cfg(test)]
+mod viewport_tests {
+    use super::viewport_destination;
+
+    #[test]
+    fn preserves_complete_configure_size() {
+        assert_eq!(
+            viewport_destination((3072, 1728), (3840, 2160)),
+            Some((3072, 1728))
+        );
+    }
+
+    #[test]
+    fn derives_missing_dimension_from_physical_aspect_ratio() {
+        assert_eq!(
+            viewport_destination((0, 1728), (3840, 2160)),
+            Some((3072, 1728))
+        );
+        assert_eq!(
+            viewport_destination((3072, 0), (3840, 2160)),
+            Some((3072, 1728))
+        );
+        assert_eq!(viewport_destination((0, 0), (3840, 2160)), None);
+    }
+}
+
 impl LayerShellHandler for WaylandState {
     fn configure(
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         layer: &LayerSurface,
-        _configure: LayerSurfaceConfigure,
+        configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
         // SCTK acknowledges the configure. wgpu owns subsequent buffer commits,
@@ -206,9 +283,27 @@ impl LayerShellHandler for WaylandState {
         let output_id = self.surfaces.iter().find_map(|(output_id, surface)| {
             (surface.wl_surface().id() == layer.wl_surface().id()).then_some(*output_id)
         });
-        let Some(output_id) = output_id.filter(|id| self.pending_restores.remove(id)) else {
+        let Some(output_id) = output_id else {
             return;
         };
+        let destination = self.outputs.get(&output_id).and_then(|output| {
+            viewport_destination(configure.new_size, (output.width, output.height))
+        });
+        if let Some(viewport) = self.viewports.get(&output_id) {
+            let Some((logical_width, logical_height)) = destination else {
+                tracing::warn!(
+                    "Output {output_id} configure omitted both dimensions; waiting for a usable size"
+                );
+                return;
+            };
+            viewport.set_destination(logical_width, logical_height);
+            tracing::debug!(
+                "Configured viewport destination for output {output_id}: {logical_width}x{logical_height}"
+            );
+        }
+        if !self.pending_restores.remove(&output_id) {
+            return;
+        }
         let Some(lifecycle) = self.output_lifecycles.get(&output_id).cloned() else {
             return;
         };
@@ -427,12 +522,16 @@ impl OutputHandler for WaylandState {
         if let Some(info) = self.outputs.remove(&id) {
             tracing::info!("Output disconnected: {} (protocol_id={})", info.name, id);
             self.pending_restores.remove(&id);
+            let viewport = self.viewports.remove(&id);
+            let layer_surface = self
+                .surfaces
+                .iter()
+                .position(|(pid, _)| *pid == id)
+                .map(|position| self.surfaces.swap_remove(position).1);
             let lifecycle = self.output_lifecycles.remove(&id);
             if let Some(lifecycle) = &lifecycle {
                 lifecycle.active.store(false, Ordering::SeqCst);
             }
-            // Remove the LayerSurface from our tracking list.
-            self.surfaces.retain(|(pid, _)| *pid != id);
             // Remove the render state from the shared map and stop playback.
             if let (Some(hotplug), Some(lifecycle)) = (&self.hotplug, lifecycle) {
                 let render_states = hotplug.render_states.clone();
@@ -450,8 +549,28 @@ impl OutputHandler for WaylandState {
                     state.playback_gen.fetch_add(1, Ordering::SeqCst);
                     state.pacer.notify();
                     state.video_playback.stop();
+                    let render_lock = state.render_lock.clone();
+                    drop(state);
+
+                    let _ = tokio::task::spawn_blocking(move || {
+                        drop(
+                            render_lock
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                        );
+                    })
+                    .await;
+                    if let Some(viewport) = viewport {
+                        viewport.destroy();
+                    }
+                    drop(layer_surface);
                     tracing::info!("Hotplug: cleaned up render state for {}", lifecycle.name);
                 });
+            } else {
+                if let Some(viewport) = viewport {
+                    viewport.destroy();
+                }
+                drop(layer_surface);
             }
         }
     }
@@ -1226,6 +1345,14 @@ impl Daemon {
                 smithay_client_toolkit::globals::GlobalData,
             )
             .map_err(|e| DaemonError::StartError(format!("compositor bind failed: {e:?}")))?;
+        let viewporter = globals
+            .bind::<WpViewporter, WaylandState, ()>(&qh, 1..=1, ())
+            .ok();
+        if viewporter.is_none() {
+            tracing::warn!(
+                "wp_viewporter is unavailable; fractional outputs will use integer buffer scaling"
+            );
+        }
 
         let mut wayland_state = WaylandState {
             registry_state: RegistryState::new(&globals),
@@ -1234,6 +1361,8 @@ impl Daemon {
             shm,
             outputs: std::collections::HashMap::new(),
             surfaces: Vec::new(),
+            viewporter,
+            viewports: std::collections::HashMap::new(),
             output_lifecycles: std::collections::HashMap::new(),
             pending_restores: std::collections::HashSet::new(),
             layer_shell,
@@ -2047,7 +2176,14 @@ impl Daemon {
         layer_surface
             .wl_surface()
             .set_input_region(Some(&empty_region));
-        let scale_factor = if output.scale_factor > 0 {
+        let output_id = output.wl_output.id().protocol_id();
+        let viewport = wayland_state
+            .viewporter
+            .as_ref()
+            .map(|viewporter| viewporter.get_viewport(layer_surface.wl_surface(), qh, ()));
+        let scale_factor = if viewport.is_some() {
+            1
+        } else if output.scale_factor > 0 {
             output.scale_factor
         } else {
             1
@@ -2055,15 +2191,16 @@ impl Daemon {
         layer_surface.wl_surface().set_buffer_scale(scale_factor);
         layer_surface.commit();
         empty_region.destroy();
+        if let Some(viewport) = viewport {
+            wayland_state.viewports.insert(output_id, viewport);
+        }
 
         // mode.dimensions already returns physical pixels; do not multiply by scale.
         let width = output.width;
         let height = output.height;
 
         let raw_surface = layer_surface.wl_surface().id().as_ptr() as *mut std::ffi::c_void;
-        wayland_state
-            .surfaces
-            .push((output.wl_output.id().protocol_id(), layer_surface));
+        wayland_state.surfaces.push((output_id, layer_surface));
 
         let window_handle = WaylandWindow {
             display: display_ptr,
@@ -2164,7 +2301,14 @@ fn create_render_state_for_output_sync(
     layer_surface
         .wl_surface()
         .set_input_region(Some(&empty_region));
-    let scale_factor = if output.scale_factor > 0 {
+    let output_id = output.wl_output.id().protocol_id();
+    let viewport = wayland_state
+        .viewporter
+        .as_ref()
+        .map(|viewporter| viewporter.get_viewport(layer_surface.wl_surface(), qh, ()));
+    let scale_factor = if viewport.is_some() {
+        1
+    } else if output.scale_factor > 0 {
         output.scale_factor
     } else {
         1
@@ -2172,15 +2316,16 @@ fn create_render_state_for_output_sync(
     layer_surface.wl_surface().set_buffer_scale(scale_factor);
     layer_surface.commit();
     empty_region.destroy();
+    if let Some(viewport) = viewport {
+        wayland_state.viewports.insert(output_id, viewport);
+    }
 
     // mode.dimensions already returns physical pixels; do not multiply by scale.
     let width = output.width;
     let height = output.height;
 
     let raw_surface = layer_surface.wl_surface().id().as_ptr() as *mut std::ffi::c_void;
-    wayland_state
-        .surfaces
-        .push((output.wl_output.id().protocol_id(), layer_surface));
+    wayland_state.surfaces.push((output_id, layer_surface));
 
     let window_handle = WaylandWindow {
         display: display_ptr,

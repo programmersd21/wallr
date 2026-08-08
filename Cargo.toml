@@ -72,6 +72,7 @@ pollster = "0.4"
 
 # Wayland
 wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client"] }
 smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop"] }
 wayland-backend = { version = "0.3", features = ["client_system"] }
 
