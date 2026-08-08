@@ -81,6 +81,13 @@ struct OutputInfo {
     wl_output: wl_output::WlOutput,
 }
 
+#[derive(Clone)]
+struct OutputLifecycle {
+    name: String,
+    render_state: std::sync::Arc<tokio::sync::Mutex<RenderState>>,
+    active: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
 struct WaylandState {
     registry_state: RegistryState,
     output_state: OutputState,
@@ -88,8 +95,8 @@ struct WaylandState {
     shm: Shm,
     outputs: std::collections::HashMap<u32, OutputInfo>,
     surfaces: Vec<(u32, LayerSurface)>,
-    pending_restores:
-        std::collections::HashMap<u32, (String, std::sync::Arc<tokio::sync::Mutex<RenderState>>)>,
+    output_lifecycles: std::collections::HashMap<u32, OutputLifecycle>,
+    pending_restores: std::collections::HashSet<u32>,
     /// Layer shell protocol object for creating background surfaces.
     layer_shell: LayerShell,
     /// Compositor protocol object for creating input regions.
@@ -199,8 +206,10 @@ impl LayerShellHandler for WaylandState {
         let output_id = self.surfaces.iter().find_map(|(output_id, surface)| {
             (surface.wl_surface().id() == layer.wl_surface().id()).then_some(*output_id)
         });
-        let Some((name, render_state)) = output_id.and_then(|id| self.pending_restores.remove(&id))
-        else {
+        let Some(output_id) = output_id.filter(|id| self.pending_restores.remove(id)) else {
+            return;
+        };
+        let Some(lifecycle) = self.output_lifecycles.get(&output_id).cloned() else {
             return;
         };
         let Some(render_states) = self
@@ -212,12 +221,16 @@ impl LayerShellHandler for WaylandState {
         };
 
         tokio::spawn(async move {
-            render_states
-                .lock()
-                .await
-                .insert(name.clone(), render_state.clone());
-            restore_cached_wallpaper(&name, &render_state).await;
-            tracing::info!("Output configured: {name}");
+            if !lifecycle.active.load(Ordering::SeqCst) {
+                return;
+            }
+            restore_cached_wallpaper(&lifecycle.name, &lifecycle.render_state).await;
+
+            let mut states = render_states.lock().await;
+            if lifecycle.active.load(Ordering::SeqCst) {
+                states.insert(lifecycle.name.clone(), lifecycle.render_state);
+                tracing::info!("Output configured: {}", lifecycle.name);
+            }
         });
     }
 
@@ -295,7 +308,15 @@ impl OutputHandler for WaylandState {
             ) {
                 Ok(rs) => {
                     let rs = std::sync::Arc::new(tokio::sync::Mutex::new(rs));
-                    self.pending_restores.insert(id, (name, rs));
+                    self.output_lifecycles.insert(
+                        id,
+                        OutputLifecycle {
+                            name,
+                            render_state: rs,
+                            active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                        },
+                    );
+                    self.pending_restores.insert(id);
                 }
                 Err(e) => {
                     tracing::error!("Hotplug: failed to create render state for {name}: {e}");
@@ -405,18 +426,31 @@ impl OutputHandler for WaylandState {
         let id = output.id().protocol_id();
         if let Some(info) = self.outputs.remove(&id) {
             tracing::info!("Output disconnected: {} (protocol_id={})", info.name, id);
+            self.pending_restores.remove(&id);
+            let lifecycle = self.output_lifecycles.remove(&id);
+            if let Some(lifecycle) = &lifecycle {
+                lifecycle.active.store(false, Ordering::SeqCst);
+            }
             // Remove the LayerSurface from our tracking list.
             self.surfaces.retain(|(pid, _)| *pid != id);
             // Remove the render state from the shared map and stop playback.
-            if let Some(ref hotplug) = self.hotplug {
-                let name = info.name.clone();
+            if let (Some(hotplug), Some(lifecycle)) = (&self.hotplug, lifecycle) {
                 let render_states = hotplug.render_states.clone();
                 tokio::spawn(async move {
-                    if let Some(rs) = render_states.lock().await.remove(&name) {
-                        let lock = rs.lock().await;
-                        lock.video_playback.stop();
-                        tracing::info!("Hotplug: cleaned up render state for {name}");
+                    let mut states = render_states.lock().await;
+                    if states
+                        .get(&lifecycle.name)
+                        .is_some_and(|state| Arc::ptr_eq(state, &lifecycle.render_state))
+                    {
+                        states.remove(&lifecycle.name);
                     }
+                    drop(states);
+
+                    let state = lifecycle.render_state.lock().await;
+                    state.playback_gen.fetch_add(1, Ordering::SeqCst);
+                    state.pacer.notify();
+                    state.video_playback.stop();
+                    tracing::info!("Hotplug: cleaned up render state for {}", lifecycle.name);
                 });
             }
         }
@@ -1200,7 +1234,8 @@ impl Daemon {
             shm,
             outputs: std::collections::HashMap::new(),
             surfaces: Vec::new(),
-            pending_restores: std::collections::HashMap::new(),
+            output_lifecycles: std::collections::HashMap::new(),
+            pending_restores: std::collections::HashSet::new(),
             layer_shell,
             compositor,
             hotplug: None,
@@ -1236,7 +1271,7 @@ impl Daemon {
         // Create a LayerSurface, wgpu Surface, and RenderState for every
         // known output. The key is the output's human-readable name (e.g.
         // "DP-1", "eDP-1") so IPC can target a specific monitor.
-        let mut render_states_map: std::collections::HashMap<String, Arc<Mutex<RenderState>>> =
+        let render_states_map: std::collections::HashMap<String, Arc<Mutex<RenderState>>> =
             std::collections::HashMap::new();
 
         // Collect output info first so we can pass &mut wayland_state to the
@@ -1270,10 +1305,15 @@ impl Daemon {
             )
             .await?;
             let rs = Arc::new(Mutex::new(rs));
-            render_states_map.insert(name.clone(), rs.clone());
-            wayland_state
-                .pending_restores
-                .insert(*proto_id, (name.clone(), rs));
+            wayland_state.output_lifecycles.insert(
+                *proto_id,
+                OutputLifecycle {
+                    name: name.clone(),
+                    render_state: rs,
+                    active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                },
+            );
+            wayland_state.pending_restores.insert(*proto_id);
 
             tracing::info!("Output ready: {name} ({proto_id})");
         }
