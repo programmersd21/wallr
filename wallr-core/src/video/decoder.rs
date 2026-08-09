@@ -432,10 +432,11 @@ impl VideoDecoder {
                         break 'outer;
                     }
 
-                    let is_hw_frame = unsafe { (*decoded_frame.as_ptr()).data[0].is_null() };
+                    let is_hw_frame = unsafe { !(*decoded_frame.as_ptr()).hw_frames_ctx.is_null() };
 
                     let src_frame = if is_hw_frame {
                         let ret = unsafe {
+                            ffmpeg::ffi::av_frame_unref(sw_frame.as_mut_ptr());
                             ffmpeg::ffi::av_hwframe_transfer_data(
                                 sw_frame.as_mut_ptr(),
                                 decoded_frame.as_ptr(),

@@ -72,6 +72,7 @@ pollster = "0.4"
 
 # Wayland
 wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client"] }
 smithay-client-toolkit = { version = "0.19", default-features = false, features = ["calloop"] }
 wayland-backend = { version = "0.3", features = ["client_system"] }
 
@@ -87,5 +88,5 @@ hex = "0.4"
 humansize = "2"
 
 # Video support
-ffmpeg-next = { version = "8.1", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
+ffmpeg-next = { version = "9.0", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
 crossbeam-channel = "0.5"

@@ -111,6 +111,12 @@ impl FrameScheduler {
         {
             return false;
         }
+        if let Some(last_pts) = self.last_frame_pts
+            && frame_pts < last_pts
+            && current >= last_pts
+        {
+            return false;
+        }
         frame_pts <= current
     }
 
@@ -203,5 +209,16 @@ mod tests {
         assert!(scheduler.should_upload(Duration::from_millis(100)));
         assert!(!scheduler.should_upload(Duration::from_millis(102)));
         assert!(scheduler.should_upload(Duration::from_millis(200)));
+    }
+
+    #[test]
+    fn test_waits_for_clock_before_decoder_wrap() {
+        let mut scheduler = FrameScheduler::new(Duration::from_secs(1));
+        scheduler.seek(Duration::from_millis(950)).unwrap();
+        assert!(scheduler.should_upload(Duration::from_millis(900)));
+        assert!(!scheduler.should_display(Duration::ZERO));
+
+        scheduler.start_time = Instant::now() - Duration::from_millis(10);
+        assert!(scheduler.should_display(Duration::ZERO));
     }
 }

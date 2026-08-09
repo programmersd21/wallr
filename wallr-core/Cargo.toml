@@ -53,6 +53,7 @@ bytemuck = { version = "1.25", features = ["derive"] }
 
 # Wayland
 wayland-client.workspace = true
+wayland-protocols.workspace = true
 smithay-client-toolkit.workspace = true
 wayland-backend.workspace = true
 

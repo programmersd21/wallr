@@ -26,9 +26,13 @@ use smithay_client_toolkit::{
     shm::{Shm, ShmHandler},
 };
 use wayland_client::{
-    Connection, Proxy, QueueHandle,
+    Connection, Dispatch, Proxy, QueueHandle,
     globals::registry_queue_init,
     protocol::{wl_compositor, wl_output, wl_surface},
+};
+use wayland_protocols::wp::viewporter::client::{
+    wp_viewport::{self, WpViewport},
+    wp_viewporter::{self, WpViewporter},
 };
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
@@ -81,6 +85,13 @@ struct OutputInfo {
     wl_output: wl_output::WlOutput,
 }
 
+#[derive(Clone)]
+struct OutputLifecycle {
+    name: String,
+    render_state: std::sync::Arc<tokio::sync::Mutex<RenderState>>,
+    active: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
 struct WaylandState {
     registry_state: RegistryState,
     output_state: OutputState,
@@ -88,6 +99,10 @@ struct WaylandState {
     shm: Shm,
     outputs: std::collections::HashMap<u32, OutputInfo>,
     surfaces: Vec<(u32, LayerSurface)>,
+    viewporter: Option<WpViewporter>,
+    viewports: std::collections::HashMap<u32, WpViewport>,
+    output_lifecycles: std::collections::HashMap<u32, OutputLifecycle>,
+    pending_restores: std::collections::HashSet<u32>,
     /// Layer shell protocol object for creating background surfaces.
     layer_shell: LayerShell,
     /// Compositor protocol object for creating input regions.
@@ -183,16 +198,135 @@ impl wayland_client::Dispatch<wayland_client::protocol::wl_region::WlRegion, ()>
     }
 }
 
+impl Dispatch<WpViewporter, ()> for WaylandState {
+    fn event(
+        _state: &mut WaylandState,
+        _proxy: &WpViewporter,
+        _event: wp_viewporter::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<WaylandState>,
+    ) {
+    }
+}
+
+impl Dispatch<WpViewport, ()> for WaylandState {
+    fn event(
+        _state: &mut WaylandState,
+        _proxy: &WpViewport,
+        _event: wp_viewport::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<WaylandState>,
+    ) {
+    }
+}
+
+fn viewport_destination(configured: (u32, u32), physical: (u32, u32)) -> Option<(i32, i32)> {
+    let (width, height) = configured;
+    let (physical_width, physical_height) = physical;
+    match (width, height) {
+        (0, 0) => None,
+        (0, height) if physical_height > 0 => {
+            let width = (u64::from(height) * u64::from(physical_width)
+                + u64::from(physical_height) / 2)
+                / u64::from(physical_height);
+            Some((i32::try_from(width).ok()?, i32::try_from(height).ok()?))
+        }
+        (width, 0) if physical_width > 0 => {
+            let height = (u64::from(width) * u64::from(physical_height)
+                + u64::from(physical_width) / 2)
+                / u64::from(physical_width);
+            Some((i32::try_from(width).ok()?, i32::try_from(height).ok()?))
+        }
+        (width, height) => Some((i32::try_from(width).ok()?, i32::try_from(height).ok()?)),
+    }
+}
+
+#[cfg(test)]
+mod viewport_tests {
+    use super::viewport_destination;
+
+    #[test]
+    fn preserves_complete_configure_size() {
+        assert_eq!(
+            viewport_destination((3072, 1728), (3840, 2160)),
+            Some((3072, 1728))
+        );
+    }
+
+    #[test]
+    fn derives_missing_dimension_from_physical_aspect_ratio() {
+        assert_eq!(
+            viewport_destination((0, 1728), (3840, 2160)),
+            Some((3072, 1728))
+        );
+        assert_eq!(
+            viewport_destination((3072, 0), (3840, 2160)),
+            Some((3072, 1728))
+        );
+        assert_eq!(viewport_destination((0, 0), (3840, 2160)), None);
+    }
+}
+
 impl LayerShellHandler for WaylandState {
     fn configure(
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         layer: &LayerSurface,
-        _configure: LayerSurfaceConfigure,
+        configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        layer.commit();
+        // SCTK acknowledges the configure. wgpu owns subsequent buffer commits,
+        // which must not race with a bufferless commit when explicit sync is active.
+        let output_id = self.surfaces.iter().find_map(|(output_id, surface)| {
+            (surface.wl_surface().id() == layer.wl_surface().id()).then_some(*output_id)
+        });
+        let Some(output_id) = output_id else {
+            return;
+        };
+        let destination = self.outputs.get(&output_id).and_then(|output| {
+            viewport_destination(configure.new_size, (output.width, output.height))
+        });
+        if let Some(viewport) = self.viewports.get(&output_id) {
+            let Some((logical_width, logical_height)) = destination else {
+                tracing::warn!(
+                    "Output {output_id} configure omitted both dimensions; waiting for a usable size"
+                );
+                return;
+            };
+            viewport.set_destination(logical_width, logical_height);
+            tracing::debug!(
+                "Configured viewport destination for output {output_id}: {logical_width}x{logical_height}"
+            );
+        }
+        if !self.pending_restores.remove(&output_id) {
+            return;
+        }
+        let Some(lifecycle) = self.output_lifecycles.get(&output_id).cloned() else {
+            return;
+        };
+        let Some(render_states) = self
+            .hotplug
+            .as_ref()
+            .map(|hotplug| hotplug.render_states.clone())
+        else {
+            return;
+        };
+
+        tokio::spawn(async move {
+            if !lifecycle.active.load(Ordering::SeqCst) {
+                return;
+            }
+            restore_cached_wallpaper(&lifecycle.name, &lifecycle.render_state).await;
+
+            let mut states = render_states.lock().await;
+            if lifecycle.active.load(Ordering::SeqCst) {
+                states.insert(lifecycle.name.clone(), lifecycle.render_state);
+                tracing::info!("Output configured: {}", lifecycle.name);
+            }
+        });
     }
 
     fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {}
@@ -259,7 +393,6 @@ impl OutputHandler for WaylandState {
             let renderer = self.hotplug.as_ref().unwrap().renderer.clone();
             let display_ptr = self.hotplug.as_ref().unwrap().display_ptr.0;
             let config = self.hotplug.as_ref().unwrap().config.clone();
-            let render_states = self.hotplug.as_ref().unwrap().render_states.clone();
             match create_render_state_for_output_sync(
                 &renderer,
                 display_ptr,
@@ -270,25 +403,15 @@ impl OutputHandler for WaylandState {
             ) {
                 Ok(rs) => {
                     let rs = std::sync::Arc::new(tokio::sync::Mutex::new(rs));
-                    tokio::spawn(async move {
-                        render_states.lock().await.insert(name.clone(), rs.clone());
-
-                        // Restore per-output last wallpaper.
-                        let state_path = dirs::cache_dir()
-                            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                            .join(format!("wallr/last_wallpaper/{name}"));
-                        if let Ok(path_str) = std::fs::read_to_string(&state_path) {
-                            let p = std::path::Path::new(path_str.trim());
-                            if p.exists() {
-                                let mut lock = rs.lock().await;
-                                let effect = crate::animation::Effect::Fade(
-                                    crate::animation::FadeParams::default(),
-                                );
-                                let _ = lock.set_wallpaper(p, &effect, 1000, 0).await;
-                            }
-                        }
-                        tracing::info!("Hotplug: output {name} ready");
-                    });
+                    self.output_lifecycles.insert(
+                        id,
+                        OutputLifecycle {
+                            name,
+                            render_state: rs,
+                            active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                        },
+                    );
+                    self.pending_restores.insert(id);
                 }
                 Err(e) => {
                     tracing::error!("Hotplug: failed to create render state for {name}: {e}");
@@ -398,19 +521,56 @@ impl OutputHandler for WaylandState {
         let id = output.id().protocol_id();
         if let Some(info) = self.outputs.remove(&id) {
             tracing::info!("Output disconnected: {} (protocol_id={})", info.name, id);
-            // Remove the LayerSurface from our tracking list.
-            self.surfaces.retain(|(pid, _)| *pid != id);
+            self.pending_restores.remove(&id);
+            let viewport = self.viewports.remove(&id);
+            let layer_surface = self
+                .surfaces
+                .iter()
+                .position(|(pid, _)| *pid == id)
+                .map(|position| self.surfaces.swap_remove(position).1);
+            let lifecycle = self.output_lifecycles.remove(&id);
+            if let Some(lifecycle) = &lifecycle {
+                lifecycle.active.store(false, Ordering::SeqCst);
+            }
             // Remove the render state from the shared map and stop playback.
-            if let Some(ref hotplug) = self.hotplug {
-                let name = info.name.clone();
+            if let (Some(hotplug), Some(lifecycle)) = (&self.hotplug, lifecycle) {
                 let render_states = hotplug.render_states.clone();
                 tokio::spawn(async move {
-                    if let Some(rs) = render_states.lock().await.remove(&name) {
-                        let lock = rs.lock().await;
-                        lock.video_playback.stop();
-                        tracing::info!("Hotplug: cleaned up render state for {name}");
+                    let mut states = render_states.lock().await;
+                    if states
+                        .get(&lifecycle.name)
+                        .is_some_and(|state| Arc::ptr_eq(state, &lifecycle.render_state))
+                    {
+                        states.remove(&lifecycle.name);
                     }
+                    drop(states);
+
+                    let state = lifecycle.render_state.lock().await;
+                    state.playback_gen.fetch_add(1, Ordering::SeqCst);
+                    state.pacer.notify();
+                    state.video_playback.stop();
+                    let render_lock = state.render_lock.clone();
+                    drop(state);
+
+                    let _ = tokio::task::spawn_blocking(move || {
+                        drop(
+                            render_lock
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                        );
+                    })
+                    .await;
+                    if let Some(viewport) = viewport {
+                        viewport.destroy();
+                    }
+                    drop(layer_surface);
+                    tracing::info!("Hotplug: cleaned up render state for {}", lifecycle.name);
                 });
+            } else {
+                if let Some(viewport) = viewport {
+                    viewport.destroy();
+                }
+                drop(layer_surface);
             }
         }
     }
@@ -707,6 +867,25 @@ impl RenderState {
                 &per_output_uniforms,
             );
         }));
+    }
+}
+
+async fn restore_cached_wallpaper(name: &str, render_state: &Arc<Mutex<RenderState>>) {
+    let state_path = dirs::cache_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join(format!("wallr/last_wallpaper/{name}"));
+    let Ok(path_str) = std::fs::read_to_string(state_path) else {
+        return;
+    };
+    let path = std::path::Path::new(path_str.trim());
+    if !path.exists() {
+        return;
+    }
+
+    let mut state = render_state.lock().await;
+    let effect = crate::animation::Effect::Fade(crate::animation::FadeParams::default());
+    if let Err(err) = state.set_wallpaper(path, &effect, 1000, 0).await {
+        tracing::warn!("Failed to restore wallpaper for {name}: {err}");
     }
 }
 
@@ -1166,6 +1345,14 @@ impl Daemon {
                 smithay_client_toolkit::globals::GlobalData,
             )
             .map_err(|e| DaemonError::StartError(format!("compositor bind failed: {e:?}")))?;
+        let viewporter = globals
+            .bind::<WpViewporter, WaylandState, ()>(&qh, 1..=1, ())
+            .ok();
+        if viewporter.is_none() {
+            tracing::warn!(
+                "wp_viewporter is unavailable; fractional outputs will use integer buffer scaling"
+            );
+        }
 
         let mut wayland_state = WaylandState {
             registry_state: RegistryState::new(&globals),
@@ -1174,6 +1361,10 @@ impl Daemon {
             shm,
             outputs: std::collections::HashMap::new(),
             surfaces: Vec::new(),
+            viewporter,
+            viewports: std::collections::HashMap::new(),
+            output_lifecycles: std::collections::HashMap::new(),
+            pending_restores: std::collections::HashSet::new(),
             layer_shell,
             compositor,
             hotplug: None,
@@ -1209,7 +1400,7 @@ impl Daemon {
         // Create a LayerSurface, wgpu Surface, and RenderState for every
         // known output. The key is the output's human-readable name (e.g.
         // "DP-1", "eDP-1") so IPC can target a specific monitor.
-        let mut render_states_map: std::collections::HashMap<String, Arc<Mutex<RenderState>>> =
+        let render_states_map: std::collections::HashMap<String, Arc<Mutex<RenderState>>> =
             std::collections::HashMap::new();
 
         // Collect output info first so we can pass &mut wayland_state to the
@@ -1243,21 +1434,15 @@ impl Daemon {
             )
             .await?;
             let rs = Arc::new(Mutex::new(rs));
-            render_states_map.insert(name.clone(), rs.clone());
-
-            // Restore per-output last wallpaper.
-            let state_path = dirs::cache_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                .join(format!("wallr/last_wallpaper/{name}"));
-            if let Ok(path_str) = std::fs::read_to_string(&state_path) {
-                let p = std::path::Path::new(path_str.trim());
-                if p.exists() {
-                    let mut lock = rs.lock().await;
-                    let effect =
-                        crate::animation::Effect::Fade(crate::animation::FadeParams::default());
-                    let _ = lock.set_wallpaper(p, &effect, 1000, 0).await;
-                }
-            }
+            wayland_state.output_lifecycles.insert(
+                *proto_id,
+                OutputLifecycle {
+                    name: name.clone(),
+                    render_state: rs,
+                    active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                },
+            );
+            wayland_state.pending_restores.insert(*proto_id);
 
             tracing::info!("Output ready: {name} ({proto_id})");
         }
@@ -1506,6 +1691,12 @@ impl Daemon {
                         }
                     }
                     IpcCommand::Stop => {
+                        for rs in render_states.values() {
+                            let state = rs.lock().await;
+                            state.playback_gen.fetch_add(1, Ordering::SeqCst);
+                            state.pacer.notify();
+                            state.video_playback.stop();
+                        }
                         let sp = stop_socket.clone();
                         tokio::spawn(async move {
                             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -1985,24 +2176,31 @@ impl Daemon {
         layer_surface
             .wl_surface()
             .set_input_region(Some(&empty_region));
-        layer_surface.commit();
-        empty_region.destroy();
-
-        let scale_factor = if output.scale_factor > 0 {
+        let output_id = output.wl_output.id().protocol_id();
+        let viewport = wayland_state
+            .viewporter
+            .as_ref()
+            .map(|viewporter| viewporter.get_viewport(layer_surface.wl_surface(), qh, ()));
+        let scale_factor = if viewport.is_some() {
+            1
+        } else if output.scale_factor > 0 {
             output.scale_factor
         } else {
             1
         };
         layer_surface.wl_surface().set_buffer_scale(scale_factor);
+        layer_surface.commit();
+        empty_region.destroy();
+        if let Some(viewport) = viewport {
+            wayland_state.viewports.insert(output_id, viewport);
+        }
 
         // mode.dimensions already returns physical pixels; do not multiply by scale.
         let width = output.width;
         let height = output.height;
 
         let raw_surface = layer_surface.wl_surface().id().as_ptr() as *mut std::ffi::c_void;
-        wayland_state
-            .surfaces
-            .push((output.wl_output.id().protocol_id(), layer_surface));
+        wayland_state.surfaces.push((output_id, layer_surface));
 
         let window_handle = WaylandWindow {
             display: display_ptr,
@@ -2103,24 +2301,31 @@ fn create_render_state_for_output_sync(
     layer_surface
         .wl_surface()
         .set_input_region(Some(&empty_region));
-    layer_surface.commit();
-    empty_region.destroy();
-
-    let scale_factor = if output.scale_factor > 0 {
+    let output_id = output.wl_output.id().protocol_id();
+    let viewport = wayland_state
+        .viewporter
+        .as_ref()
+        .map(|viewporter| viewporter.get_viewport(layer_surface.wl_surface(), qh, ()));
+    let scale_factor = if viewport.is_some() {
+        1
+    } else if output.scale_factor > 0 {
         output.scale_factor
     } else {
         1
     };
     layer_surface.wl_surface().set_buffer_scale(scale_factor);
+    layer_surface.commit();
+    empty_region.destroy();
+    if let Some(viewport) = viewport {
+        wayland_state.viewports.insert(output_id, viewport);
+    }
 
     // mode.dimensions already returns physical pixels; do not multiply by scale.
     let width = output.width;
     let height = output.height;
 
     let raw_surface = layer_surface.wl_surface().id().as_ptr() as *mut std::ffi::c_void;
-    wayland_state
-        .surfaces
-        .push((output.wl_output.id().protocol_id(), layer_surface));
+    wayland_state.surfaces.push((output_id, layer_surface));
 
     let window_handle = WaylandWindow {
         display: display_ptr,
