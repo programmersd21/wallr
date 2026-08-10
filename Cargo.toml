@@ -38,7 +38,7 @@ strip = false
 opt-level = 2              # Optimize dependencies even in dev mode
 
 [workspace.dependencies]
-wallr-core = { path = "wallr-core", version = "0.2.9" }
+wallr-core = { path = "wallr-core", version = "0.3.0" }
 
 # Core utilities
 anyhow = "1"
