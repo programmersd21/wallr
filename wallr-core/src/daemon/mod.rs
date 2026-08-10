@@ -735,9 +735,11 @@ impl RenderState {
                 .video_playback
                 .wait_first_frame(std::time::Duration::from_millis(1000));
 
-            let video_texture = self
-                .renderer
-                .create_video_texture(metadata.width, metadata.height);
+            let (tex_width, tex_height) = first_frame
+                .as_ref()
+                .map(|frame| (frame.width, frame.height))
+                .unwrap_or((metadata.width, metadata.height));
+            let video_texture = self.renderer.create_video_texture(tex_width, tex_height);
             let (img_width, img_height) = if let Some(frame) = first_frame {
                 self.renderer
                     .update_video_texture(&video_texture, &frame.data)?;
@@ -1205,14 +1207,7 @@ fn play_video(
     pacer: &LivePacer,
     per_output_uniforms: &crate::renderer::PerOutputUniforms,
 ) {
-    // Get initial frame dimensions
-    let (width, height) = match video_playback.metadata() {
-        Some(meta) => (meta.width, meta.height),
-        None => {
-            tracing::warn!("No video metadata available");
-            return;
-        }
-    };
+    let (width, height) = (commit.img_width, commit.img_height);
 
     let Some(texture) = commit.video_texture.as_ref() else {
         tracing::warn!("Video conversion resources unavailable");
@@ -1225,6 +1220,7 @@ fn play_video(
         .filter(|fps| *fps > 0)
         .map(|fps| std::time::Duration::from_secs_f64(1.0 / f64::from(fps)));
     let mut last_present = None;
+    let mut warned_size_mismatch = false;
 
     loop {
         // A newer commit superseded us. Do NOT touch the shared
@@ -1244,21 +1240,33 @@ fn play_video(
 
         // Pull the next displayable frame. The decoder queue is bounded, so
         // this never blocks; unchanged frames need no upload or presentation.
-        let frame_uploaded =
-            if let Some(frame) = video_playback.next_frame_in_generation(commit.generation) {
-                // The shared decoder can be replaced between commits; never
-                // upload a frame whose size does not match this task's texture.
-                if frame.width != width || frame.height != height {
-                    continue;
+        let frame_uploaded = if let Some(frame) =
+            video_playback.next_frame_in_generation(commit.generation)
+        {
+            // The shared decoder can be replaced between commits; never
+            // upload a frame whose size does not match this task's texture.
+            if frame.width != width || frame.height != height {
+                if !warned_size_mismatch {
+                    tracing::warn!(
+                        "Skipping video frame with unexpected size {}x{} (expected {}x{})",
+                        frame.width,
+                        frame.height,
+                        width,
+                        height
+                    );
+                    warned_size_mismatch = true;
                 }
-                if let Err(err) = renderer.update_video_texture(texture, &frame.data) {
-                    tracing::warn!("Video frame upload failed: {err}");
-                    return;
-                }
-                true
-            } else {
-                false
-            };
+                pacer.wait_until(std::time::Instant::now() + std::time::Duration::from_millis(2));
+                continue;
+            }
+            if let Err(err) = renderer.update_video_texture(texture, &frame.data) {
+                tracing::warn!("Video frame upload failed: {err}");
+                return;
+            }
+            true
+        } else {
+            false
+        };
 
         if !frame_uploaded {
             if playback_gen.load(Ordering::SeqCst) != commit.generation {

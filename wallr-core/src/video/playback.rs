@@ -54,6 +54,8 @@ impl VideoPlayback {
         *self.lock_pending() = None;
     }
 
+    /// Stops playback only when `generation` is still active.
+    /// Superseded callers cannot stop their successor's playback.
     pub fn stop_generation(&self, generation: u64) {
         let mut decoder = self.lock_decoder();
         let mut scheduler = self.lock_scheduler();
@@ -106,6 +108,7 @@ impl VideoPlayback {
         self.next_frame_for_generation(None)
     }
 
+    /// Returns a frame only when `generation` is still active.
     pub fn next_frame_in_generation(&self, generation: u64) -> Option<VideoFrame> {
         self.next_frame_for_generation(Some(generation))
     }
@@ -142,6 +145,7 @@ impl VideoPlayback {
         self.time_until_next_frame_for_generation(None)
     }
 
+    /// Returns a deadline only when `generation` is still active.
     pub fn time_until_next_frame_in_generation(&self, generation: u64) -> Option<Duration> {
         self.time_until_next_frame_for_generation(Some(generation))
     }

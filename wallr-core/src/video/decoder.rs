@@ -492,26 +492,10 @@ impl VideoDecoder {
                         break 'outer;
                     }
 
-                    while let Ok(control) = control_rx.try_recv() {
-                        match control {
-                            DecoderControl::Pause => paused = true,
-                            DecoderControl::Resume => paused = false,
-                            DecoderControl::Seek(ts, epoch) => pending_seek = Some((ts, epoch)),
-                        }
-                    }
-                    if paused
-                        || pending_seek.is_some()
-                        || seek_epoch.load(Ordering::Acquire) != applied_seek_epoch
-                    {
-                        break;
-                    }
-
                     // Apply backpressure before GPU readback and color
-                    // conversion. Dropping here would let the decoder race
-                    // through the file at hundreds of FPS while the renderer
-                    // is paced to presentation.
+                    // conversion, retaining this decoded frame across pause.
                     let mut interrupted = false;
-                    while frame_tx.is_full() {
+                    loop {
                         if stop_flag.load(Ordering::Relaxed) {
                             break 'outer;
                         }
@@ -524,8 +508,13 @@ impl VideoDecoder {
                                 }
                             }
                         }
-                        if paused || pending_seek.is_some() {
+                        if pending_seek.is_some()
+                            || seek_epoch.load(Ordering::Acquire) != applied_seek_epoch
+                        {
                             interrupted = true;
+                            break;
+                        }
+                        if !paused && !frame_tx.is_full() {
                             break;
                         }
                         thread::sleep(Duration::from_millis(1));

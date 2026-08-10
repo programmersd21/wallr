@@ -25,12 +25,12 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     return out;
 }
 
-fn sdr_to_linear(encoded: f32) -> f32 {
+fn srgb_to_linear(encoded: f32) -> f32 {
     let value = clamp(encoded, 0.0, 1.0);
-    if value < 0.08145 {
-        return value / 4.5;
+    if value <= 0.04045 {
+        return value / 12.92;
     }
-    return pow((value + 0.0993) / 1.0993, 1.0 / 0.45);
+    return pow((value + 0.055) / 1.055, 2.4);
 }
 
 @fragment
@@ -48,9 +48,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // The sRGB render target applies its encoding after this linear output.
     return vec4<f32>(
-        sdr_to_linear(encoded.r),
-        sdr_to_linear(encoded.g),
-        sdr_to_linear(encoded.b),
+        srgb_to_linear(encoded.r),
+        srgb_to_linear(encoded.g),
+        srgb_to_linear(encoded.b),
         1.0,
     );
 }
