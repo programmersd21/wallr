@@ -8,7 +8,9 @@ assignees: ''
 ---
 
 **Compositor**: (e.g., Hyprland, Sway, niri)
-**Wallr Version**: (e.g., 0.2.8)
+
+**Wallr Version**: (e.g., 0.3.0)
+
 **Config**: (Paste relevant `config.yaml` snippets)
 
 **Steps to Reproduce**:
