@@ -5,7 +5,7 @@ use ffmpeg_next as ffmpeg;
 use std::ffi::{CString, c_char};
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -79,8 +79,52 @@ pub struct VideoMetadata {
 }
 
 #[derive(Debug, Clone)]
+pub enum VideoFrameData {
+    Rgba(Vec<u8>),
+    Nv12 {
+        y_plane: Vec<u8>,
+        uv_plane: Vec<u8>,
+        color: YuvColorInfo,
+    },
+}
+
+impl VideoFrameData {
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Rgba(data) => data.len(),
+            Self::Nv12 {
+                y_plane, uv_plane, ..
+            } => y_plane.len() + uv_plane.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct YuvColorInfo {
+    pub matrix: YuvMatrix,
+    pub range: YuvRange,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum YuvMatrix {
+    Bt601,
+    Bt709,
+    Bt2020,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum YuvRange {
+    Limited,
+    Full,
+}
+
+#[derive(Debug, Clone)]
 pub struct VideoFrame {
-    pub data: Vec<u8>,
+    pub data: VideoFrameData,
     pub width: u32,
     pub height: u32,
     pub pts: Duration,
@@ -104,7 +148,7 @@ pub struct DecoderInfo {
 enum DecoderControl {
     Pause,
     Resume,
-    Seek(Duration),
+    Seek(Duration, u64),
 }
 
 pub struct VideoDecoder {
@@ -112,12 +156,21 @@ pub struct VideoDecoder {
     frame_rx: Receiver<VideoFrame>,
     control_tx: Sender<DecoderControl>,
     stop_flag: Arc<AtomicBool>,
+    seek_epoch: Arc<AtomicU64>,
     hw_in_use: Arc<AtomicU8>,
     decode_thread: Option<thread::JoinHandle<()>>,
 }
 
 impl VideoDecoder {
     pub fn new<P: AsRef<Path>>(path: P, hw_accel: HwAccel) -> VideoResult<Self> {
+        Self::with_preload(path, hw_accel, 2)
+    }
+
+    pub fn with_preload<P: AsRef<Path>>(
+        path: P,
+        hw_accel: HwAccel,
+        preload_frames: usize,
+    ) -> VideoResult<Self> {
         let path = path.as_ref().to_path_buf();
 
         ffmpeg::init()
@@ -134,11 +187,13 @@ impl VideoDecoder {
             metadata.codec
         );
 
-        let (frame_tx, frame_rx) = crossbeam_channel::bounded(3);
+        let (frame_tx, frame_rx) = crossbeam_channel::bounded(preload_frames.max(1));
         let (control_tx, control_rx) = crossbeam_channel::unbounded();
 
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_clone = stop_flag.clone();
+        let seek_epoch = Arc::new(AtomicU64::new(0));
+        let seek_epoch_clone = seek_epoch.clone();
         let hw_in_use = Arc::new(AtomicU8::new(0));
         let hw_in_use_clone = hw_in_use.clone();
 
@@ -151,6 +206,7 @@ impl VideoDecoder {
                     frame_tx,
                     control_rx,
                     stop_flag_clone,
+                    seek_epoch_clone,
                     hw_in_use_clone.clone(),
                 );
                 let used = match used {
@@ -171,6 +227,7 @@ impl VideoDecoder {
             frame_rx,
             control_tx,
             stop_flag,
+            seek_epoch,
             hw_in_use,
             decode_thread: Some(decode_thread),
         })
@@ -350,6 +407,7 @@ impl VideoDecoder {
         frame_tx: Sender<VideoFrame>,
         control_rx: Receiver<DecoderControl>,
         stop_flag: Arc<AtomicBool>,
+        seek_epoch: Arc<AtomicU64>,
         hw_in_use: Arc<AtomicU8>,
     ) -> VideoResult<HwAccel> {
         let mut ictx = ffmpeg::format::input(&path).map_err(|e| VideoError::FileOpen {
@@ -375,7 +433,8 @@ impl VideoDecoder {
         let mut scaler_src: Option<ffmpeg::format::Pixel> = None;
 
         let mut paused = false;
-        let mut pending_seek: Option<Duration> = None;
+        let mut pending_seek: Option<(Duration, u64)> = None;
+        let mut applied_seek_epoch = 0;
         let mut frame_index = 0u64;
         let mut decoded_frame = ffmpeg::frame::Video::empty();
         let mut sw_frame = ffmpeg::frame::Video::empty();
@@ -390,12 +449,13 @@ impl VideoDecoder {
                 match control {
                     DecoderControl::Pause => paused = true,
                     DecoderControl::Resume => paused = false,
-                    DecoderControl::Seek(ts) => pending_seek = Some(ts),
+                    DecoderControl::Seek(ts, epoch) => pending_seek = Some((ts, epoch)),
                 }
             }
 
-            if let Some(ts) = pending_seek.take() {
+            if let Some((ts, epoch)) = pending_seek.take() {
                 Self::apply_seek(&mut ictx, &mut decoder, time_base, ts);
+                applied_seek_epoch = epoch;
             }
 
             if paused {
@@ -412,7 +472,7 @@ impl VideoDecoder {
                     match control {
                         DecoderControl::Pause => paused = true,
                         DecoderControl::Resume => paused = false,
-                        DecoderControl::Seek(ts) => pending_seek = Some(ts),
+                        DecoderControl::Seek(ts, epoch) => pending_seek = Some((ts, epoch)),
                     }
                 }
                 if paused || pending_seek.is_some() {
@@ -430,6 +490,48 @@ impl VideoDecoder {
                 while decoder.receive_frame(&mut decoded_frame).is_ok() {
                     if stop_flag.load(Ordering::Relaxed) {
                         break 'outer;
+                    }
+
+                    while let Ok(control) = control_rx.try_recv() {
+                        match control {
+                            DecoderControl::Pause => paused = true,
+                            DecoderControl::Resume => paused = false,
+                            DecoderControl::Seek(ts, epoch) => pending_seek = Some((ts, epoch)),
+                        }
+                    }
+                    if paused
+                        || pending_seek.is_some()
+                        || seek_epoch.load(Ordering::Acquire) != applied_seek_epoch
+                    {
+                        break;
+                    }
+
+                    // Apply backpressure before GPU readback and color
+                    // conversion. Dropping here would let the decoder race
+                    // through the file at hundreds of FPS while the renderer
+                    // is paced to presentation.
+                    let mut interrupted = false;
+                    while frame_tx.is_full() {
+                        if stop_flag.load(Ordering::Relaxed) {
+                            break 'outer;
+                        }
+                        while let Ok(control) = control_rx.try_recv() {
+                            match control {
+                                DecoderControl::Pause => paused = true,
+                                DecoderControl::Resume => paused = false,
+                                DecoderControl::Seek(ts, epoch) => {
+                                    pending_seek = Some((ts, epoch));
+                                }
+                            }
+                        }
+                        if paused || pending_seek.is_some() {
+                            interrupted = true;
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    if interrupted {
+                        break;
                     }
 
                     let is_hw_frame = unsafe { !(*decoded_frame.as_ptr()).hw_frames_ctx.is_null() };
@@ -452,29 +554,6 @@ impl VideoDecoder {
                         &decoded_frame
                     };
 
-                    let src_format = src_frame.format();
-                    if scaler_src != Some(src_format) {
-                        scaler = Some(
-                            ffmpeg::software::scaling::context::Context::get(
-                                src_format,
-                                src_frame.width(),
-                                src_frame.height(),
-                                ffmpeg::format::Pixel::RGBA,
-                                src_frame.width(),
-                                src_frame.height(),
-                                ffmpeg::software::scaling::Flags::BILINEAR,
-                            )
-                            .map_err(|e| VideoError::FormatConversionFailed(e.into()))?,
-                        );
-                        scaler_src = Some(src_format);
-                    }
-
-                    scaler
-                        .as_mut()
-                        .expect("scaler initialized above")
-                        .run(src_frame, &mut rgb_frame)
-                        .map_err(|e| VideoError::FormatConversionFailed(e.into()))?;
-
                     let pts_duration = if let Some(pts) = decoded_frame.timestamp() {
                         Duration::from_secs_f64(
                             pts as f64 * time_base.numerator() as f64
@@ -484,10 +563,59 @@ impl VideoDecoder {
                         Duration::from_secs_f64(frame_index as f64 / 30.0)
                     };
 
+                    let width = src_frame.width();
+                    let height = src_frame.height();
+                    let data = if src_frame.format() == ffmpeg::format::Pixel::NV12 {
+                        let color_space = match decoded_frame.color_space() {
+                            ffmpeg::color::Space::Unspecified => decoder.color_space(),
+                            value => value,
+                        };
+                        let color_range = match decoded_frame.color_range() {
+                            ffmpeg::color::Range::Unspecified => decoder.color_range(),
+                            value => value,
+                        };
+                        let color = select_yuv_color(color_space, color_range, width, height);
+                        let (y_plane, uv_plane) = copy_nv12_planes(src_frame);
+                        VideoFrameData::Nv12 {
+                            y_plane,
+                            uv_plane,
+                            color,
+                        }
+                    } else {
+                        let src_format = src_frame.format();
+                        if scaler_src != Some(src_format) {
+                            scaler = Some(
+                                ffmpeg::software::scaling::context::Context::get(
+                                    src_format,
+                                    width,
+                                    height,
+                                    ffmpeg::format::Pixel::RGBA,
+                                    width,
+                                    height,
+                                    ffmpeg::software::scaling::Flags::BILINEAR,
+                                )
+                                .map_err(|e| VideoError::FormatConversionFailed(e.into()))?,
+                            );
+                            scaler_src = Some(src_format);
+                        }
+
+                        scaler
+                            .as_mut()
+                            .expect("scaler initialized above")
+                            .run(src_frame, &mut rgb_frame)
+                            .map_err(|e| VideoError::FormatConversionFailed(e.into()))?;
+                        VideoFrameData::Rgba(copy_packed_rows(
+                            rgb_frame.data(0),
+                            rgb_frame.stride(0),
+                            rgb_frame.width() as usize * 4,
+                            rgb_frame.height() as usize,
+                        ))
+                    };
+
                     let video_frame = VideoFrame {
-                        data: rgb_frame.data(0).to_vec(),
-                        width: rgb_frame.width(),
-                        height: rgb_frame.height(),
+                        data,
+                        width,
+                        height,
                         pts: pts_duration,
                         index: frame_index,
                     };
@@ -562,7 +690,7 @@ impl VideoDecoder {
             } else {
                 None
             },
-            pixel_format: "RGBA".to_string(),
+            pixel_format: "NV12/RGBA".to_string(),
         }
     }
 
@@ -586,7 +714,8 @@ impl VideoDecoder {
     }
 
     pub fn seek(&self, timestamp: Duration) {
-        let _ = self.control_tx.send(DecoderControl::Seek(timestamp));
+        let epoch = self.seek_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+        let _ = self.control_tx.send(DecoderControl::Seek(timestamp, epoch));
     }
 
     pub fn drain(&mut self) {
@@ -604,6 +733,61 @@ impl VideoDecoder {
                 )
             })
     }
+}
+
+fn copy_packed_rows(source: &[u8], stride: usize, row_bytes: usize, height: usize) -> Vec<u8> {
+    let mut packed = Vec::with_capacity(row_bytes * height);
+    for row in source.chunks(stride).take(height) {
+        packed.extend_from_slice(&row[..row_bytes]);
+    }
+    packed
+}
+
+fn copy_nv12_planes(frame: &ffmpeg::frame::Video) -> (Vec<u8>, Vec<u8>) {
+    copy_nv12_data(
+        frame.data(0),
+        frame.stride(0),
+        frame.data(1),
+        frame.stride(1),
+        frame.width() as usize,
+        frame.height() as usize,
+    )
+}
+
+fn copy_nv12_data(
+    y_source: &[u8],
+    y_stride: usize,
+    uv_source: &[u8],
+    uv_stride: usize,
+    width: usize,
+    height: usize,
+) -> (Vec<u8>, Vec<u8>) {
+    let chroma_width = width.div_ceil(2);
+    let chroma_height = height.div_ceil(2);
+    (
+        copy_packed_rows(y_source, y_stride, width, height),
+        copy_packed_rows(uv_source, uv_stride, chroma_width * 2, chroma_height),
+    )
+}
+
+fn select_yuv_color(
+    space: ffmpeg::color::Space,
+    range: ffmpeg::color::Range,
+    width: u32,
+    height: u32,
+) -> YuvColorInfo {
+    let matrix = match space {
+        ffmpeg::color::Space::BT470BG | ffmpeg::color::Space::SMPTE170M => YuvMatrix::Bt601,
+        ffmpeg::color::Space::BT709 => YuvMatrix::Bt709,
+        ffmpeg::color::Space::BT2020NCL => YuvMatrix::Bt2020,
+        _ if width >= 1280 || height > 576 => YuvMatrix::Bt709,
+        _ => YuvMatrix::Bt601,
+    };
+    let range = match range {
+        ffmpeg::color::Range::JPEG => YuvRange::Full,
+        ffmpeg::color::Range::MPEG | ffmpeg::color::Range::Unspecified => YuvRange::Limited,
+    };
+    YuvColorInfo { matrix, range }
 }
 
 impl Drop for VideoDecoder {
@@ -657,5 +841,54 @@ mod tests {
         assert_eq!(HwAccel::from_config("software"), HwAccel::Software);
         assert_eq!(HwAccel::from_config("auto"), HwAccel::Auto);
         assert_eq!(HwAccel::from_config("unknown"), HwAccel::Auto);
+    }
+
+    #[test]
+    fn packs_strided_rows() {
+        let y = [1, 2, 3, 99, 99, 4, 5, 6, 99, 99, 7, 8, 9, 99, 99];
+        let uv = [10, 11, 12, 13, 99, 99, 14, 15, 16, 17, 99, 99];
+        let (packed_y, packed_uv) = copy_nv12_data(&y, 5, &uv, 6, 3, 3);
+        assert_eq!(packed_y, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(packed_uv, [10, 11, 12, 13, 14, 15, 16, 17]);
+    }
+
+    #[test]
+    fn selects_yuv_matrix_and_range() {
+        assert_eq!(
+            select_yuv_color(
+                ffmpeg::color::Space::BT2020NCL,
+                ffmpeg::color::Range::JPEG,
+                3840,
+                2160,
+            ),
+            YuvColorInfo {
+                matrix: YuvMatrix::Bt2020,
+                range: YuvRange::Full,
+            }
+        );
+        assert_eq!(
+            select_yuv_color(
+                ffmpeg::color::Space::Unspecified,
+                ffmpeg::color::Range::Unspecified,
+                1920,
+                1080,
+            ),
+            YuvColorInfo {
+                matrix: YuvMatrix::Bt709,
+                range: YuvRange::Limited,
+            }
+        );
+        assert_eq!(
+            select_yuv_color(
+                ffmpeg::color::Space::Unspecified,
+                ffmpeg::color::Range::MPEG,
+                720,
+                576,
+            ),
+            YuvColorInfo {
+                matrix: YuvMatrix::Bt601,
+                range: YuvRange::Limited,
+            }
+        );
     }
 }

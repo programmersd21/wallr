@@ -1,6 +1,8 @@
 use image::GenericImageView;
 use wgpu::util::DeviceExt;
 
+use crate::video::{VideoFrameData, YuvColorInfo, YuvMatrix, YuvRange};
+
 pub struct Renderer {
     pub instance: wgpu::Instance,
     pub adapter: wgpu::Adapter,
@@ -12,6 +14,59 @@ pub struct Renderer {
     shader: wgpu::ShaderModule,
     /// Cached pipeline for a specific surface format. Created lazily.
     pipeline: std::sync::Mutex<Option<(wgpu::TextureFormat, wgpu::RenderPipeline)>>,
+    nv12_bind_group_layout: wgpu::BindGroupLayout,
+    nv12_pipeline: wgpu::RenderPipeline,
+}
+
+pub struct VideoTexture {
+    output: wgpu::Texture,
+    output_view: wgpu::TextureView,
+    effects_bind_group: wgpu::BindGroup,
+    luma: wgpu::Texture,
+    chroma: wgpu::Texture,
+    conversion_buffer: wgpu::Buffer,
+    conversion_bind_group: wgpu::BindGroup,
+    width: u32,
+    height: u32,
+}
+
+impl VideoTexture {
+    pub fn texture(&self) -> &wgpu::Texture {
+        &self.output
+    }
+
+    pub fn bind_group(&self) -> &wgpu::BindGroup {
+        &self.effects_bind_group
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct YuvConversion {
+    range: [f32; 4],
+    red: [f32; 4],
+    green: [f32; 4],
+    blue: [f32; 4],
+}
+
+impl YuvConversion {
+    fn new(color: YuvColorInfo) -> Self {
+        let range = match color.range {
+            YuvRange::Limited => [16.0 / 255.0, 255.0 / 219.0, 128.0 / 255.0, 255.0 / 224.0],
+            YuvRange::Full => [0.0, 1.0, 128.0 / 255.0, 1.0],
+        };
+        let (red_cr, green_cb, green_cr, blue_cb) = match color.matrix {
+            YuvMatrix::Bt601 => (1.402, -0.344_136, -0.714_136, 1.772),
+            YuvMatrix::Bt709 => (1.5748, -0.187_324, -0.468_124, 1.8556),
+            YuvMatrix::Bt2020 => (1.4746, -0.164_553, -0.571_353, 1.8814),
+        };
+        Self {
+            range,
+            red: [1.0, 0.0, red_cr, 0.0],
+            green: [1.0, green_cb, green_cr, 0.0],
+            blue: [1.0, blue_cb, 0.0, 0.0],
+        }
+    }
 }
 
 /// Per-output uniform buffer and bind group. Each output gets its own so
@@ -158,6 +213,49 @@ impl Renderer {
                 label: Some("uniform_bind_group_layout"),
             });
 
+        let nv12_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("NV12 Conversion Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
             bind_group_layouts: &[
@@ -166,6 +264,43 @@ impl Renderer {
                 &bind_group_layout_uni,
             ],
             push_constant_ranges: &[],
+        });
+
+        let nv12_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("NV12 to RGB Shader"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(
+                crate::shader::NV12_TO_RGB_SHADER,
+            )),
+        });
+        let nv12_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("NV12 Conversion Pipeline Layout"),
+            bind_group_layouts: &[&nv12_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let nv12_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("NV12 Conversion Pipeline"),
+            layout: Some(&nv12_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &nv12_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &nv12_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
         });
 
         Ok(Self {
@@ -178,6 +313,8 @@ impl Renderer {
             bind_group_layout_tex,
             bind_group_layout_uni,
             pipeline: std::sync::Mutex::new(None),
+            nv12_bind_group_layout,
+            nv12_pipeline,
         })
     }
 
@@ -283,7 +420,6 @@ impl Renderer {
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
-
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &self.bind_group_layout_tex,
             entries: &[
@@ -322,6 +458,229 @@ impl Renderer {
                 depth_or_array_layers: 1,
             },
         );
+    }
+
+    pub fn create_video_texture(&self, width: u32, height: u32) -> VideoTexture {
+        let plane_texture = |label, size, format| {
+            self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            })
+        };
+        let luma = plane_texture(
+            "Video NV12 Luma",
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            wgpu::TextureFormat::R8Unorm,
+        );
+        let chroma = plane_texture(
+            "Video NV12 Chroma",
+            wgpu::Extent3d {
+                width: width.div_ceil(2),
+                height: height.div_ceil(2),
+                depth_or_array_layers: 1,
+            },
+            wgpu::TextureFormat::Rg8Unorm,
+        );
+        let output = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Video RGB Output"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Video Plane Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let output_sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Video Output Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let conversion = YuvConversion::new(YuvColorInfo {
+            matrix: YuvMatrix::Bt709,
+            range: YuvRange::Limited,
+        });
+        let conversion_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Video YUV Conversion Uniform"),
+                contents: bytemuck::bytes_of(&conversion),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+        let luma_view = luma.create_view(&wgpu::TextureViewDescriptor::default());
+        let chroma_view = chroma.create_view(&wgpu::TextureViewDescriptor::default());
+        let output_view = output.create_view(&wgpu::TextureViewDescriptor::default());
+        let conversion_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Video NV12 Conversion Bind Group"),
+            layout: &self.nv12_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&luma_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&chroma_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: conversion_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        let effects_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Video Effects Bind Group"),
+            layout: &self.bind_group_layout_tex,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&output_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&output_sampler),
+                },
+            ],
+        });
+
+        VideoTexture {
+            output,
+            output_view,
+            effects_bind_group,
+            luma,
+            chroma,
+            conversion_buffer,
+            conversion_bind_group,
+            width,
+            height,
+        }
+    }
+
+    pub fn update_video_texture(
+        &self,
+        texture: &VideoTexture,
+        frame: &VideoFrameData,
+    ) -> anyhow::Result<()> {
+        match frame {
+            VideoFrameData::Rgba(rgba) => {
+                anyhow::ensure!(
+                    rgba.len() == texture.width as usize * texture.height as usize * 4,
+                    "invalid RGBA video frame size"
+                );
+                self.update_texture(&texture.output, rgba, texture.width, texture.height);
+            }
+            VideoFrameData::Nv12 {
+                y_plane,
+                uv_plane,
+                color,
+            } => {
+                let chroma_width = texture.width.div_ceil(2);
+                let chroma_height = texture.height.div_ceil(2);
+                anyhow::ensure!(
+                    y_plane.len() == texture.width as usize * texture.height as usize,
+                    "invalid NV12 luma plane size"
+                );
+                anyhow::ensure!(
+                    uv_plane.len() == (chroma_width * chroma_height * 2) as usize,
+                    "invalid NV12 chroma plane size"
+                );
+                self.queue.write_texture(
+                    texture.luma.as_image_copy(),
+                    y_plane,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(texture.width),
+                        rows_per_image: Some(texture.height),
+                    },
+                    wgpu::Extent3d {
+                        width: texture.width,
+                        height: texture.height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                self.queue.write_texture(
+                    texture.chroma.as_image_copy(),
+                    uv_plane,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(chroma_width * 2),
+                        rows_per_image: Some(chroma_height),
+                    },
+                    wgpu::Extent3d {
+                        width: chroma_width,
+                        height: chroma_height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                self.queue.write_buffer(
+                    &texture.conversion_buffer,
+                    0,
+                    bytemuck::bytes_of(&YuvConversion::new(*color)),
+                );
+
+                let mut encoder =
+                    self.device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("NV12 Conversion Encoder"),
+                        });
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("NV12 Conversion Pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &texture.output_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        occlusion_query_set: None,
+                        timestamp_writes: None,
+                    });
+                    pass.set_pipeline(&self.nv12_pipeline);
+                    pass.set_bind_group(0, &texture.conversion_bind_group, &[]);
+                    pass.draw(0..3, 0..1);
+                }
+                self.queue.submit([encoder.finish()]);
+            }
+        }
+        Ok(())
     }
 
     pub fn load_texture(
@@ -448,4 +807,29 @@ pub struct FrameRequest<'a> {
     pub old_img_height: u32,
     /// Scaling mode: 0=Fill, 1=Fit, 2=Stretch, 3=Center, 4=Tile.
     pub scaling_mode: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selects_yuv_conversion_coefficients_and_range() {
+        let limited_709 = YuvConversion::new(YuvColorInfo {
+            matrix: YuvMatrix::Bt709,
+            range: YuvRange::Limited,
+        });
+        assert_eq!(limited_709.red, [1.0, 0.0, 1.5748, 0.0]);
+        assert_eq!(limited_709.green, [1.0, -0.187_324, -0.468_124, 0.0]);
+        assert_eq!(limited_709.range[0], 16.0 / 255.0);
+        assert_eq!(limited_709.range[1], 255.0 / 219.0);
+
+        let full_2020 = YuvConversion::new(YuvColorInfo {
+            matrix: YuvMatrix::Bt2020,
+            range: YuvRange::Full,
+        });
+        assert_eq!(full_2020.red, [1.0, 0.0, 1.4746, 0.0]);
+        assert_eq!(full_2020.blue, [1.0, 1.8814, 0.0, 0.0]);
+        assert_eq!(full_2020.range, [0.0, 1.0, 128.0 / 255.0, 1.0]);
+    }
 }
