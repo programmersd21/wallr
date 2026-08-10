@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0
+
+- **Stabilize explicit-sync and NVDEC lifecycles** — merged in PR #13 from @Luquatic.
+
 ## 0.2.9
 
 - **Cinematic Blank & Restore Transitions**: Added support for custom transition effects and durations to `wallr ipc blank` and `wallr ipc restore` commands via CLI effect flags (e.g. `wallr ipc blank --duration 1.5s --effect blur`).
