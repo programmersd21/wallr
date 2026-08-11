@@ -245,7 +245,8 @@ fn viewport_destination(configured: (u32, u32), physical: (u32, u32)) -> Option<
 
 #[cfg(test)]
 mod viewport_tests {
-    use super::viewport_destination;
+    use super::{VideoPresentAction, video_present_action, viewport_destination};
+    use crate::renderer::FrameStatus;
 
     #[test]
     fn preserves_complete_configure_size() {
@@ -266,6 +267,22 @@ mod viewport_tests {
             Some((3072, 1728))
         );
         assert_eq!(viewport_destination((0, 0), (3840, 2160)), None);
+    }
+
+    #[test]
+    fn retries_recoverable_video_surface_failures() {
+        assert_eq!(
+            video_present_action(FrameStatus::TimedOut),
+            VideoPresentAction::Retry
+        );
+        assert_eq!(
+            video_present_action(FrameStatus::Outdated),
+            VideoPresentAction::Reconfigure
+        );
+        assert_eq!(
+            video_present_action(FrameStatus::Lost),
+            VideoPresentAction::Reconfigure
+        );
     }
 }
 
@@ -943,7 +960,7 @@ fn render_transition(
                 break;
             }
         };
-        if progress >= 1.0 || status == crate::renderer::FrameStatus::TimedOut {
+        if progress >= 1.0 || status != crate::renderer::FrameStatus::Presented {
             break;
         }
     }
@@ -972,6 +989,7 @@ fn render_transition(
             &commit,
             &video_playback,
             &playback_gen,
+            &pacer,
             per_output_uniforms,
         );
     }
@@ -1182,6 +1200,23 @@ fn play_live(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VideoPresentAction {
+    Presented,
+    Retry,
+    Reconfigure,
+}
+
+fn video_present_action(status: crate::renderer::FrameStatus) -> VideoPresentAction {
+    match status {
+        crate::renderer::FrameStatus::Presented => VideoPresentAction::Presented,
+        crate::renderer::FrameStatus::TimedOut => VideoPresentAction::Retry,
+        crate::renderer::FrameStatus::Outdated | crate::renderer::FrameStatus::Lost => {
+            VideoPresentAction::Reconfigure
+        }
+    }
+}
+
 /// Live video playback loop: continuously updates texture with decoded frames.
 fn play_video(
     renderer: &Renderer,
@@ -1189,6 +1224,7 @@ fn play_video(
     commit: &CommitData,
     video_playback: &std::sync::Arc<crate::video::VideoPlayback>,
     playback_gen: &std::sync::atomic::AtomicU64,
+    pacer: &LivePacer,
     per_output_uniforms: &crate::renderer::PerOutputUniforms,
 ) {
     // Get initial frame dimensions
@@ -1254,12 +1290,28 @@ fn play_video(
             per_output_uniforms,
         );
 
-        match status {
-            Ok(crate::renderer::FrameStatus::Presented) => {}
-            // A stalled present parks inside the acquire; a Timeout or error
-            // means the surface is unusable, so give up.
-            other => {
-                tracing::warn!("Video present failed ({:?}), stopping playback", other);
+        match status.map(video_present_action) {
+            Ok(VideoPresentAction::Presented) => {}
+            Ok(action) => {
+                if action == VideoPresentAction::Reconfigure {
+                    surface.configure(
+                        &renderer.device,
+                        &wgpu::SurfaceConfiguration {
+                            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                            format: commit.format,
+                            width: commit.width,
+                            height: commit.height,
+                            present_mode: wgpu::PresentMode::Fifo,
+                            alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+                            view_formats: vec![],
+                            desired_maximum_frame_latency: 2,
+                        },
+                    );
+                }
+                pacer.wait_until(std::time::Instant::now() + std::time::Duration::from_millis(100));
+            }
+            Err(err) => {
+                tracing::warn!("Video present failed ({err}), stopping playback");
                 video_playback.stop();
                 return;
             }
