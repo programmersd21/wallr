@@ -1253,7 +1253,7 @@ fn play_video(
         .max_fps
         .filter(|fps| *fps > 0)
         .map(|fps| std::time::Duration::from_secs_f64(1.0 / f64::from(fps)));
-    let mut last_present = None;
+    let mut last_present: Option<std::time::Instant> = None;
     let mut warned_size_mismatch = false;
 
     loop {
@@ -1336,7 +1336,9 @@ fn play_video(
         );
 
         match status.map(video_present_action) {
-            Ok(VideoPresentAction::Presented) => {}
+            Ok(VideoPresentAction::Presented) => {
+                last_present = Some(std::time::Instant::now());
+            }
             Ok(action) => {
                 if action == VideoPresentAction::Reconfigure {
                     surface.configure(
