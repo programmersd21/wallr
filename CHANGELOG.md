@@ -6,6 +6,10 @@
 
 - **Moved NV12 conversion to GPU**: merged in PR #14 by @Luquatic
 
+- **Fix publish-blocking workspace dependencies**: commit 96cbfb3 accidentally dropped `notify`, `dirs`, `glob`, `which`, `sha2`, `hex`, `humansize`, `ffmpeg-next` and `crossbeam-channel` from `[workspace.dependencies]` while `wallr-core` and `wallr` still inherited them via `.workspace = true`, breaking `cargo publish`. The dependencies are restored.
+
+- **Fix dead FPS pacer in video playback**: the `--max-fps` pacing loop in the video path declared `last_present` without a type annotation and never assigned it, so the limit silently never activated and the crate failed to compile in a fresh package build. The variable is now typed and stamped after each presented frame.
+
 ## 0.3.0
 
 - **Stabilize explicit-sync and NVDEC lifecycles** — merged in PR #13 from @Luquatic.
