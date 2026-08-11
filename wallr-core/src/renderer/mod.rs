@@ -733,6 +733,8 @@ impl Renderer {
         let output = match surface.get_current_texture() {
             Ok(texture) => texture,
             Err(wgpu::SurfaceError::Timeout) => return Ok(FrameStatus::TimedOut),
+            Err(wgpu::SurfaceError::Outdated) => return Ok(FrameStatus::Outdated),
+            Err(wgpu::SurfaceError::Lost) => return Ok(FrameStatus::Lost),
             Err(err) => {
                 return Err(anyhow::anyhow!(
                     "failed to acquire swapchain texture: {err:?}"
@@ -780,13 +782,13 @@ impl Renderer {
     }
 }
 
-/// Whether a frame was actually presented to the surface. A `TimedOut` frame
-/// means the compositor is not requesting frames right now (e.g. the monitor
-/// is off), and callers should stop rendering instead of spinning.
+/// Whether a frame was presented or the surface needs recovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameStatus {
     Presented,
     TimedOut,
+    Outdated,
+    Lost,
 }
 
 /// Everything needed to present one transition frame to a surface.
