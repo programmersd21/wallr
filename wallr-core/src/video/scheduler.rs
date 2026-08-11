@@ -1,9 +1,10 @@
+use crate::video::VideoFrameData;
 use crate::video::error::{VideoError, VideoResult};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct ScheduledFrame {
-    pub data: Vec<u8>,
+    pub data: VideoFrameData,
     pub width: u32,
     pub height: u32,
     pub pts: Duration,
@@ -11,7 +12,7 @@ pub struct ScheduledFrame {
 }
 
 impl ScheduledFrame {
-    pub fn new(data: Vec<u8>, width: u32, height: u32, pts: Duration, index: u64) -> Self {
+    pub fn new(data: VideoFrameData, width: u32, height: u32, pts: Duration, index: u64) -> Self {
         Self {
             data,
             width,

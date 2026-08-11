@@ -656,6 +656,10 @@ struct RenderState {
     video_playback: std::sync::Arc<crate::video::VideoPlayback>,
     /// Hardware backend to request for new decoders (from `video.hw_decode`).
     hw_accel: crate::video::HwAccel,
+    /// Maximum decoded frames buffered ahead of presentation.
+    preload_frames: usize,
+    /// Optional cap for live video presentation.
+    max_fps: Option<u32>,
     /// Current scaling mode for live playback.
     scaling_mode: u32,
     /// Per-output uniform buffer + bind group (Issue #9 race fix).
@@ -687,11 +691,15 @@ struct CommitData {
     animated: Option<crate::animated::AnimatedImage>,
     /// Video metadata when committed file is a video.
     is_video: bool,
+    /// Plane and conversion resources retained across transition and playback.
+    video_texture: Option<crate::renderer::VideoTexture>,
     /// Playback generation captured at commit time; live playback stops when
     /// it no longer matches `RenderState::playback_gen`.
     generation: u64,
     /// Scaling mode: 0=Fill, 1=Fit, 2=Stretch, 3=Center, 4=Tile.
     scaling_mode: u32,
+    /// Optional cap for live video presentation.
+    max_fps: Option<u32>,
 }
 
 impl RenderState {
@@ -734,7 +742,9 @@ impl RenderState {
 
             // Start video playback (replaces any previous playback and joins
             // its decode thread, releasing the old decoder's buffers).
-            let metadata = self.video_playback.start(path, self.hw_accel)?;
+            let metadata =
+                self.video_playback
+                    .start(path, self.hw_accel, self.preload_frames, generation)?;
 
             // Wait for the first frame so the transition's incoming image is
             // the real first frame, not a black placeholder.
@@ -742,22 +752,22 @@ impl RenderState {
                 .video_playback
                 .wait_first_frame(std::time::Duration::from_millis(1000));
 
-            let (new_tex, new_bind, img_width, img_height) = if let Some(frame) = first_frame {
-                let (tex, bind) = self.renderer.create_texture(frame.width, frame.height);
+            let (tex_width, tex_height) = first_frame
+                .as_ref()
+                .map(|frame| (frame.width, frame.height))
+                .unwrap_or((metadata.width, metadata.height));
+            let video_texture = self.renderer.create_video_texture(tex_width, tex_height);
+            let (img_width, img_height) = if let Some(frame) = first_frame {
                 self.renderer
-                    .update_texture(&tex, &frame.data, frame.width, frame.height);
-                (tex, bind, frame.width, frame.height)
+                    .update_video_texture(&video_texture, &frame.data)?;
+                (frame.width, frame.height)
             } else {
-                // Fallback: create black texture
+                // WebGPU initializes the output to black when no frame arrives.
                 tracing::warn!("No first frame available, using black texture");
-                let (tex, bind) = self
-                    .renderer
-                    .create_texture(metadata.width, metadata.height);
-                let black = vec![0u8; (metadata.width * metadata.height * 4) as usize];
-                self.renderer
-                    .update_texture(&tex, &black, metadata.width, metadata.height);
-                (tex, bind, metadata.width, metadata.height)
+                (metadata.width, metadata.height)
             };
+            let new_tex = video_texture.texture().clone();
+            let new_bind = video_texture.bind_group().clone();
 
             let old_bind = self.current_bind.take();
             let (old_img_width, old_img_height) = if old_bind.is_some() {
@@ -785,8 +795,10 @@ impl RenderState {
                 height: self.height,
                 animated: None,
                 is_video: true,
+                video_texture: Some(video_texture),
                 generation,
                 scaling_mode,
+                max_fps: self.max_fps,
             });
         }
 
@@ -845,8 +857,10 @@ impl RenderState {
             height: self.height,
             animated,
             is_video: false,
+            video_texture: None,
             generation,
             scaling_mode,
+            max_fps: self.max_fps,
         })
     }
 
@@ -1227,21 +1241,20 @@ fn play_video(
     pacer: &LivePacer,
     per_output_uniforms: &crate::renderer::PerOutputUniforms,
 ) {
-    // Get initial frame dimensions
-    let (width, height) = match video_playback.metadata() {
-        Some(meta) => (meta.width, meta.height),
-        None => {
-            tracing::warn!("No video metadata available");
-            return;
-        }
-    };
+    let (width, height) = (commit.img_width, commit.img_height);
 
-    let (texture, bind) = renderer.create_texture(width, height);
+    let Some(texture) = commit.video_texture.as_ref() else {
+        tracing::warn!("Video conversion resources unavailable");
+        return;
+    };
     let static_effect = crate::animation::Effect::Fade(crate::animation::FadeParams::default());
 
-    // The texture starts empty; present a real frame before the first
-    // vsync so the surface never flashes black.
-    let mut uploaded = false;
+    let min_frame_interval = commit
+        .max_fps
+        .filter(|fps| *fps > 0)
+        .map(|fps| std::time::Duration::from_secs_f64(1.0 / f64::from(fps)));
+    let mut last_present = None;
+    let mut warned_size_mismatch = false;
 
     loop {
         // A newer commit superseded us. Do NOT touch the shared
@@ -1252,22 +1265,54 @@ fn play_video(
             return;
         }
 
+        if let (Some(interval), Some(previous)) = (min_frame_interval, last_present) {
+            pacer.wait_until(previous + interval);
+            if playback_gen.load(Ordering::SeqCst) != commit.generation {
+                return;
+            }
+        }
+
         // Pull the next displayable frame. The decoder queue is bounded, so
-        // this never blocks; `None` means "present the current texture".
-        if let Some(frame) = video_playback.next_frame() {
+        // this never blocks; unchanged frames need no upload or presentation.
+        let frame_uploaded = if let Some(frame) =
+            video_playback.next_frame_in_generation(commit.generation)
+        {
             // The shared decoder can be replaced between commits; never
             // upload a frame whose size does not match this task's texture.
             if frame.width != width || frame.height != height {
+                if !warned_size_mismatch {
+                    tracing::warn!(
+                        "Skipping video frame with unexpected size {}x{} (expected {}x{})",
+                        frame.width,
+                        frame.height,
+                        width,
+                        height
+                    );
+                    warned_size_mismatch = true;
+                }
+                pacer.wait_until(std::time::Instant::now() + std::time::Duration::from_millis(2));
                 continue;
             }
-            renderer.update_texture(&texture, &frame.data, frame.width, frame.height);
-            uploaded = true;
-        }
+            if let Err(err) = renderer.update_video_texture(texture, &frame.data) {
+                tracing::warn!("Video frame upload failed: {err}");
+                return;
+            }
+            true
+        } else {
+            false
+        };
 
-        if !uploaded {
-            // No frame yet; wait briefly and try again instead of presenting
-            // an uninitialized texture.
-            std::thread::sleep(std::time::Duration::from_millis(2));
+        if !frame_uploaded {
+            if playback_gen.load(Ordering::SeqCst) != commit.generation {
+                return;
+            }
+            let wait = video_playback
+                .time_until_next_frame_in_generation(commit.generation)
+                .unwrap_or(std::time::Duration::from_millis(2));
+            if playback_gen.load(Ordering::SeqCst) != commit.generation {
+                return;
+            }
+            pacer.wait_until(std::time::Instant::now() + wait);
             continue;
         }
 
@@ -1276,8 +1321,8 @@ fn play_video(
             crate::renderer::FrameRequest {
                 surface,
                 format: commit.format,
-                bg_bind: &bind,
-                new_bind: &bind,
+                bg_bind: texture.bind_group(),
+                new_bind: texture.bind_group(),
                 effect: &uniforms,
                 width: commit.width,
                 height: commit.height,
@@ -2315,6 +2360,8 @@ impl Daemon {
             format: surf_format,
             video_playback: std::sync::Arc::new(crate::video::VideoPlayback::new()),
             hw_accel: crate::video::HwAccel::from_config(&config.video.hw_decode),
+            preload_frames: config.video.preload_frames,
+            max_fps: config.daemon.max_fps,
             scaling_mode: 0,
             per_output_uniforms: std::sync::Arc::new(renderer.create_per_output_uniforms()),
             last_wallpaper: None,
@@ -2427,6 +2474,8 @@ fn create_render_state_for_output_sync(
         format: surf_format,
         video_playback: std::sync::Arc::new(crate::video::VideoPlayback::new()),
         hw_accel: crate::video::HwAccel::from_config(&config.video.hw_decode),
+        preload_frames: config.video.preload_frames,
+        max_fps: config.daemon.max_fps,
         scaling_mode: 0,
         per_output_uniforms: std::sync::Arc::new(renderer.create_per_output_uniforms()),
         last_wallpaper: None,

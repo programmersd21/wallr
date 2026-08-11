@@ -3,13 +3,14 @@ use crate::video::{
 };
 use std::path::Path;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 pub struct VideoPlayback {
     decoder: Mutex<Option<VideoDecoder>>,
     scheduler: Mutex<Option<FrameScheduler>>,
     pending_frame: Mutex<Option<VideoFrame>>,
-    current_frame: Mutex<Option<VideoFrame>>,
+    generation: AtomicU64,
 }
 
 impl VideoPlayback {
@@ -18,7 +19,7 @@ impl VideoPlayback {
             decoder: Mutex::new(None),
             scheduler: Mutex::new(None),
             pending_frame: Mutex::new(None),
-            current_frame: Mutex::new(None),
+            generation: AtomicU64::new(u64::MAX),
         }
     }
 
@@ -26,11 +27,14 @@ impl VideoPlayback {
         &self,
         path: &Path,
         hw_accel: HwAccel,
+        preload_frames: usize,
+        generation: u64,
     ) -> Result<VideoMetadata, crate::video::error::VideoError> {
         self.stop();
-        let decoder = VideoDecoder::new(path, hw_accel)?;
+        let decoder = VideoDecoder::with_preload(path, hw_accel, preload_frames)?;
         let metadata = decoder.metadata().clone();
         let scheduler = FrameScheduler::new(metadata.duration);
+        self.generation.store(generation, Ordering::Release);
         *self.lock_decoder() = Some(decoder);
         *self.lock_scheduler() = Some(scheduler);
         tracing::info!(
@@ -44,10 +48,25 @@ impl VideoPlayback {
     }
 
     pub fn stop(&self) {
+        self.generation.store(u64::MAX, Ordering::Release);
         *self.lock_decoder() = None;
         *self.lock_scheduler() = None;
         *self.lock_pending() = None;
-        *self.lock_current() = None;
+    }
+
+    /// Stops playback only when `generation` is still active.
+    /// Superseded callers cannot stop their successor's playback.
+    pub fn stop_generation(&self, generation: u64) {
+        let mut decoder = self.lock_decoder();
+        let mut scheduler = self.lock_scheduler();
+        let mut pending = self.lock_pending();
+        if self.generation.load(Ordering::Acquire) != generation {
+            return;
+        }
+        self.generation.store(u64::MAX, Ordering::Release);
+        *decoder = None;
+        *scheduler = None;
+        *pending = None;
     }
 
     pub fn pause(&self) {
@@ -72,7 +91,6 @@ impl VideoPlayback {
         let mut decoder = self.lock_decoder();
         let mut scheduler = self.lock_scheduler();
         let mut pending = self.lock_pending();
-        let mut current = self.lock_current();
         let scheduler = scheduler.as_mut().ok_or_else(|| {
             VideoError::SeekFailed(timestamp, anyhow::anyhow!("no video is playing"))
         })?;
@@ -82,24 +100,31 @@ impl VideoPlayback {
             d.drain();
         }
         *pending = None;
-        *current = None;
         tracing::info!("Video seeked to {:?}", timestamp);
         Ok(())
     }
 
     pub fn next_frame(&self) -> Option<VideoFrame> {
+        self.next_frame_for_generation(None)
+    }
+
+    /// Returns a frame only when `generation` is still active.
+    pub fn next_frame_in_generation(&self, generation: u64) -> Option<VideoFrame> {
+        self.next_frame_for_generation(Some(generation))
+    }
+
+    fn next_frame_for_generation(&self, generation: Option<u64>) -> Option<VideoFrame> {
         let mut decoder = self.lock_decoder();
+        if generation.is_some_and(|expected| self.generation.load(Ordering::Acquire) != expected) {
+            return None;
+        }
         let mut scheduler = self.lock_scheduler();
         let mut pending = self.lock_pending();
         let (Some(decoder), Some(scheduler)) = (decoder.as_mut(), scheduler.as_mut()) else {
             return None;
         };
 
-        let frame = take_due_frame(scheduler, &mut pending, || decoder.next_frame());
-        if let Some(frame) = &frame {
-            *self.lock_current() = Some(frame.clone());
-        }
-        frame
+        take_due_frame(scheduler, &mut pending, || decoder.next_frame())
     }
 
     pub fn wait_first_frame(&self, timeout: Duration) -> Option<VideoFrame> {
@@ -116,8 +141,25 @@ impl VideoPlayback {
         }
     }
 
-    pub fn current_frame(&self) -> Option<VideoFrame> {
-        self.lock_current().clone()
+    pub fn time_until_next_frame(&self) -> Option<Duration> {
+        self.time_until_next_frame_for_generation(None)
+    }
+
+    /// Returns a deadline only when `generation` is still active.
+    pub fn time_until_next_frame_in_generation(&self, generation: u64) -> Option<Duration> {
+        self.time_until_next_frame_for_generation(Some(generation))
+    }
+
+    fn time_until_next_frame_for_generation(&self, generation: Option<u64>) -> Option<Duration> {
+        let scheduler = self.lock_scheduler();
+        let pending = self.lock_pending();
+        if generation.is_some_and(|expected| self.generation.load(Ordering::Acquire) != expected) {
+            return None;
+        }
+        let (Some(scheduler), Some(frame)) = (scheduler.as_ref(), pending.as_ref()) else {
+            return None;
+        };
+        scheduler.time_until_next_frame(frame.pts)
     }
 
     pub fn metadata(&self) -> Option<VideoMetadata> {
@@ -160,10 +202,6 @@ impl VideoPlayback {
 
     fn lock_pending(&self) -> std::sync::MutexGuard<'_, Option<VideoFrame>> {
         self.pending_frame.lock().unwrap_or_else(|p| p.into_inner())
-    }
-
-    fn lock_current(&self) -> std::sync::MutexGuard<'_, Option<VideoFrame>> {
-        self.current_frame.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
 
@@ -210,7 +248,7 @@ mod tests {
 
     fn frame(pts_ms: u64) -> VideoFrame {
         VideoFrame {
-            data: vec![pts_ms as u8],
+            data: crate::video::VideoFrameData::Rgba(vec![pts_ms as u8]),
             width: 1,
             height: 1,
             pts: Duration::from_millis(pts_ms),

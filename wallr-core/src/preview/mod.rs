@@ -93,8 +93,7 @@ struct PreviewApp {
     play_bind: Option<wgpu::BindGroup>,
     shown_frame: usize,
     video: Option<crate::video::VideoPlayback>,
-    video_tex: Option<wgpu::Texture>,
-    video_bind: Option<wgpu::BindGroup>,
+    video_texture: Option<crate::renderer::VideoTexture>,
     video_size: (u32, u32),
     per_output_uniforms: Option<crate::renderer::PerOutputUniforms>,
 }
@@ -121,8 +120,7 @@ impl PreviewApp {
             play_bind: None,
             shown_frame: usize::MAX,
             video: None,
-            video_tex: None,
-            video_bind: None,
+            video_texture: None,
             video_size: (1, 1),
             per_output_uniforms: None,
         }
@@ -207,17 +205,22 @@ impl ApplicationHandler for PreviewApp {
             match playback.start(
                 &self.target_path,
                 crate::video::HwAccel::from_config("auto"),
+                crate::config::VideoConfig::default().preload_frames,
+                0,
             ) {
                 Ok(meta) => {
                     let first = playback.wait_first_frame(std::time::Duration::from_millis(2000));
                     let (w, h) = (meta.width, meta.height);
-                    let (tex, bind) = renderer.create_texture(w, h);
+                    let texture = renderer.create_video_texture(w, h);
                     if let Some(frame) = first {
-                        renderer.update_texture(&tex, &frame.data, frame.width, frame.height);
+                        if let Err(e) = renderer.update_video_texture(&texture, &frame.data) {
+                            eprintln!("failed to upload first video frame: {e}");
+                            event_loop.exit();
+                            return;
+                        }
                     }
                     self.video = Some(playback);
-                    self.video_tex = Some(tex);
-                    self.video_bind = Some(bind);
+                    self.video_texture = Some(texture);
                     self.video_size = (w, h);
                     self.window = Some(window);
                     self.per_output_uniforms = Some(renderer.create_per_output_uniforms());
@@ -440,8 +443,9 @@ impl PreviewApp {
             return;
         };
         let Some(playback) = &self.video else { return };
-        let Some(tex) = &self.video_tex else { return };
-        let Some(bind) = &self.video_bind else { return };
+        let Some(texture) = &self.video_texture else {
+            return;
+        };
 
         let size = self
             .window
@@ -454,7 +458,11 @@ impl PreviewApp {
             && frame.width == w
             && frame.height == h
         {
-            renderer.update_texture(tex, &frame.data, frame.width, frame.height);
+            if let Err(e) = renderer.update_video_texture(texture, &frame.data) {
+                eprintln!("video upload error: {e}");
+                event_loop.exit();
+                return;
+            }
         }
 
         let uniforms = compute_effect_uniforms(&self.effect, 1.0);
@@ -462,8 +470,8 @@ impl PreviewApp {
             crate::renderer::FrameRequest {
                 surface,
                 format,
-                bg_bind: bind,
-                new_bind: bind,
+                bg_bind: texture.bind_group(),
+                new_bind: texture.bind_group(),
                 effect: &uniforms,
                 width: size.width.max(1),
                 height: size.height.max(1),
