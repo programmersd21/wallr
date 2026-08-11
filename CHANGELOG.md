@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- **Recovering playback after surface stalls logic**: merged in PR #15 by @Luquatic
+
+- **Moved NV12 conversion to GPU**: merged in PR #14 by @Luquatic
+
 ## 0.3.0
 
 - **Stabilize explicit-sync and NVDEC lifecycles** — merged in PR #13 from @Luquatic.
