@@ -60,6 +60,10 @@ Theme generation (Matugen, Wallust, Pywal) is supported as an optional step that
 cargo install wallr
 ```
 
+```bash
+yay -S wallr-bin
+```
+
 Or build from source:
 
 ```bash
