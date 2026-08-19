@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use image::GenericImageView;
+use image::ImageDecoder;
 use tracing::info;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -202,16 +203,29 @@ impl ApplicationHandler for PreviewApp {
         // window. Images and GIFs keep the transition-based preview path.
         if crate::video::VideoDecoder::is_video_file(&self.target_path) {
             let playback = crate::video::VideoPlayback::new();
-            match playback.start(
+            match crate::video::VideoPlayback::prepare(
                 &self.target_path,
                 crate::video::HwAccel::from_config("auto"),
                 crate::config::VideoConfig::default().preload_frames,
-                0,
+                std::time::Duration::from_millis(2000),
+                |metadata| {
+                    renderer
+                        .validate_video_texture(metadata.width, metadata.height)
+                        .map_err(crate::video::VideoError::GpuResourceCreation)
+                },
             ) {
-                Ok(meta) => {
-                    let first = playback.wait_first_frame(std::time::Duration::from_millis(2000));
+                Ok(mut prepared) => {
+                    let meta = prepared.metadata().clone();
+                    let first = prepared.take_first_frame();
                     let (w, h) = (meta.width, meta.height);
-                    let texture = renderer.create_video_texture(w, h);
+                    let texture = match renderer.create_video_texture(w, h) {
+                        Ok(texture) => texture,
+                        Err(e) => {
+                            eprintln!("failed to create video texture: {e}");
+                            event_loop.exit();
+                            return;
+                        }
+                    };
                     if let Some(frame) = first {
                         if let Err(e) = renderer.update_video_texture(&texture, &frame.data) {
                             eprintln!("failed to upload first video frame: {e}");
@@ -219,6 +233,7 @@ impl ApplicationHandler for PreviewApp {
                             return;
                         }
                     }
+                    playback.commit(prepared, 0);
                     self.video = Some(playback);
                     self.video_texture = Some(texture);
                     self.video_size = (w, h);
@@ -239,8 +254,25 @@ impl ApplicationHandler for PreviewApp {
         }
 
         let img = match image::ImageReader::open(&self.target_path) {
-            Ok(reader) => match reader.decode() {
-                Ok(img) => img,
+            Ok(reader) => match reader.into_decoder() {
+                Ok(decoder) => {
+                    let (width, height) = decoder.dimensions();
+                    if let Err(e) =
+                        Renderer::validate_static_decode(width, height, decoder.total_bytes())
+                    {
+                        eprintln!("failed to decode image: {e}");
+                        event_loop.exit();
+                        return;
+                    }
+                    match image::DynamicImage::from_decoder(decoder) {
+                        Ok(img) => img,
+                        Err(e) => {
+                            eprintln!("failed to decode image: {e}");
+                            event_loop.exit();
+                            return;
+                        }
+                    }
+                }
                 Err(e) => {
                     eprintln!("failed to decode image: {e}");
                     event_loop.exit();
@@ -254,16 +286,15 @@ impl ApplicationHandler for PreviewApp {
             }
         };
 
-        let (new_tex, new_bind) = match renderer.load_texture(&img) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("failed to upload image: {e}");
-                event_loop.exit();
-                return;
-            }
-        };
-
-        let (w, h) = img.dimensions();
+        let (new_tex, new_bind, w, h) =
+            match renderer.load_texture(&img, size.width, size.height, 0) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("failed to upload image: {e}");
+                    event_loop.exit();
+                    return;
+                }
+            };
 
         // Fade in over the last applied wallpaper (persisted by the daemon),
         // so the preview shows a real transition like on the desktop. Fall
@@ -273,9 +304,9 @@ impl ApplicationHandler for PreviewApp {
         let (bg_tex, bg_bind, old_size) =
             match load_last_wallpaper(&self.target_path).and_then(|bg| {
                 renderer
-                    .load_texture(&bg)
+                    .load_texture(&bg, size.width, size.height, 0)
                     .ok()
-                    .map(|(tex, bind)| (tex, bind, bg.dimensions()))
+                    .map(|(tex, bind, width, height)| (tex, bind, (width, height)))
             }) {
                 Some((tex, bind, size)) => (tex, bind, size),
                 None => {
@@ -284,8 +315,8 @@ impl ApplicationHandler for PreviewApp {
                         h.max(1),
                         image::Rgba([0, 0, 0, 255]),
                     ));
-                    match renderer.load_texture(&black) {
-                        Ok((tex, bind)) => (tex, bind, (w, h)),
+                    match renderer.load_texture(&black, size.width, size.height, 0) {
+                        Ok((tex, bind, width, height)) => (tex, bind, (width, height)),
                         Err(e) => {
                             eprintln!("failed to upload background: {e}");
                             event_loop.exit();
@@ -303,7 +334,14 @@ impl ApplicationHandler for PreviewApp {
             .flatten();
         if let Some(anim) = self.animated.as_mut() {
             let (w, h) = (anim.width, anim.height);
-            let (tex, bind) = renderer.create_texture(w, h);
+            let (tex, bind) = match renderer.create_texture(w, h) {
+                Ok(texture) => texture,
+                Err(e) => {
+                    eprintln!("failed to create GIF texture: {e}");
+                    event_loop.exit();
+                    return;
+                }
+            };
             let first = anim.first_frame();
             if !first.is_empty() {
                 renderer.update_texture(&tex, first, w, h);

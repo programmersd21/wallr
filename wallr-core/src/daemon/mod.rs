@@ -245,7 +245,10 @@ fn viewport_destination(configured: (u32, u32), physical: (u32, u32)) -> Option<
 
 #[cfg(test)]
 mod viewport_tests {
-    use super::{VideoPresentAction, video_present_action, viewport_destination};
+    use super::{
+        VideoPresentAction, is_transient_wallpaper_error, persist_wallpaper_at,
+        read_wallpaper_state, video_present_action, viewport_destination, write_wallpaper_state,
+    };
     use crate::renderer::FrameStatus;
 
     #[test]
@@ -283,6 +286,63 @@ mod viewport_tests {
             video_present_action(FrameStatus::Lost),
             VideoPresentAction::Reconfigure
         );
+    }
+
+    #[test]
+    fn rotates_wallpaper_state_only_after_successful_persistence() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let first = temporary.path().join("first.jpg");
+        let second = temporary.path().join("second.jpg");
+        std::fs::write(&first, b"first").expect("first wallpaper");
+        std::fs::write(&second, b"second").expect("second wallpaper");
+
+        persist_wallpaper_at(temporary.path(), "DP-1", &first).expect("persist first");
+        assert_eq!(
+            read_wallpaper_state(temporary.path(), "last_wallpaper", "DP-1"),
+            Some(first.clone())
+        );
+        assert_eq!(
+            read_wallpaper_state(temporary.path(), "previous_wallpaper", "DP-1"),
+            None
+        );
+
+        persist_wallpaper_at(temporary.path(), "DP-1", &second).expect("persist second");
+        assert_eq!(
+            read_wallpaper_state(temporary.path(), "last_wallpaper", "DP-1"),
+            Some(second)
+        );
+        assert_eq!(
+            read_wallpaper_state(temporary.path(), "previous_wallpaper", "DP-1"),
+            Some(first)
+        );
+
+        let missing = temporary.path().join("missing.jpg");
+        write_wallpaper_state(temporary.path(), "last_wallpaper", "DP-1", &missing)
+            .expect("persist missing path for restore test");
+        assert_eq!(
+            read_wallpaper_state(temporary.path(), "last_wallpaper", "DP-1"),
+            Some(missing)
+        );
+    }
+
+    #[test]
+    fn retries_only_explicitly_transient_errors() {
+        let timed_out = anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "temporary timeout",
+        ));
+        let missing = anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "missing wallpaper",
+        ));
+        let recoverable_video = anyhow::Error::new(crate::video::VideoError::QueueFull);
+
+        assert!(is_transient_wallpaper_error(&timed_out));
+        assert!(is_transient_wallpaper_error(&recoverable_video));
+        assert!(!is_transient_wallpaper_error(&missing));
+        assert!(!is_transient_wallpaper_error(&anyhow::anyhow!(
+            "invalid dimensions"
+        )));
     }
 }
 
@@ -710,8 +770,8 @@ impl RenderState {
         duration_ms: u32,
         scaling_mode: u32,
     ) -> anyhow::Result<()> {
-        self.scaling_mode = scaling_mode;
         let commit = self.commit_wallpaper(path, scaling_mode)?;
+        self.scaling_mode = scaling_mode;
         self.spawn_transition(commit, effect, duration_ms);
         // Update last_wallpaper after successful commit
         self.last_wallpaper = Some(path.to_path_buf());
@@ -726,37 +786,36 @@ impl RenderState {
         path: &std::path::Path,
         scaling_mode: u32,
     ) -> anyhow::Result<CommitData> {
-        use image::ImageReader;
+        use image::{ImageDecoder, ImageReader};
 
         // Check if this is a video file FIRST
         if crate::video::VideoDecoder::is_video_file(path) {
             tracing::info!("Video file detected: {:?}", path);
 
-            // Invalidate any in-flight video render task BEFORE touching the
-            // shared decoder: the old task checks the generation on every
-            // iteration, so bumping first makes it exit (or skip the upload)
-            // before it could pull a frame of the new resolution from the
-            // freshly started decoder.
-            let generation = self.playback_gen.fetch_add(1, Ordering::SeqCst) + 1;
-            self.pacer.notify();
-
-            // Start video playback (replaces any previous playback and joins
-            // its decode thread, releasing the old decoder's buffers).
-            let metadata =
-                self.video_playback
-                    .start(path, self.hw_accel, self.preload_frames, generation)?;
-
-            // Wait for the first frame so the transition's incoming image is
-            // the real first frame, not a black placeholder.
-            let first_frame = self
-                .video_playback
-                .wait_first_frame(std::time::Duration::from_millis(1000));
+            let generation = self.playback_gen.load(Ordering::SeqCst).wrapping_add(1);
+            let renderer = self.renderer.clone();
+            // Prepare and validate the new decoder before replacing active
+            // playback. A failed video therefore leaves the old wallpaper and
+            // decoder untouched.
+            let mut prepared = crate::video::VideoPlayback::prepare(
+                path,
+                self.hw_accel,
+                self.preload_frames,
+                std::time::Duration::from_millis(1000),
+                move |metadata| {
+                    renderer
+                        .validate_video_texture(metadata.width, metadata.height)
+                        .map_err(crate::video::VideoError::GpuResourceCreation)
+                },
+            )?;
+            let metadata = prepared.metadata().clone();
+            let first_frame = prepared.take_first_frame();
 
             let (tex_width, tex_height) = first_frame
                 .as_ref()
                 .map(|frame| (frame.width, frame.height))
                 .unwrap_or((metadata.width, metadata.height));
-            let video_texture = self.renderer.create_video_texture(tex_width, tex_height);
+            let video_texture = self.renderer.create_video_texture(tex_width, tex_height)?;
             let (img_width, img_height) = if let Some(frame) = first_frame {
                 self.renderer
                     .update_video_texture(&video_texture, &frame.data)?;
@@ -766,6 +825,9 @@ impl RenderState {
                 tracing::warn!("No first frame available, using black texture");
                 (metadata.width, metadata.height)
             };
+            self.video_playback.commit(prepared, generation);
+            self.playback_gen.store(generation, Ordering::SeqCst);
+            self.pacer.notify();
             let new_tex = video_texture.texture().clone();
             let new_bind = video_texture.bind_group().clone();
 
@@ -802,27 +864,31 @@ impl RenderState {
             });
         }
 
-        // A static image or GIF supersedes any video: release the video
-        // decoder and its buffers immediately (the generation bump also stops
-        // the video render task on its next vsync).
-        self.video_playback.stop();
-
         // Stream animated frames (GIF) on demand during playback; the
         // transition's incoming texture is the GIF's first frame.
         let mut animated = crate::animated::AnimatedImage::decode(path)?;
         let (new_tex, new_bind, img_width, img_height) = if let Some(anim) = animated.as_mut() {
             let (w, h) = (anim.width, anim.height);
-            let (tex, bind) = self.renderer.create_texture(w, h);
+            let (tex, bind) = self.renderer.create_texture(w, h)?;
             let first = anim.first_frame();
             if !first.is_empty() {
                 self.renderer.update_texture(&tex, first, w, h);
             }
             (tex, bind, w, h)
         } else {
-            let new_img = ImageReader::open(path)?.decode()?;
-            let (tex, bind) = self.renderer.load_texture(&new_img)?;
-            (tex, bind, new_img.width(), new_img.height())
+            let decoder = ImageReader::open(path)?.into_decoder()?;
+            let (source_width, source_height) = decoder.dimensions();
+            Renderer::validate_static_decode(source_width, source_height, decoder.total_bytes())?;
+            let new_img = image::DynamicImage::from_decoder(decoder)?;
+            let (tex, bind, width, height) =
+                self.renderer
+                    .load_texture(&new_img, self.width, self.height, scaling_mode)?;
+            (tex, bind, width, height)
         };
+
+        // Only supersede active video playback after the replacement has
+        // decoded and allocated successfully.
+        self.video_playback.stop();
 
         let old_bind = self.current_bind.take();
         let (old_img_width, old_img_height) = if old_bind.is_some() {
@@ -902,22 +968,171 @@ impl RenderState {
 }
 
 async fn restore_cached_wallpaper(name: &str, render_state: &Arc<Mutex<RenderState>>) {
-    let state_path = dirs::cache_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join(format!("wallr/last_wallpaper/{name}"));
-    let Ok(path_str) = std::fs::read_to_string(state_path) else {
+    let state_root = wallpaper_state_root();
+    let Some(path) = read_wallpaper_state(&state_root, "last_wallpaper", name) else {
         return;
     };
-    let path = std::path::Path::new(path_str.trim());
-    if !path.exists() {
-        return;
-    }
 
-    let mut state = render_state.lock().await;
     let effect = crate::animation::Effect::Fade(crate::animation::FadeParams::default());
-    if let Err(err) = state.set_wallpaper(path, &effect, 1000, 0).await {
-        tracing::warn!("Failed to restore wallpaper for {name}: {err}");
+    if let Err(err) = set_wallpaper_with_retry(render_state, &path, &effect, 1000, 0).await {
+        tracing::warn!("Failed to restore wallpaper for {name} from {path:?}: {err}");
+        let Some(previous) = read_wallpaper_state(&state_root, "previous_wallpaper", name) else {
+            return;
+        };
+        match set_wallpaper_with_retry(render_state, &previous, &effect, 1000, 0).await {
+            Ok(()) => {
+                if let Err(persist_err) =
+                    write_wallpaper_state(&state_root, "last_wallpaper", name, &previous)
+                {
+                    tracing::warn!(
+                        "Restored previous wallpaper for {name}, but failed to update state: {persist_err}"
+                    );
+                } else {
+                    tracing::warn!("Restored previous wallpaper for {name} after {path:?} failed");
+                }
+            }
+            Err(previous_err) => tracing::warn!(
+                "Failed to restore previous wallpaper for {name} from {previous:?}: {previous_err}"
+            ),
+        }
     }
+}
+
+const WALLPAPER_RETRY_ATTEMPTS: usize = 3;
+const WALLPAPER_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+
+async fn set_wallpaper_with_retry(
+    render_state: &Arc<Mutex<RenderState>>,
+    path: &std::path::Path,
+    effect: &crate::animation::Effect,
+    duration_ms: u32,
+    scaling_mode: u32,
+) -> anyhow::Result<()> {
+    let mut attempt = 1;
+    loop {
+        let result = {
+            let mut state = render_state.lock().await;
+            state
+                .set_wallpaper(path, effect, duration_ms, scaling_mode)
+                .await
+        };
+        match result {
+            Ok(()) => return Ok(()),
+            Err(err)
+                if attempt < WALLPAPER_RETRY_ATTEMPTS && is_transient_wallpaper_error(&err) =>
+            {
+                tracing::warn!(
+                    "Transient wallpaper error for {path:?} (attempt {attempt}/{WALLPAPER_RETRY_ATTEMPTS}): {err}"
+                );
+                attempt += 1;
+                tokio::time::sleep(WALLPAPER_RETRY_DELAY).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+fn is_transient_wallpaper_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io_err| {
+                matches!(
+                    io_err.kind(),
+                    std::io::ErrorKind::Interrupted
+                        | std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                )
+            })
+            || cause
+                .downcast_ref::<crate::video::VideoError>()
+                .is_some_and(crate::video::VideoError::is_recoverable)
+    })
+}
+
+fn wallpaper_state_root() -> std::path::PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("wallr")
+}
+
+fn wallpaper_state_path(root: &std::path::Path, state_dir: &str, name: &str) -> std::path::PathBuf {
+    root.join(state_dir).join(name)
+}
+
+fn read_wallpaper_state(
+    root: &std::path::Path,
+    state_dir: &str,
+    name: &str,
+) -> Option<std::path::PathBuf> {
+    let path = std::fs::read_to_string(wallpaper_state_path(root, state_dir, name)).ok()?;
+    let wallpaper = std::path::PathBuf::from(path.trim());
+    (!wallpaper.as_os_str().is_empty()).then_some(wallpaper)
+}
+
+fn write_wallpaper_state(
+    root: &std::path::Path,
+    state_dir: &str,
+    name: &str,
+    wallpaper: &std::path::Path,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_ID: AtomicU64 = AtomicU64::new(0);
+
+    let state_path = wallpaper_state_path(root, state_dir, name);
+    let parent = state_path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("wallpaper state path has no parent"))?;
+    std::fs::create_dir_all(parent)?;
+    let file_name = state_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("wallpaper");
+
+    loop {
+        let id = TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let temporary_path = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), id));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)
+        {
+            Ok(mut temporary) => {
+                if let Err(err) = temporary
+                    .write_all(wallpaper.as_os_str().as_encoded_bytes())
+                    .and_then(|()| temporary.sync_all())
+                    .and_then(|()| std::fs::rename(&temporary_path, &state_path))
+                {
+                    let _ = std::fs::remove_file(&temporary_path);
+                    return Err(err);
+                }
+                return Ok(());
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+fn persist_wallpaper(name: &str, wallpaper: &std::path::Path) -> std::io::Result<()> {
+    let root = wallpaper_state_root();
+    persist_wallpaper_at(&root, name, wallpaper)
+}
+
+fn persist_wallpaper_at(
+    root: &std::path::Path,
+    name: &str,
+    wallpaper: &std::path::Path,
+) -> std::io::Result<()> {
+    let previous = read_wallpaper_state(root, "last_wallpaper", name)
+        .filter(|current| current.exists() && current != wallpaper);
+    write_wallpaper_state(root, "last_wallpaper", name, wallpaper)?;
+    if let Some(previous) = previous {
+        write_wallpaper_state(root, "previous_wallpaper", name, &previous)?;
+    }
+    Ok(())
 }
 
 /// Presents one frame per vsync until the wall-clock duration elapses. With
@@ -1025,8 +1240,22 @@ fn play_live(
     gif_paused: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     per_output_uniforms: &crate::renderer::PerOutputUniforms,
 ) {
-    let (tex_a, bind_a) = renderer.create_texture(animated.width, animated.height);
-    let (tex_b, bind_b) = renderer.create_texture(animated.width, animated.height);
+    let Ok((tex_a, bind_a)) = renderer.create_texture(animated.width, animated.height) else {
+        tracing::warn!(
+            "GIF dimensions {}x{} exceed the GPU texture limit",
+            animated.width,
+            animated.height
+        );
+        return;
+    };
+    let Ok((tex_b, bind_b)) = renderer.create_texture(animated.width, animated.height) else {
+        tracing::warn!(
+            "GIF dimensions {}x{} exceed the GPU texture limit",
+            animated.width,
+            animated.height
+        );
+        return;
+    };
     let (frame_w, frame_h) = (animated.width, animated.height);
     let (bytes_per_row, rows) = (frame_w * 4, frame_h);
     let frame_bytes = bytes_per_row as u64 * rows as u64;
@@ -1389,6 +1618,25 @@ async fn resolve_targets(
     }
 }
 
+fn resolve_named_targets(
+    render_states: &std::collections::HashMap<
+        String,
+        std::sync::Arc<tokio::sync::Mutex<RenderState>>,
+    >,
+    monitor: Option<&str>,
+) -> Vec<(String, std::sync::Arc<tokio::sync::Mutex<RenderState>>)> {
+    match monitor {
+        Some(name) => render_states
+            .get(name)
+            .map(|state| vec![(name.to_string(), state.clone())])
+            .unwrap_or_default(),
+        None => render_states
+            .iter()
+            .map(|(name, state)| (name.clone(), state.clone()))
+            .collect(),
+    }
+}
+
 pub struct Daemon {
     config: WallrConfig,
     paused: Arc<AtomicBool>,
@@ -1688,7 +1936,7 @@ impl Daemon {
                         }
 
                         // Resolve targets: unknown monitor = error, no monitor = all outputs.
-                        let targets = resolve_targets(&render_states, monitor.as_deref()).await;
+                        let targets = resolve_named_targets(&render_states, monitor.as_deref());
                         if targets.is_empty() {
                             return IpcResponse {
                                 success: false,
@@ -1697,23 +1945,6 @@ impl Daemon {
                                     None => Some("No outputs available".into()),
                                 },
                             };
-                        }
-
-                        // Persist per-output last wallpaper for all targeted outputs.
-                        {
-                            let persist_names: Vec<&str> = match &monitor {
-                                Some(name) => vec![name.as_str()],
-                                None => render_states.keys().map(|s| s.as_str()).collect(),
-                            };
-                            for name in persist_names {
-                                let state_path = dirs::cache_dir()
-                                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-                                    .join(format!("wallr/last_wallpaper/{name}"));
-                                if let Some(parent) = state_path.parent() {
-                                    let _ = std::fs::create_dir_all(parent);
-                                }
-                                let _ = std::fs::write(&state_path, &path);
-                            }
                         }
 
                         let effect = effect.unwrap_or_else(|| {
@@ -1734,31 +1965,32 @@ impl Daemon {
                         };
 
                         let mut last_err = None;
-                        for rs in &targets {
+                        for (name, rs) in &targets {
                             let rs_clone = rs.clone();
                             let p_clone = p.clone();
                             let effect_clone = effect.clone();
                             let result = tokio::task::spawn_blocking(move || {
                                 let rt = tokio::runtime::Handle::current();
-                                rt.block_on(async {
-                                    let mut lock = rs_clone.lock().await;
-                                    lock.set_wallpaper(
-                                        &p_clone,
-                                        &effect_clone,
-                                        duration,
-                                        scaling_mode_u32,
-                                    )
-                                    .await
-                                })
+                                rt.block_on(set_wallpaper_with_retry(
+                                    &rs_clone,
+                                    &p_clone,
+                                    &effect_clone,
+                                    duration,
+                                    scaling_mode_u32,
+                                ))
                             })
                             .await;
 
-                            if let Err(e) = result {
-                                last_err = Some(format!("Task spawn failed: {e}"));
-                                continue;
-                            }
-                            if let Err(e) = result.unwrap() {
-                                last_err = Some(format!("Render failed: {e}"));
+                            match result {
+                                Err(e) => last_err = Some(format!("Task spawn failed: {e}")),
+                                Ok(Err(e)) => last_err = Some(format!("Render failed: {e}")),
+                                Ok(Ok(())) => {
+                                    if let Err(err) = persist_wallpaper(name, &p) {
+                                        tracing::warn!(
+                                            "Wallpaper changed on {name}, but state persistence failed: {err}"
+                                        );
+                                    }
+                                }
                             }
                         }
 

@@ -3,6 +3,9 @@ use wgpu::util::DeviceExt;
 
 use crate::video::{VideoFrameData, YuvColorInfo, YuvMatrix, YuvRange};
 
+const MAX_TEXTURE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_STATIC_DECODE_BYTES: u64 = 512 * 1024 * 1024;
+
 pub struct Renderer {
     pub instance: wgpu::Instance,
     pub adapter: wgpu::Adapter,
@@ -156,12 +159,18 @@ impl Renderer {
             .await
             .ok_or_else(|| anyhow::anyhow!("Failed to find suitable adapter"))?;
 
+        let adapter_limits = adapter.limits();
+        let required_limits = wgpu::Limits {
+            max_texture_dimension_2d: adapter_limits.max_texture_dimension_2d,
+            ..wgpu::Limits::default()
+        };
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
+                    required_limits,
                     memory_hints: wgpu::MemoryHints::default(),
                 },
                 None,
@@ -318,6 +327,24 @@ impl Renderer {
         })
     }
 
+    pub fn validate_static_decode(
+        width: u32,
+        height: u32,
+        decoded_bytes: u64,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            width > 0 && height > 0,
+            "decoded image dimensions must be non-zero, got {width}x{height}"
+        );
+        anyhow::ensure!(
+            decoded_bytes <= MAX_STATIC_DECODE_BYTES,
+            "decoded image for {width}x{height} requires approximately {:.1} MiB, exceeding the {:.0} MiB safety limit",
+            decoded_bytes as f64 / (1024.0 * 1024.0),
+            MAX_STATIC_DECODE_BYTES as f64 / (1024.0 * 1024.0)
+        );
+        Ok(())
+    }
+
     /// Create a per-output uniform buffer and bind group so each output
     /// renders with its own GPU state, eliminating cross-output races.
     pub fn create_per_output_uniforms(&self) -> PerOutputUniforms {
@@ -392,7 +419,13 @@ impl Renderer {
         pipeline
     }
 
-    pub fn create_texture(&self, width: u32, height: u32) -> (wgpu::Texture, wgpu::BindGroup) {
+    pub fn create_texture(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> anyhow::Result<(wgpu::Texture, wgpu::BindGroup)> {
+        validate_texture_dimensions(width, height, self.device.limits().max_texture_dimension_2d)?;
+        validate_texture_memory(width, height, 4)?;
         let size = wgpu::Extent3d {
             width,
             height,
@@ -435,7 +468,7 @@ impl Renderer {
             label: None,
         });
 
-        (texture, bind_group)
+        Ok((texture, bind_group))
     }
 
     pub fn update_texture(&self, texture: &wgpu::Texture, rgba: &[u8], width: u32, height: u32) {
@@ -460,7 +493,8 @@ impl Renderer {
         );
     }
 
-    pub fn create_video_texture(&self, width: u32, height: u32) -> VideoTexture {
+    pub fn create_video_texture(&self, width: u32, height: u32) -> anyhow::Result<VideoTexture> {
+        self.validate_video_texture(width, height)?;
         let plane_texture = |label, size, format| {
             self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -578,7 +612,7 @@ impl Renderer {
             ],
         });
 
-        VideoTexture {
+        Ok(VideoTexture {
             output,
             output_view,
             effects_bind_group,
@@ -588,7 +622,14 @@ impl Renderer {
             conversion_bind_group,
             width,
             height,
-        }
+        })
+    }
+
+    pub fn validate_video_texture(&self, width: u32, height: u32) -> anyhow::Result<()> {
+        validate_texture_dimensions(width, height, self.device.limits().max_texture_dimension_2d)?;
+        // RGBA output plus NV12 luma/chroma planes use about 5.5 bytes per
+        // pixel. Round up so all allocations stay within a conservative cap.
+        validate_texture_memory(width, height, 6)
     }
 
     pub fn update_video_texture(
@@ -686,12 +727,28 @@ impl Renderer {
     pub fn load_texture(
         &self,
         image: &image::DynamicImage,
-    ) -> anyhow::Result<(wgpu::Texture, wgpu::BindGroup)> {
-        let rgba = image.to_rgba8();
-        let (width, height) = image.dimensions();
-        let (texture, bind_group) = self.create_texture(width, height);
+        output_width: u32,
+        output_height: u32,
+        scaling_mode: u32,
+    ) -> anyhow::Result<(wgpu::Texture, wgpu::BindGroup, u32, u32)> {
+        let (width, height) = prepared_image_dimensions(
+            image.width(),
+            image.height(),
+            output_width,
+            output_height,
+            scaling_mode,
+            self.device.limits().max_texture_dimension_2d,
+        );
+        let rgba = if (width, height) == image.dimensions() {
+            image.to_rgba8()
+        } else {
+            image
+                .resize_exact(width, height, image::imageops::FilterType::Lanczos3)
+                .to_rgba8()
+        };
+        let (texture, bind_group) = self.create_texture(width, height)?;
         self.update_texture(&texture, &rgba, width, height);
-        Ok((texture, bind_group))
+        Ok((texture, bind_group, width, height))
     }
 
     pub fn update_uniforms(&self, buffer: &wgpu::Buffer, uniforms: Uniforms) {
@@ -791,6 +848,90 @@ pub enum FrameStatus {
     Lost,
 }
 
+fn validate_texture_dimensions(width: u32, height: u32, limit: u32) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        width > 0 && height > 0,
+        "texture dimensions must be non-zero, got {width}x{height}"
+    );
+    anyhow::ensure!(
+        width <= limit && height <= limit,
+        "texture dimensions {width}x{height} exceed the GPU limit of {limit}"
+    );
+    Ok(())
+}
+
+fn validate_texture_memory(width: u32, height: u32, bytes_per_pixel: u64) -> anyhow::Result<()> {
+    validate_image_memory(
+        width,
+        height,
+        bytes_per_pixel,
+        MAX_TEXTURE_BYTES,
+        "texture allocation",
+    )
+}
+
+fn validate_image_memory(
+    width: u32,
+    height: u32,
+    bytes_per_pixel: u64,
+    limit: u64,
+    label: &str,
+) -> anyhow::Result<()> {
+    let bytes = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(bytes_per_pixel))
+        .ok_or_else(|| anyhow::anyhow!("{label} size overflow for {width}x{height}"))?;
+    anyhow::ensure!(
+        bytes <= limit,
+        "{label} for {width}x{height} requires approximately {:.1} MiB, exceeding the {:.0} MiB safety limit",
+        bytes as f64 / (1024.0 * 1024.0),
+        limit as f64 / (1024.0 * 1024.0)
+    );
+    Ok(())
+}
+
+fn prepared_image_dimensions(
+    image_width: u32,
+    image_height: u32,
+    output_width: u32,
+    output_height: u32,
+    scaling_mode: u32,
+    texture_limit: u32,
+) -> (u32, u32) {
+    if image_width == 0 || image_height == 0 {
+        return (image_width, image_height);
+    }
+
+    let limit_scale = (texture_limit as f64 / image_width as f64)
+        .min(texture_limit as f64 / image_height as f64)
+        .min(1.0);
+    let output_scale = match scaling_mode {
+        // Fill retains enough pixels to cover the output; fit retains enough
+        // to fit inside it. The shader still owns the final crop/letterbox.
+        0 if output_width > 0 && output_height > 0 => (output_width as f64 / image_width as f64)
+            .max(output_height as f64 / image_height as f64)
+            .min(1.0),
+        1 if output_width > 0 && output_height > 0 => (output_width as f64 / image_width as f64)
+            .min(output_height as f64 / image_height as f64)
+            .min(1.0),
+        2 if output_width > 0 && output_height > 0 => {
+            return (
+                image_width.min(output_width).min(texture_limit).max(1),
+                image_height.min(output_height).min(texture_limit).max(1),
+            );
+        }
+        // Center and tile have pixel-sensitive semantics. Reject an impossible
+        // native texture later rather than silently changing its apparent size.
+        _ => return (image_width, image_height),
+    };
+    let scale = limit_scale.min(output_scale);
+
+    (
+        ((image_width as f64 * scale).round() as u32).max(1),
+        ((image_height as f64 * scale).round() as u32).max(1),
+    )
+}
+
 /// Everything needed to present one transition frame to a surface.
 pub struct FrameRequest<'a> {
     pub surface: &'a wgpu::Surface<'a>,
@@ -833,5 +974,61 @@ mod tests {
         assert_eq!(full_2020.red, [1.0, 0.0, 1.4746, 0.0]);
         assert_eq!(full_2020.blue, [1.0, 1.8814, 0.0, 0.0]);
         assert_eq!(full_2020.range, [0.0, 1.0, 128.0 / 255.0, 1.0]);
+    }
+
+    #[test]
+    fn validates_texture_dimensions_before_wgpu() {
+        assert!(validate_texture_dimensions(8192, 8192, 8192).is_ok());
+        assert!(validate_texture_dimensions(0, 1080, 8192).is_err());
+        assert!(validate_texture_dimensions(8193, 1080, 8192).is_err());
+        assert!(validate_texture_dimensions(1920, 8193, 8192).is_err());
+        assert!(validate_texture_memory(7_680, 4_320, 6).is_ok());
+        assert!(validate_texture_memory(16_384, 16_384, 4).is_err());
+        assert!(Renderer::validate_static_decode(11_322, 6_192, 210_304_512).is_ok());
+        assert!(Renderer::validate_static_decode(32_768, 32_768, u64::MAX).is_err());
+    }
+
+    #[test]
+    fn fill_reduces_large_images_to_cover_the_output() {
+        assert_eq!(
+            prepared_image_dimensions(11_322, 6_192, 3_840, 2_160, 0, 32_768),
+            (3_950, 2_160)
+        );
+    }
+
+    #[test]
+    fn fit_preserves_aspect_ratio_without_upscaling() {
+        assert_eq!(
+            prepared_image_dimensions(11_322, 6_192, 3_840, 2_160, 1, 32_768),
+            (3_840, 2_100)
+        );
+        assert_eq!(
+            prepared_image_dimensions(1_920, 1_080, 3_840, 2_160, 1, 32_768),
+            (1_920, 1_080)
+        );
+    }
+
+    #[test]
+    fn pixel_sensitive_modes_preserve_native_dimensions() {
+        assert_eq!(
+            prepared_image_dimensions(11_322, 6_192, 3_840, 2_160, 3, 8_192),
+            (11_322, 6_192)
+        );
+        assert_eq!(
+            prepared_image_dimensions(3_840, 2_160, 2_560, 1_440, 4, 8_192),
+            (3_840, 2_160)
+        );
+    }
+
+    #[test]
+    fn stretch_does_not_upscale_small_images() {
+        assert_eq!(
+            prepared_image_dimensions(1, 1, 3_840, 2_160, 2, 32_768),
+            (1, 1)
+        );
+        assert_eq!(
+            prepared_image_dimensions(5_000, 1_000, 3_840, 2_160, 2, 32_768),
+            (3_840, 1_000)
+        );
     }
 }

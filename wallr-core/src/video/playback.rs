@@ -13,6 +13,22 @@ pub struct VideoPlayback {
     generation: AtomicU64,
 }
 
+pub struct PreparedVideoPlayback {
+    decoder: VideoDecoder,
+    metadata: VideoMetadata,
+    first_frame: Option<VideoFrame>,
+}
+
+impl PreparedVideoPlayback {
+    pub fn metadata(&self) -> &VideoMetadata {
+        &self.metadata
+    }
+
+    pub fn take_first_frame(&mut self) -> Option<VideoFrame> {
+        self.first_frame.take()
+    }
+}
+
 impl VideoPlayback {
     pub fn new() -> Self {
         Self {
@@ -30,13 +46,60 @@ impl VideoPlayback {
         preload_frames: usize,
         generation: u64,
     ) -> Result<VideoMetadata, crate::video::error::VideoError> {
-        self.stop();
+        let prepared = Self::prepare(
+            path,
+            hw_accel,
+            preload_frames,
+            Duration::from_millis(0),
+            |_| Ok(()),
+        )?;
+        Ok(self.commit(prepared, generation))
+    }
+
+    pub fn prepare<F>(
+        path: &Path,
+        hw_accel: HwAccel,
+        preload_frames: usize,
+        first_frame_timeout: Duration,
+        validate: F,
+    ) -> Result<PreparedVideoPlayback, crate::video::error::VideoError>
+    where
+        F: FnOnce(&VideoMetadata) -> Result<(), crate::video::error::VideoError>,
+    {
         let decoder = VideoDecoder::with_preload(path, hw_accel, preload_frames)?;
         let metadata = decoder.metadata().clone();
+        validate(&metadata)?;
+        let deadline = Instant::now() + first_frame_timeout;
+        let first_frame = loop {
+            if let Some(frame) = decoder.next_frame() {
+                break Some(frame);
+            }
+            if Instant::now() >= deadline {
+                tracing::warn!("Timed out waiting for first video frame");
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+
+        Ok(PreparedVideoPlayback {
+            decoder,
+            metadata,
+            first_frame,
+        })
+    }
+
+    pub fn commit(&self, prepared: PreparedVideoPlayback, generation: u64) -> VideoMetadata {
+        let PreparedVideoPlayback {
+            decoder,
+            metadata,
+            first_frame,
+        } = prepared;
         let scheduler = FrameScheduler::new(metadata.duration);
+        self.stop();
         self.generation.store(generation, Ordering::Release);
         *self.lock_decoder() = Some(decoder);
         *self.lock_scheduler() = Some(scheduler);
+        *self.lock_pending() = first_frame;
         tracing::info!(
             "Video started: {}x{} @ {:.2} fps, {:?}",
             metadata.width,
@@ -44,7 +107,7 @@ impl VideoPlayback {
             metadata.fps,
             metadata.duration
         );
-        Ok(metadata)
+        metadata
     }
 
     pub fn stop(&self) {
