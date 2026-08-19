@@ -70,7 +70,10 @@ fn load_last_wallpaper(target: &std::path::Path) -> Option<image::DynamicImage> 
     if same {
         return None;
     }
-    image::ImageReader::open(&last).ok()?.decode().ok()
+    let decoder = image::ImageReader::open(&last).ok()?.into_decoder().ok()?;
+    let (width, height) = decoder.dimensions();
+    Renderer::validate_static_decode(width, height, decoder.total_bytes()).ok()?;
+    image::DynamicImage::from_decoder(decoder).ok()
 }
 
 struct PreviewApp {

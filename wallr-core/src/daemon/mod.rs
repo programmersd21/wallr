@@ -2262,7 +2262,7 @@ impl Daemon {
                         effect,
                         duration_ms,
                     } => {
-                        let targets = resolve_targets(&render_states, monitor.as_deref()).await;
+                        let targets = resolve_named_targets(&render_states, monitor.as_deref());
                         if targets.is_empty() {
                             return IpcResponse {
                                 success: false,
@@ -2273,42 +2273,77 @@ impl Daemon {
                             };
                         }
                         let mut blanked_count = 0u32;
+                        let mut errors = Vec::new();
                         let black_effect = effect.unwrap_or_else(|| {
                             crate::animation::Effect::Fade(crate::animation::FadeParams::default())
                         });
                         let duration = duration_ms.unwrap_or(800);
-                        let tmp = std::env::temp_dir().join("wallr_blank.png");
+                        let mut blank_file = match tempfile::Builder::new()
+                            .prefix("wallr_blank-")
+                            .suffix(".png")
+                            .tempfile()
                         {
-                            let img =
-                                image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 255]));
-                            let _ = img.save(&tmp);
+                            Ok(file) => file,
+                            Err(e) => {
+                                return IpcResponse {
+                                    success: false,
+                                    message: Some(format!("Failed to create blank image: {e}")),
+                                };
+                            }
+                        };
+                        let blank_path = blank_file.path().to_path_buf();
+                        let blank = image::DynamicImage::ImageRgba8(
+                            image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 255])),
+                        );
+                        if let Err(e) = blank
+                            .write_to(blank_file.as_file_mut(), image::ImageFormat::Png)
+                        {
+                            return IpcResponse {
+                                success: false,
+                                message: Some(format!("Failed to write blank image: {e}")),
+                            };
                         }
 
-                        for rs in &targets {
+                        for (name, rs) in &targets {
                             let rs = Arc::clone(rs);
-                            let tmp = tmp.clone();
+                            let blank_path = blank_path.clone();
                             let black_effect = black_effect.clone();
                             let blanked = tokio::task::spawn_blocking(move || {
                                 let mut lock = rs.blocking_lock();
                                 if lock.blanked {
-                                    return false;
+                                    return Ok(false);
                                 }
-                                lock.pre_blank = Some((
+                                let previous = (
                                     lock.last_wallpaper.clone().unwrap_or_default(),
                                     lock.scaling_mode,
-                                ));
+                                );
+                                lock.set_wallpaper(&blank_path, &black_effect, duration, 0)?;
+                                lock.pre_blank = Some(previous);
                                 lock.blanked = true;
-                                let _ = lock.set_wallpaper(&tmp, &black_effect, duration, 0);
-                                true
+                                Ok::<bool, anyhow::Error>(true)
                             })
                             .await;
-                            if matches!(blanked, Ok(true)) {
-                                blanked_count += 1;
+                            match blanked {
+                                Ok(Ok(true)) => blanked_count += 1,
+                                Ok(Ok(false)) => {}
+                                Ok(Err(e)) => errors.push(format!("{name}: blank failed: {e}")),
+                                Err(e) => errors.push(format!("{name}: blank task failed: {e}")),
                             }
                         }
-                        IpcResponse {
-                            success: true,
-                            message: Some(format!("Blanked {blanked_count} output(s)")),
+                        if errors.is_empty() {
+                            IpcResponse {
+                                success: true,
+                                message: Some(format!("Blanked {blanked_count} output(s)")),
+                            }
+                        } else {
+                            IpcResponse {
+                                success: false,
+                                message: Some(format!(
+                                    "Blanked {blanked_count} output(s), {} error(s): {}",
+                                    errors.len(),
+                                    errors.join("; ")
+                                )),
+                            }
                         }
                     }
                     IpcCommand::Restore {
@@ -2356,8 +2391,10 @@ impl Daemon {
                                     Some(_) => Err("wallpaper path no longer exists".to_string()),
                                     None => Err("no previous wallpaper to restore".to_string()),
                                 };
-                                lock.blanked = false;
-                                lock.pre_blank = None;
+                                if result.is_ok() {
+                                    lock.blanked = false;
+                                    lock.pre_blank = None;
+                                }
                                 Some(result)
                             })
                             .await;
@@ -2481,7 +2518,10 @@ impl Daemon {
                     tokio::spawn(async move {
                         let effect =
                             crate::animation::Effect::Fade(crate::animation::FadeParams::default());
-                        let _ = set_wallpaper_with_retry(&rs, &p, &effect, 600, 0).await;
+                        if let Err(err) = set_wallpaper_with_retry(&rs, &p, &effect, 600, 0).await {
+                            tracing::warn!("Watcher wallpaper render failed for {p:?}: {err}");
+                            return;
+                        }
                         let opts = SetOptions {
                             no_theme: false,
                             theme_provider: None,
