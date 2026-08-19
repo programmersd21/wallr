@@ -326,6 +326,24 @@ mod viewport_tests {
     }
 
     #[test]
+    fn wallpaper_state_preserves_non_utf8_and_whitespace() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let wallpaper = std::path::PathBuf::from(std::ffi::OsString::from_vec(
+            b" /tmp/wallpaper-\xff.jpg ".to_vec(),
+        ));
+
+        write_wallpaper_state(temporary.path(), "last_wallpaper", "DP-1", &wallpaper)
+            .expect("persist wallpaper path");
+
+        assert_eq!(
+            read_wallpaper_state(temporary.path(), "last_wallpaper", "DP-1"),
+            Some(wallpaper)
+        );
+    }
+
+    #[test]
     fn retries_only_explicitly_transient_errors() {
         let timed_out = anyhow::Error::new(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
@@ -763,7 +781,7 @@ struct CommitData {
 }
 
 impl RenderState {
-    async fn set_wallpaper(
+    fn set_wallpaper(
         &mut self,
         path: &std::path::Path,
         effect: &crate::animation::Effect,
@@ -1008,28 +1026,34 @@ async fn set_wallpaper_with_retry(
     duration_ms: u32,
     scaling_mode: u32,
 ) -> anyhow::Result<()> {
-    let mut attempt = 1;
-    loop {
-        let result = {
-            let mut state = render_state.lock().await;
-            state
-                .set_wallpaper(path, effect, duration_ms, scaling_mode)
-                .await
-        };
-        match result {
-            Ok(()) => return Ok(()),
-            Err(err)
-                if attempt < WALLPAPER_RETRY_ATTEMPTS && is_transient_wallpaper_error(&err) =>
-            {
-                tracing::warn!(
-                    "Transient wallpaper error for {path:?} (attempt {attempt}/{WALLPAPER_RETRY_ATTEMPTS}): {err}"
-                );
-                attempt += 1;
-                tokio::time::sleep(WALLPAPER_RETRY_DELAY).await;
+    let render_state = Arc::clone(render_state);
+    let path = path.to_path_buf();
+    let effect = effect.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let mut attempt = 1;
+        loop {
+            let result = {
+                let mut state = render_state.blocking_lock();
+                state.set_wallpaper(&path, &effect, duration_ms, scaling_mode)
+            };
+            match result {
+                Ok(()) => return Ok(()),
+                Err(err)
+                    if attempt < WALLPAPER_RETRY_ATTEMPTS
+                        && is_transient_wallpaper_error(&err) =>
+                {
+                    tracing::warn!(
+                        "Transient wallpaper error for {path:?} (attempt {attempt}/{WALLPAPER_RETRY_ATTEMPTS}): {err}"
+                    );
+                    attempt += 1;
+                    std::thread::sleep(WALLPAPER_RETRY_DELAY);
+                }
+                Err(err) => return Err(err),
             }
-            Err(err) => return Err(err),
         }
-    }
+    })
+    .await?
 }
 
 fn is_transient_wallpaper_error(err: &anyhow::Error) -> bool {
@@ -1065,8 +1089,10 @@ fn read_wallpaper_state(
     state_dir: &str,
     name: &str,
 ) -> Option<std::path::PathBuf> {
-    let path = std::fs::read_to_string(wallpaper_state_path(root, state_dir, name)).ok()?;
-    let wallpaper = std::path::PathBuf::from(path.trim());
+    use std::os::unix::ffi::OsStringExt;
+
+    let path = std::fs::read(wallpaper_state_path(root, state_dir, name)).ok()?;
+    let wallpaper = std::path::PathBuf::from(std::ffi::OsString::from_vec(path));
     (!wallpaper.as_os_str().is_empty()).then_some(wallpaper)
 }
 
@@ -1077,6 +1103,7 @@ fn write_wallpaper_state(
     wallpaper: &std::path::Path,
 ) -> std::io::Result<()> {
     use std::io::Write;
+    use std::os::unix::ffi::OsStrExt;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -1101,7 +1128,7 @@ fn write_wallpaper_state(
         {
             Ok(mut temporary) => {
                 if let Err(err) = temporary
-                    .write_all(wallpaper.as_os_str().as_encoded_bytes())
+                    .write_all(wallpaper.as_os_str().as_bytes())
                     .and_then(|()| temporary.sync_all())
                     .and_then(|()| std::fs::rename(&temporary_path, &state_path))
                 {
@@ -1966,25 +1993,18 @@ impl Daemon {
 
                         let mut last_err = None;
                         for (name, rs) in &targets {
-                            let rs_clone = rs.clone();
-                            let p_clone = p.clone();
-                            let effect_clone = effect.clone();
-                            let result = tokio::task::spawn_blocking(move || {
-                                let rt = tokio::runtime::Handle::current();
-                                rt.block_on(set_wallpaper_with_retry(
-                                    &rs_clone,
-                                    &p_clone,
-                                    &effect_clone,
-                                    duration,
-                                    scaling_mode_u32,
-                                ))
-                            })
+                            let result = set_wallpaper_with_retry(
+                                rs,
+                                &p,
+                                &effect,
+                                duration,
+                                scaling_mode_u32,
+                            )
                             .await;
 
                             match result {
-                                Err(e) => last_err = Some(format!("Task spawn failed: {e}")),
-                                Ok(Err(e)) => last_err = Some(format!("Render failed: {e}")),
-                                Ok(Ok(())) => {
+                                Err(e) => last_err = Some(format!("Render failed: {e}")),
+                                Ok(()) => {
                                     if let Err(err) = persist_wallpaper(name, &p) {
                                         tracing::warn!(
                                             "Wallpaper changed on {name}, but state persistence failed: {err}"
@@ -2257,28 +2277,34 @@ impl Daemon {
                             crate::animation::Effect::Fade(crate::animation::FadeParams::default())
                         });
                         let duration = duration_ms.unwrap_or(800);
+                        let tmp = std::env::temp_dir().join("wallr_blank.png");
+                        {
+                            let img =
+                                image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 255]));
+                            let _ = img.save(&tmp);
+                        }
 
-                        for (name, rs) in render_states.iter() {
-                            if monitor.as_deref() != Some(name.as_str()) && monitor.is_some() {
-                                continue;
+                        for rs in &targets {
+                            let rs = Arc::clone(rs);
+                            let tmp = tmp.clone();
+                            let black_effect = black_effect.clone();
+                            let blanked = tokio::task::spawn_blocking(move || {
+                                let mut lock = rs.blocking_lock();
+                                if lock.blanked {
+                                    return false;
+                                }
+                                lock.pre_blank = Some((
+                                    lock.last_wallpaper.clone().unwrap_or_default(),
+                                    lock.scaling_mode,
+                                ));
+                                lock.blanked = true;
+                                let _ = lock.set_wallpaper(&tmp, &black_effect, duration, 0);
+                                true
+                            })
+                            .await;
+                            if matches!(blanked, Ok(true)) {
+                                blanked_count += 1;
                             }
-                            let mut lock = rs.lock().await;
-                            if lock.blanked {
-                                continue;
-                            }
-                            lock.pre_blank = Some((
-                                lock.last_wallpaper.clone().unwrap_or_default(),
-                                lock.scaling_mode,
-                            ));
-                            lock.blanked = true;
-                            let tmp = std::env::temp_dir().join("wallr_blank.png");
-                            {
-                                let img =
-                                    image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 255]));
-                                let _ = img.save(&tmp);
-                            }
-                            let _ = lock.set_wallpaper(&tmp, &black_effect, duration, 0).await;
-                            blanked_count += 1;
                         }
                         IpcResponse {
                             success: true,
@@ -2311,41 +2337,35 @@ impl Daemon {
                             if monitor.as_deref() != Some(name.as_str()) && monitor.is_some() {
                                 continue;
                             }
-                            let mut lock = rs.lock().await;
-                            if !lock.blanked {
-                                continue;
-                            }
-                            if let Some((ref path, scaling_mode)) = lock.pre_blank.clone() {
-                                if !path.exists() {
-                                    errors
-                                        .push(format!("{}: wallpaper path no longer exists", name));
-                                    lock.blanked = false;
-                                    lock.pre_blank = None;
-                                    continue;
+                            let rs = Arc::clone(rs);
+                            let restore_effect = restore_effect.clone();
+                            let result = tokio::task::spawn_blocking(move || {
+                                let mut lock = rs.blocking_lock();
+                                if !lock.blanked {
+                                    return None;
                                 }
-                                match lock
-                                    .set_wallpaper(
-                                        std::path::Path::new(&path),
-                                        &restore_effect,
-                                        duration,
-                                        scaling_mode,
-                                    )
-                                    .await
-                                {
-                                    Ok(_) => {
-                                        lock.blanked = false;
-                                        lock.pre_blank = None;
-                                        restored_count += 1;
-                                    }
-                                    Err(e) => {
-                                        errors.push(format!("{}: restore failed: {}", name, e));
-                                        lock.blanked = false;
-                                        lock.pre_blank = None;
-                                    }
-                                }
-                            } else {
-                                errors.push(format!("{}: no previous wallpaper to restore", name));
+                                let result = match lock.pre_blank.clone() {
+                                    Some((path, scaling_mode)) if path.exists() => lock
+                                        .set_wallpaper(
+                                            &path,
+                                            &restore_effect,
+                                            duration,
+                                            scaling_mode,
+                                        )
+                                        .map_err(|e| format!("restore failed: {e}")),
+                                    Some(_) => Err("wallpaper path no longer exists".to_string()),
+                                    None => Err("no previous wallpaper to restore".to_string()),
+                                };
                                 lock.blanked = false;
+                                lock.pre_blank = None;
+                                Some(result)
+                            })
+                            .await;
+                            match result {
+                                Ok(Some(Ok(()))) => restored_count += 1,
+                                Ok(Some(Err(e))) => errors.push(format!("{name}: {e}")),
+                                Ok(None) => {}
+                                Err(e) => errors.push(format!("{name}: restore task failed: {e}")),
                             }
                         }
                         if !errors.is_empty() {
@@ -2459,11 +2479,9 @@ impl Daemon {
                     let p = path.clone();
                     let name = name.clone();
                     tokio::spawn(async move {
-                        let mut lock = rs.lock().await;
                         let effect =
                             crate::animation::Effect::Fade(crate::animation::FadeParams::default());
-                        let _ = lock.set_wallpaper(&p, &effect, 600, 0).await;
-                        drop(lock);
+                        let _ = set_wallpaper_with_retry(&rs, &p, &effect, 600, 0).await;
                         let opts = SetOptions {
                             no_theme: false,
                             theme_provider: None,

@@ -2,7 +2,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use image::GenericImageView;
 use image::ImageDecoder;
 use tracing::info;
 use winit::application::ApplicationHandler;
@@ -359,7 +358,7 @@ impl ApplicationHandler for PreviewApp {
         self.new_bind = Some(new_bind);
         self._bg_tex = Some(bg_tex);
         self._new_tex = Some(new_tex);
-        self.img_size = img.dimensions();
+        self.img_size = (w, h);
         self.old_img_size = old_size;
         self.start = Some(Instant::now());
     }
