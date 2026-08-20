@@ -14,6 +14,7 @@ use gif::DisposalMethod;
 /// Maximum bytes of decoded frame data kept in RAM. Frames beyond this are
 /// still decoded on demand, but not cached across loop wraps.
 const CACHE_BUDGET: usize = 256 * 1024 * 1024;
+const MAX_GIF_WORKING_SET: usize = 512 * 1024 * 1024;
 
 /// A cached frame: raw RGBA8 or zstd-compressed RGBA8. The whole animation
 /// uses one representation, chosen at decode time: raw when the full decoded
@@ -109,9 +110,8 @@ impl AnimatedImage {
             return Ok(None);
         }
         let total = info.delays.iter().copied().sum();
-        let pixels = (info.width * info.height) as usize;
+        let (pixels, raw_size) = gif_allocation_sizes(info.width, info.height, info.delays.len())?;
         let frame_count = info.delays.len();
-        let raw_size = pixels * 4 * frame_count;
         let raw_cache = raw_size <= CACHE_BUDGET;
         if !raw_cache {
             tracing::debug!(
@@ -349,6 +349,27 @@ impl AnimatedImage {
     }
 }
 
+fn gif_allocation_sizes(
+    width: u32,
+    height: u32,
+    frame_count: usize,
+) -> anyhow::Result<(usize, usize)> {
+    let pixels = usize::try_from(u64::from(width) * u64::from(height))?;
+    let frame_bytes = pixels
+        .checked_mul(4)
+        .ok_or_else(|| anyhow::anyhow!("GIF frame size overflow for {width}x{height}"))?;
+    let working_set = frame_bytes
+        .checked_mul(3)
+        .ok_or_else(|| anyhow::anyhow!("GIF working-set overflow for {width}x{height}"))?;
+    anyhow::ensure!(
+        working_set <= MAX_GIF_WORKING_SET,
+        "GIF {width}x{height} requires approximately {:.1} MiB of decode working memory, exceeding the {} MiB safety limit",
+        working_set as f64 / (1024.0 * 1024.0),
+        MAX_GIF_WORKING_SET / 1024 / 1024
+    );
+    Ok((pixels, frame_bytes.saturating_mul(frame_count)))
+}
+
 /// Parses GIF header blocks (screen descriptor, graphic control extensions,
 /// image descriptors) without decoding pixel data, returning the timeline.
 fn scan_gif(bytes: &[u8]) -> anyhow::Result<Option<GifInfo>> {
@@ -515,5 +536,11 @@ mod tests {
     fn scan_rejects_non_gif() {
         assert!(scan_gif(b"not a gif at all").unwrap().is_none());
         assert!(scan_gif(&[0u8; 100]).unwrap().is_none());
+    }
+
+    #[test]
+    fn rejects_gif_working_sets_before_allocating_canvases() {
+        assert!(gif_allocation_sizes(7_680, 4_320, 2).is_ok());
+        assert!(gif_allocation_sizes(16_384, 16_384, 1).is_err());
     }
 }

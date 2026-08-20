@@ -62,6 +62,7 @@ notify.workspace = true
 dirs.workspace = true
 glob.workspace = true
 which.workspace = true
+tempfile = "3"
 
 # Utilities
 sha2.workspace = true
@@ -71,6 +72,3 @@ humansize.workspace = true
 # Video support
 ffmpeg-next.workspace = true
 crossbeam-channel.workspace = true
-
-[dev-dependencies]
-tempfile = "3"

@@ -10,6 +10,8 @@
 
 - **Fix dead FPS pacer in video playback**: the `--max-fps` pacing loop in the video path declared `last_present` without a type annotation and never assigned it, so the limit silently never activated and the crate failed to compile in a fresh package build. The variable is now typed and stamped after each presented frame.
 
+- **Prevent oversized wallpaper restart loops**: static images are reduced to render-appropriate output dimensions before GPU upload, texture allocations are validated against the adapter limit, and wallpaper state is persisted only after a successful commit. Startup restoration can fall back to the previous valid wallpaper instead of repeatedly aborting on poisoned state.
+
 ## 0.3.0
 
 - **Stabilize explicit-sync and NVDEC lifecycles** — merged in PR #13 from @Luquatic.

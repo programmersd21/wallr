@@ -10,5 +10,5 @@ pub use decoder::{
 };
 pub use error::{VideoError, VideoResult};
 pub use gpu::{GpuSelection, detect_adapters, select_adapter};
-pub use playback::VideoPlayback;
+pub use playback::{PreparedVideoPlayback, VideoPlayback};
 pub use scheduler::{FrameScheduler, ScheduledFrame};
