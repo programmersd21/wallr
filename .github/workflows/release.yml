@@ -57,7 +57,8 @@ jobs:
           VCPKG_ROOT: /opt/vcpkg
         run: |
           /opt/vcpkg/vcpkg install \
-            'ffmpeg[core,avcodec,avformat,swscale,swresample]:x64-linux-static'
+            'ffmpeg[core,avcodec,avformat,swscale,swresample]:x64-linux-static' \
+            --overlay-triplets="$GITHUB_WORKSPACE/.github/vcpkg-triplets"
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
