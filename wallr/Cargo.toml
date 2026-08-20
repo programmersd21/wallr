@@ -18,6 +18,10 @@ name = "wallr"
 path = "src/main.rs"
 bench = false  # Disable benchmarks for faster builds
 
+[features]
+default = []
+static-ffmpeg = ["wallr-core/static-ffmpeg"]
+
 [dependencies]
 # Core library
 wallr-core.workspace = true

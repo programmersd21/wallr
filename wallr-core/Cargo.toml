@@ -18,6 +18,13 @@ name = "wallr_core"
 path = "src/lib.rs"
 bench = false  # Disable benchmarks for faster builds
 
+[features]
+default = []
+# Statically link the system FFmpeg libraries (used for release binaries so
+# they keep working after system FFmpeg ABI upgrades). Requires static FFmpeg
+# libraries available to pkg-config (e.g. via vcpkg or a --enable-static build).
+static-ffmpeg = ["ffmpeg-next/static"]
+
 [dependencies]
 # Error handling
 anyhow.workspace = true

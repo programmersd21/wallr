@@ -52,7 +52,9 @@ Theme generation (Matugen, Wallust, Pywal) is supported as an optional step that
 - Rust (stable)
 - A compositor with `wlr-layer-shell`: Hyprland, Sway, niri (with a layer rule), or KDE Plasma 6
 - GNOME/Mutter is not supported — it does not implement the protocol
-- FFmpeg development libraries, for video wallpapers (detected at build time)
+- FFmpeg development libraries, for video wallpapers (detected at build time when building from source)
+
+Prebuilt release binaries are self-contained: FFmpeg is statically linked at build time, so they keep working regardless of the FFmpeg version installed on your system. Binaries built from source (`cargo install`, distro packages) link the system FFmpeg dynamically and must be rebuilt when your system FFmpeg ABI changes.
 
 ## Installation
 
@@ -151,6 +153,12 @@ Details: [docs/architecture.md](docs/architecture.md)
 - [Video wallpaper support](docs/video-wallpaper.md)
 
 ## Troubleshooting
+
+**`error while loading shared libraries: libavutil.so.58: cannot open shared object file`.** Your installed binary was built against an older FFmpeg ABI. Reinstall using the latest release (which now ships a statically linked FFmpeg), or if you built from source, rebuild against the FFmpeg currently installed on your system:
+
+```bash
+cargo install --path wallr --force
+```
 
 **Wallpaper blocks clicks or keyboard input.** It shouldn't — the surface is rendered on `Layer::Background`, with `KeyboardInteractivity::None` and an empty input region. If this happens:
 

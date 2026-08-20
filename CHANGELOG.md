@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2
+
+- **Fix `libavutil.so.58: cannot open shared object file` on upgraded systems**: previously the Linux release binary dynamically linked the system FFmpeg libraries, so it broke with `error while loading shared libraries` whenever the system FFmpeg ABI moved on (e.g. `libavutil.so.58` → `libavutil.so.61` after an upgrade). Release binaries are now built with **statically linked FFmpeg** via the new `static-ffmpeg` cargo feature (FFmpeg built statically through vcpkg in CI), making the artifact self-contained and immune to future system FFmpeg upgrades. Source builds (`cargo install`) still link against the system FFmpeg and require a latest-but-matching FFmpeg.
+
 ## 0.3.1
 
 - **Recovering playback after surface stalls logic**: merged in PR #15 by @Luquatic

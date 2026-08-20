@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Tag name for release (e.g. v0.3.1)'
+        description: 'Tag name for release (e.g. v0.3.2)'
         required: false
         type: string
 
@@ -34,11 +34,30 @@ jobs:
             libx11-dev \
             libasound2-dev \
             libudev-dev \
-            libavcodec-dev \
-            libavformat-dev \
-            libavutil-dev \
-            libswscale-dev \
-            pkg-config
+            pkg-config \
+            cmake \
+            ninja-build \
+            nasm
+
+      - name: Install vcpkg
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg /opt/vcpkg
+          /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+      - name: Cache vcpkg build artifacts
+        uses: actions/cache@v4
+        with:
+          path: /opt/vcpkg/installed
+          key: vcpkg-linux-static-ffmpeg
+          restore-keys: |
+            vcpkg-linux-
+
+      - name: Build static FFmpeg
+        env:
+          VCPKG_ROOT: /opt/vcpkg
+        run: |
+          /opt/vcpkg/vcpkg install \
+            'ffmpeg[core,avcodec,avformat,swscale,swresample]:x64-linux-static'
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
@@ -46,10 +65,18 @@ jobs:
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          key: release
+          key: release-static-ffmpeg
 
-      - name: Build release binary
-        run: cargo build --release --bin wallr
+      - name: Build release binary with static FFmpeg
+        env:
+          MEDIA_PREFIX: /opt/vcpkg/installed/x64-linux-static
+          PKG_CONFIG_PATH: /opt/vcpkg/installed/x64-linux-static/lib/pkgconfig
+          PKG_CONFIG_ALL_STATIC: "1"
+        run: cargo build --release --bin wallr --features static-ffmpeg
+
+      - name: Verify binary is self-contained
+        run: |
+          ldd target/release/wallr | grep -E 'libav(a|util|codec|format|sw)' && { echo "ERROR: binary links dynamic FFmpeg libraries"; exit 1; } || echo "OK: no dynamic FFmpeg dependencies"
 
       - name: Prepare Release Asset
         run: |
