@@ -29,7 +29,7 @@ GPU-accelerated wallpaper engine for Wayland with native `wl-layer-shell` render
 
 ## Introduction
 
-Wallr sets and animates wallpapers on Wayland compositors that support `wlr-layer-shell`. It renders its own background surface with `wgpu` — it does not shell out to `hyprpaper`, `swww`, or `swaybg`.
+Wallr sets and animates wallpapers on Wayland compositors that support `wlr-layer-shell`. It renders its own background surface with `wgpu` — it does not shell out to `hyprpaper`, `awww`, or `swaybg`.
 
 Theme generation (Matugen, Wallust, Pywal) is supported as an optional step that runs after a wallpaper is applied. It is not required and not part of the core rendering path.
 
