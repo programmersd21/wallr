@@ -40,21 +40,30 @@ jobs:
             nasm
 
       - name: Install vcpkg
+        env:
+          VCPKG_COMMIT: 45f9f39362a4c52e2b1fbe57b7e649db7f3d96d4
         run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg /opt/vcpkg
+          git clone --depth 1 --branch master https://github.com/microsoft/vcpkg /opt/vcpkg
+          git -C /opt/vcpkg fetch --depth 1 origin "$VCPKG_COMMIT"
+          git -C /opt/vcpkg checkout "$VCPKG_COMMIT"
           /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
-      - name: Cache vcpkg build artifacts
+      - name: Cache vcpkg (binary cache, installed, sources)
+        id: vcpkg-cache
         uses: actions/cache@v4
         with:
-          path: /opt/vcpkg/installed
-          key: vcpkg-linux-static-ffmpeg
+          path: |
+            /opt/vcpkg/installed
+            /opt/vcpkg/downloads
+            /opt/vcpkg/bincache
+          key: vcpkg-45f9f39362a4c52e2b1fbe57b7e649db7f3d96d4-static-ffmpeg
           restore-keys: |
-            vcpkg-linux-
+            vcpkg-static-ffmpeg
 
       - name: Build static FFmpeg
         env:
           VCPKG_ROOT: /opt/vcpkg
+          VCPKG_DEFAULT_BINARY_CACHE: /opt/vcpkg/bincache
         run: |
           /opt/vcpkg/vcpkg install \
             'ffmpeg[core,avcodec,avformat,swscale,swresample]:x64-linux-static' \
