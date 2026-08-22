@@ -14,6 +14,9 @@ on:
 permissions:
   contents: write
 
+env:
+  VCPKG_COMMIT: 45f9f39362a4c52e2b1fbe57b7e649db7f3d96d4
+
 jobs:
   build-release:
     name: Build and Release Binary
@@ -39,15 +42,6 @@ jobs:
             ninja-build \
             nasm
 
-      - name: Install vcpkg
-        env:
-          VCPKG_COMMIT: 45f9f39362a4c52e2b1fbe57b7e649db7f3d96d4
-        run: |
-          git clone --depth 1 --branch master https://github.com/microsoft/vcpkg /opt/vcpkg
-          git -C /opt/vcpkg fetch --depth 1 origin "$VCPKG_COMMIT"
-          git -C /opt/vcpkg checkout "$VCPKG_COMMIT"
-          /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
-
       - name: Cache vcpkg (binary cache, installed, sources)
         id: vcpkg-cache
         uses: actions/cache@v4
@@ -56,9 +50,21 @@ jobs:
             /opt/vcpkg/installed
             /opt/vcpkg/downloads
             /opt/vcpkg/bincache
-          key: vcpkg-45f9f39362a4c52e2b1fbe57b7e649db7f3d96d4-static-ffmpeg
+          # Includes the manifest hash so a triplet/feature-list change (edits
+          # to .github/vcpkg-triplets or the ffmpeg feature string below)
+          # correctly busts the cache instead of restoring a stale build.
+          key: vcpkg-${{ env.VCPKG_COMMIT }}-static-ffmpeg-${{ hashFiles('.github/vcpkg-triplets/**') }}
           restore-keys: |
-            vcpkg-static-ffmpeg
+            vcpkg-${{ env.VCPKG_COMMIT }}-static-ffmpeg-
+            vcpkg-${{ env.VCPKG_COMMIT }}-
+            vcpkg-static-ffmpeg-
+
+      - name: Install vcpkg
+        run: |
+          git clone --depth 1 --branch master https://github.com/microsoft/vcpkg /opt/vcpkg
+          git -C /opt/vcpkg fetch --depth 1 origin "$VCPKG_COMMIT"
+          git -C /opt/vcpkg checkout "$VCPKG_COMMIT"
+          /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
       - name: Build static FFmpeg
         env:
@@ -66,6 +72,11 @@ jobs:
           VCPKG_DEFAULT_BINARY_CACHE: /opt/vcpkg/bincache
         run: |
           mkdir -p /opt/vcpkg/bincache
+          if [ "${{ steps.vcpkg-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "Exact vcpkg cache hit — running install to verify, should be a fast no-op."
+          else
+            echo "No exact vcpkg cache hit — full or partial FFmpeg build expected."
+          fi
           /opt/vcpkg/vcpkg install \
             'ffmpeg[core,avcodec,avformat,swscale,swresample]:x64-linux-static' \
             --overlay-triplets="$GITHUB_WORKSPACE/.github/vcpkg-triplets"
@@ -76,7 +87,21 @@ jobs:
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          key: release-static-ffmpeg
+          # No custom `key` override: rust-cache hashes Cargo.lock, the Rust
+          # toolchain version, and the job's `runs-on` automatically. A fixed
+          # key here (as in the original) never changes, so it restores the
+          # same snapshot forever and never saves a fresh one after the
+          # first run — this is the actual caching bug in the original file.
+          # rust-cache's default env-vars list ("CARGO CC CFLAGS CXX CMAKE
+          # RUST") already matches PKG_CONFIG_ALL_STATIC's C-toolchain
+          # neighbors but not the two FFmpeg linkage vars themselves, since
+          # matching is by *prefix*: MEDIA_PREFIX and PKG_CONFIG_PATH share
+          # no prefix with any default entry. Add both explicitly (alongside
+          # the defaults, since setting env-vars replaces rather than
+          # extends them) so a vcpkg triplet edit that changes either path
+          # can't silently reuse stale linked artifacts.
+          env-vars: CARGO CC CFLAGS CXX CMAKE RUST MEDIA_PREFIX PKG_CONFIG
+          shared-key: release-static-ffmpeg
 
       - name: Build release binary with static FFmpeg
         env:
@@ -87,10 +112,22 @@ jobs:
 
       - name: Verify binary is self-contained
         run: |
-          ldd target/release/wallr | grep -E 'libav(a|util|codec|format|sw)' && { echo "ERROR: binary links dynamic FFmpeg libraries"; exit 1; } || echo "OK: no dynamic FFmpeg dependencies"
+          set -euo pipefail
+          BIN=target/release/wallr
+          if [ ! -x "$BIN" ]; then
+            echo "ERROR: $BIN not found or not executable — build did not produce a binary"
+            exit 1
+          fi
+          if ldd "$BIN" | grep -qE 'libav(a|util|codec|format|sw)'; then
+            echo "ERROR: binary links dynamic FFmpeg libraries"
+            ldd "$BIN"
+            exit 1
+          fi
+          echo "OK: no dynamic FFmpeg dependencies"
 
       - name: Prepare Release Asset
         run: |
+          set -euo pipefail
           mkdir -p staging
           cp target/release/wallr staging/
           cp README.md staging/
@@ -102,13 +139,20 @@ jobs:
       - name: Determine Tag
         id: determine_tag
         run: |
+          set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag_name }}" ]; then
-            echo "TAG_NAME=${{ inputs.tag_name }}" >> $GITHUB_ENV
+            TAG_NAME="${{ inputs.tag_name }}"
           elif [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "TAG_NAME=${{ github.ref_name }}" >> $GITHUB_ENV
+            TAG_NAME="${{ github.ref_name }}"
           else
-            echo "TAG_NAME=v$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="wallr") | .version')" >> $GITHUB_ENV
+            VERSION="$(cargo metadata --no-deps --format-version 1 | jq -re '.packages[] | select(.name=="wallr") | .version')"
+            if [ -z "$VERSION" ]; then
+              echo "ERROR: could not resolve wallr's version from cargo metadata" >&2
+              exit 1
+            fi
+            TAG_NAME="v${VERSION}"
           fi
+          echo "TAG_NAME=${TAG_NAME}" >> "$GITHUB_ENV"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
