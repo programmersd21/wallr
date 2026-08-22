@@ -65,6 +65,7 @@ jobs:
           VCPKG_ROOT: /opt/vcpkg
           VCPKG_DEFAULT_BINARY_CACHE: /opt/vcpkg/bincache
         run: |
+          mkdir -p /opt/vcpkg/bincache
           /opt/vcpkg/vcpkg install \
             'ffmpeg[core,avcodec,avformat,swscale,swresample]:x64-linux-static' \
             --overlay-triplets="$GITHUB_WORKSPACE/.github/vcpkg-triplets"
