@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.3
+
+- **Video/GIF wallpapers now theme correctly**: `wallr set` with a video (`mp4`, `webm`, `mkv`, `mov`, `avi`, `m4v`) or GIF previously passed the original file straight to `matugen`/`wallust`/`pywal`, which cannot generate palettes from video. Wallr now extracts the first frame (FFmpeg for video, `image` crate for GIF) to a cached PNG under `~/.cache/wallr/theme/<hash>.png` and passes that to the theme provider. The cache is keyed on source path + mtime and reused until the source changes. All providers benefit with no manual step.
+- **Matugen config deprecation warning fixed**: `[config.wallpaper]` with separate `command` + `arguments` now emits `⚠ You should not define arguments inside of [config.wallpaper] anymore. Use the command instead and use the {{ image }} keyword`. Updated docs to use the new single-string form `command = "wallr img --no-theme {{ image }}"` with `{{ image }}` templating and retained the old form as deprecated reference.
+
 ## 0.3.2
 
 - **Fix `libavutil.so.58: cannot open shared object file` on upgraded systems**: previously the Linux release binary dynamically linked the system FFmpeg libraries, so it broke with `error while loading shared libraries` whenever the system FFmpeg ABI moved on (e.g. `libavutil.so.58` → `libavutil.so.61` after an upgrade). Release binaries are now built with **statically linked FFmpeg** via the new `static-ffmpeg` cargo feature (FFmpeg built statically through vcpkg in CI), making the artifact self-contained and immune to future system FFmpeg upgrades. Source builds (`cargo install`) still link against the system FFmpeg and require a latest-but-matching FFmpeg.
