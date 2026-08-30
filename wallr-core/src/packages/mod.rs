@@ -19,6 +19,8 @@ pub enum PackageError {
     AnimationError(#[from] crate::animation::AnimationError),
     #[error("Failed to download remote package: {0}")]
     DownloadError(String),
+    #[error("package validation failed: {0}")]
+    Validation(String),
 }
 
 pub struct Package {
@@ -63,15 +65,9 @@ impl PackageRegistry {
     }
 
     pub fn resolve_animation(&self, reference: &str) -> Result<AnimationSpec, PackageError> {
-        let parts: Vec<&str> = reference.split('/').collect();
-        if parts.len() != 2 {
-            return Err(PackageError::InvalidReference(reference.to_string()));
-        }
-
-        let pkg_name = parts[0];
-        let package = self.load_package(pkg_name)?;
-
-        Ok(package.spec)
+        let base = self.load_package(reference)?;
+        let extends = base.spec.extends.clone();
+        resolve_extends(base.spec, &extends, self)
     }
 
     pub fn list_packages(&self) -> Result<Vec<String>, PackageError> {
@@ -89,6 +85,20 @@ impl PackageRegistry {
             }
         }
         Ok(packages)
+    }
+
+    /// Install a remote package (`username/repo` or `github:username/repo`)
+    /// into the local registry at `packages/<repo>/wallr.yaml`.
+    pub fn install_package(&self, reference: &str) -> Result<AnimationSpec, PackageError> {
+        let (_, repo) = parse_remote_reference(reference)?;
+        let content = download_remote_spec(reference)?;
+        let raw = crate::animation::parse_animation_yaml(&content)?;
+        let extends = raw.extends.clone();
+        let spec = resolve_extends(raw, &extends, self)?;
+        let install_dir = self.packages_dir.join(&repo);
+        fs::create_dir_all(&install_dir)?;
+        fs::write(install_dir.join("wallr.yaml"), &content)?;
+        Ok(spec)
     }
 }
 
@@ -125,7 +135,7 @@ pub fn resolve_extends(
         }
     }
     crate::animation::validate_animation(&base).map_err(|errors| {
-        PackageError::DownloadError(
+        PackageError::Validation(
             errors
                 .into_iter()
                 .map(|e| e.to_string())
@@ -136,20 +146,49 @@ pub fn resolve_extends(
     Ok(base)
 }
 
-pub fn fetch_remote_package(reference: &str) -> Result<AnimationSpec, PackageError> {
+/// Parse a remote package reference, accepting either `username/repo` or the
+/// `github:username/repo` form used in `extends` lists.
+fn parse_remote_reference(reference: &str) -> Result<(String, String), PackageError> {
     let stripped = reference.strip_prefix("github:").unwrap_or(reference);
-    let subparts: Vec<&str> = stripped.split('/').collect();
-    if subparts.len() != 2
-        || subparts
+    let parts: Vec<&str> = stripped.split('/').collect();
+    if parts.len() != 2
+        || parts
             .iter()
             .any(|part| part.is_empty() || part.contains('@'))
+        || parts.iter().any(|part| *part == "." || *part == "..")
     {
         return Err(PackageError::InvalidReference(reference.to_string()));
     }
+    Ok((parts[0].to_string(), parts[1].to_string()))
+}
 
-    let owner = subparts[0];
-    let repo = subparts[1];
-    let tag = "main";
+/// Download the raw YAML for a remote package by probing the repository root
+/// for `wallr.yaml` or `<repo>.yaml` on the default branches.
+fn download_remote_spec(reference: &str) -> Result<String, PackageError> {
+    let (owner, repo) = parse_remote_reference(reference)?;
+    let candidates = ["wallr.yaml".to_string(), format!("{repo}.yaml")];
+    for file_name in &candidates {
+        for branch in ["main", "master"] {
+            let url =
+                format!("https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{file_name}");
+            if let Ok(out) = std::process::Command::new("curl")
+                .arg("-fsSL")
+                .arg(&url)
+                .output()
+                && out.status.success()
+                && !out.stdout.is_empty()
+            {
+                return Ok(String::from_utf8_lossy(&out.stdout).to_string());
+            }
+        }
+    }
+    Err(PackageError::DownloadError(format!(
+        "unable to fetch {owner}/{repo} from GitHub"
+    )))
+}
+
+pub fn fetch_remote_package(reference: &str) -> Result<AnimationSpec, PackageError> {
+    let (owner, repo) = parse_remote_reference(reference)?;
 
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let cache_dir = PathBuf::from(home).join(".cache/wallr/packages");
@@ -165,43 +204,19 @@ pub fn fetch_remote_package(reference: &str) -> Result<AnimationSpec, PackageErr
         return Ok(spec);
     }
 
-    let candidates = vec!["wallr.yaml".to_string(), format!("{repo}.yaml")];
-    let mut output = None;
-    for file_path in candidates {
-        let url = format!("https://raw.githubusercontent.com/{owner}/{repo}/{tag}/{file_path}");
-        let candidate = std::process::Command::new("curl")
-            .arg("-fsSL")
-            .arg(&url)
-            .output();
-        if let Ok(out) = candidate
-            && out.status.success()
-            && !out.stdout.is_empty()
-        {
-            output = Some(out);
-            break;
-        }
-    }
-
-    match output {
-        Some(out) => {
-            let content = String::from_utf8_lossy(&out.stdout).to_string();
-            let spec = crate::animation::parse_animation_yaml(&content)?;
-            crate::animation::validate_animation(&spec).map_err(|errors| {
-                PackageError::DownloadError(
-                    errors
-                        .into_iter()
-                        .map(|e| e.to_string())
-                        .collect::<Vec<_>>()
-                        .join("; "),
-                )
-            })?;
-            let _ = fs::write(&cache_file, &content);
-            Ok(spec)
-        }
-        None => Err(PackageError::DownloadError(format!(
-            "unable to fetch {owner}/{repo} from GitHub"
-        ))),
-    }
+    let content = download_remote_spec(reference)?;
+    let spec = crate::animation::parse_animation_yaml(&content)?;
+    crate::animation::validate_animation(&spec).map_err(|errors| {
+        PackageError::Validation(
+            errors
+                .into_iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    })?;
+    let _ = fs::write(&cache_file, &content);
+    Ok(spec)
 }
 
 pub fn detect_cycles(extends: &[String], _registry: &PackageRegistry) -> Result<(), PackageError> {
@@ -235,8 +250,7 @@ pub fn detect_cycles(extends: &[String], _registry: &PackageRegistry) -> Result<
         }
         active.insert(reference.to_string());
         if !reference.starts_with("github:") {
-            let package_name = reference.split('/').next().unwrap_or(reference);
-            if let Ok(package) = registry.load_package(package_name) {
+            if let Ok(package) = registry.load_package(reference) {
                 for parent in &package.spec.extends {
                     visit(parent, registry, visited, active)?;
                 }
@@ -260,6 +274,21 @@ pub fn load_local_animation(path: &Path) -> Result<AnimationSpec, PackageError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::animation::Effect;
+
+    fn temp_packages_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("wallr-packages-test-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_package(dir: &Path, name: &str, yaml: &str) {
+        let pkg_dir = dir.join(name);
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(pkg_dir.join("wallr.yaml"), yaml).unwrap();
+    }
 
     #[test]
     fn test_detect_no_cycles() {
@@ -284,5 +313,69 @@ mod tests {
         };
         let pkgs = registry.list_packages().unwrap();
         assert!(pkgs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_remote_reference() {
+        assert_eq!(
+            parse_remote_reference("programmersd21/wallr").unwrap(),
+            ("programmersd21".to_string(), "wallr".to_string())
+        );
+        assert_eq!(
+            parse_remote_reference("github:programmersd21/wallr").unwrap(),
+            ("programmersd21".to_string(), "wallr".to_string())
+        );
+        for bad in [
+            "", "single", "a/b/c", "a/", "/b", "@/repo", "a/b@c", "..", "../repo", ".",
+        ] {
+            assert!(
+                parse_remote_reference(bad).is_err(),
+                "should reject {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolve_animation_applies_extends() {
+        let dir = temp_packages_dir("extends");
+        write_package(
+            &dir,
+            "base",
+            "name: base\nduration: 500ms\neffects:\n  - fade\n",
+        );
+        write_package(
+            &dir,
+            "child",
+            "name: child\nextends:\n  - base\neffects:\n  - blur:\n      from: 8\n      to: 0\n",
+        );
+        let registry = PackageRegistry { packages_dir: dir };
+
+        let spec = registry.resolve_animation("child").unwrap();
+        assert_eq!(spec.name, "child");
+        assert_eq!(spec.duration.as_deref(), Some("500ms"));
+        assert_eq!(spec.effects.len(), 2);
+        assert!(matches!(spec.effects[0], Effect::Blur(_)));
+        assert!(matches!(spec.effects[1], Effect::Fade(_)));
+    }
+
+    #[test]
+    fn test_resolve_animation_rejects_extends_cycles() {
+        let dir = temp_packages_dir("cycle");
+        write_package(
+            &dir,
+            "a",
+            "name: a\nduration: 1s\nextends: [b]\neffects: [fade]\n",
+        );
+        write_package(
+            &dir,
+            "b",
+            "name: b\nduration: 1s\nextends: [a]\neffects: [fade]\n",
+        );
+        let registry = PackageRegistry { packages_dir: dir };
+
+        assert!(matches!(
+            registry.resolve_animation("a"),
+            Err(PackageError::CircularExtends(_))
+        ));
     }
 }

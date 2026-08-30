@@ -12,7 +12,6 @@ wallr preview <path> [--watch] [--animation <package|yaml>] [--mode <fill|fit|st
 wallr validate <animation.yaml>
 wallr doctor
 wallr install <username/repo>
-wallr publish
 wallr search <query>
 wallr cache clear|info
 wallr reload

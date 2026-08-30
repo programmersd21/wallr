@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.4
+
+- **`wallr install` now actually installs**: `wallr install <username/repo>` (or `github:username/repo`) downloads the package YAML from the repository root on GitHub, validates it, resolves its `extends` chain, and stores it at `~/.local/share/wallr/packages/<repo>/wallr.yaml`. The previous command only re-passed the reference to the local registry resolver and reported success without installing anything.
+- **Remote fetch hardened**: packages are fetched from the `main` or `master` branch and validated before use; malformed and path-traversal references are rejected.
+- **Reference resolution fixed**: package references are now treated as registry paths instead of being force-split on `/`, which previously loaded the wrong package and silently dropped the second segment.
+- **`extends` actually applied**: the base/child merge was implemented and tested but never invoked; package resolution and install now merge parents (base → package → current), with circular references rejected. `github:owner/repo` parents resolve remotely.
+- **Removed the placeholder `publish` command**, which printed an acknowledgment without doing anything. The registry surface is now `install`/`search` only.
+
 ## 0.3.3
 
 - **Video/GIF wallpapers now theme correctly**: `wallr set` with a video (`mp4`, `webm`, `mkv`, `mov`, `avi`, `m4v`) or GIF previously passed the original file straight to `matugen`/`wallust`/`pywal`, which cannot generate palettes from video. Wallr now extracts the first frame (FFmpeg for video, `image` crate for GIF) to a cached PNG under `~/.cache/wallr/theme/<hash>.png` and passes that to the theme provider. The cache is keyed on source path + mtime and reused until the source changes. All providers benefit with no manual step.

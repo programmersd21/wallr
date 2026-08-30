@@ -257,14 +257,12 @@ pub enum Commands {
         #[command(flatten)]
         effect_args: EffectArgs,
     },
-    /// Install an animation package from registry or repository
+    /// Install an animation package from a GitHub repository (`username/repo`)
     Install {
-        /// Package to install
+        /// Remote package reference, e.g. `username/repo`
         package: String,
     },
-    /// Publish an animation package to the registry
-    Publish,
-    /// Search for packages in the registry
+    /// Search for installed packages in the local registry
     Search {
         /// Query to search for
         query: String,

@@ -433,7 +433,7 @@ async fn main() -> Result<()> {
         Commands::Install { package } => {
             use wallr_core::packages::PackageRegistry;
             let registry = PackageRegistry::new()?;
-            let spec = registry.resolve_animation(&package)?;
+            let spec = registry.install_package(&package)?;
             println!("Installed package: {}", spec.name);
         }
 
@@ -452,10 +452,6 @@ async fn main() -> Result<()> {
                 )?;
             }
             println!("Created animation package at {}", dir.display());
-        }
-
-        Commands::Publish => {
-            println!("Package publishing tool ready");
         }
 
         Commands::Search { query } => {

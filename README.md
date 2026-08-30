@@ -44,7 +44,7 @@ Theme generation (Matugen, Wallust, Pywal) is supported as an optional step that
 - Directory watching (`wallr watch`) to apply new files automatically.
 - Per-monitor wallpapers and scaling modes.
 - Preview mode to test an effect before applying it.
-- YAML animation packages with an install/search/publish registry.
+- YAML animation packages with an install/search registry.
 - Automatic GPU selection on hybrid graphics systems.
 
 ## Requirements
