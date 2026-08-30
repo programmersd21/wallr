@@ -108,3 +108,7 @@
 - Theme pipeline integration (Matugen, Wallust, Pywal).
 - Preview window for testing effects.
 - GPU adapter selection for hybrid systems.
+
+## 0.1.0
+
+- Initial release.
