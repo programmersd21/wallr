@@ -66,7 +66,40 @@ cargo install wallr
 yay -S wallr-bin
 ```
 
-Or build from source:
+### Nix
+
+With Nix installed:
+
+```bash
+# Run directly
+nix run github:programmersd21/wallr
+
+# Install to your profile
+nix profile install github:programmersd21/wallr
+
+# Build without installing
+nix build github:programmersd21/wallr
+```
+
+For NixOS users, you can also add Wallr as an overlay or input to your flake:
+
+```nix
+{
+  inputs.wallr.url = "github:programmersd21/wallr";
+
+  outputs = { self, nixpkgs, wallr, ... }: {
+    # Use wallr.packages.${system}.wallr in your configuration
+  };
+}
+```
+
+Development shell:
+
+```bash
+nix develop
+```
+
+### Build from source:
 
 ```bash
 # Arch
