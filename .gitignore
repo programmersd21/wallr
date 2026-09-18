@@ -12,5 +12,7 @@
 .vscode/
 .idea/
 
+/local
+
 *.sw[pno]
 ign-waifu.png
