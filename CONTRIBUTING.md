@@ -29,22 +29,24 @@ cargo test
 ```
 wallr/
 ├── Cargo.toml                  # Workspace manifest
-├── wallr/                      # Binary crate (CLI frontend)
+├── wallr/                      # Binary crate (CLI frontend, single `wallr` binary)
 │   └── src/
 │       └── main.rs             # CLI entrypoint & IPC client
+├── wallr-common/               # Shared protocol library (no GPU/Wayland/decoding)
+│   └── src/
+│       ├── cli.rs              # Clap CLI shapes
+│       ├── config.rs           # Config schema, parsing, paths
+│       ├── effect.rs           # Transition effects & uniform computation
+│       ├── ipc.rs              # IPC command/response vocabulary & validation
+│       └── types.rs            # ScalingMode, ThemeProvider, GpuSelection
 ├── wallr-core/                 # Core engine library
 │   ├── src/
-│   │   ├── animation/          # Animation spec parsing, timeline & uniform computation
+│   │   ├── animation/          # Transition effects & uniform computation
 │   │   ├── animated/           # GIF decoding & wall-clock playback timing
-│   │   ├── easing/             # Cubic-bezier and spring curves
-│   │   ├── custom_effects/     # Sandboxed field validation/transpilation
-│   │   ├── cache/              # Frame & package cache management
 │   │   ├── cli/                # Clap CLI structures and commands
 │   │   ├── config/             # Config loader, parser, paths & defaults
 │   │   ├── daemon/             # Daemon event loop, layer-shell & IPC socket server
 │   │   ├── ipc/                # Unix socket IPC protocol & messaging
-│   │   ├── packages/           # Animation package registry, fetcher & dependency solver
-│   │   ├── preview/            # Wallpaper preview window
 │   │   ├── renderer/           # wgpu rendering pipeline
 │   │   ├── shader/             # WGSL shader bindings and uniform layouts
 │   │   ├── theme/              # Matugen, Wallust, Pywal, & hook dispatchers
@@ -52,12 +54,6 @@ wallr/
 │   │   └── wallpaper/          # Engine coordinator & diagnostics (doctor)
 │   └── shaders/
 │       └── effects.wgsl        # Fragment transition effects
-├── animations/                 # Built-in animation package templates
-│   ├── apple/liquid.yaml
-│   ├── dramatic/wipe-blur.yaml
-│   ├── minimal/minimal.yaml
-│   ├── pixel/retro.yaml
-│   └── smooth/crossfade.yaml
 ```
 
 ## Code standards
@@ -81,29 +77,27 @@ and workload with any result. Avoid universal performance claims from a single
 machine; verify idle, repeated-request, distinct-image, and animated/video
 cases separately.
 
-Non-trivial logic needs tests: config merge order, duration parsing, timeline scheduling, easing math, effect validation, package cycle detection, custom effect transpilation, GIF frame indexing, video scheduling.
+Non-trivial logic needs tests: config defaults, duration parsing, effect uniform mapping, GIF frame indexing, video scheduling.
 
 Library errors use `thiserror`. `anyhow` stays at the binary boundary. No unused dependencies, stub functions, `TODO` comments, or `unwrap()` in library code.
 
-## Adding a GPU effect
+## Adding a transition effect
 
-1. Add the fragment logic to `wallr-core/shaders/effects.wgsl`. Effect selection is driven by `uniforms.effect_type`.
+1. Add the fragment logic to `wallr-core/shaders/effects.wgsl`. Effect selection is driven by `uniforms.effect_type`; append the next free index.
 
 2. Define the parameter struct and add a variant to `Effect` in `wallr-core/src/animation/mod.rs`:
 
    ```rust
    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-   pub struct MyCustomEffectParams { ... }
+   pub struct MyEffectParams { ... }
 
    pub enum Effect {
        // ...
-       MyCustomEffect(MyCustomEffectParams),
+       MyEffect(MyEffectParams),
    }
    ```
 
-3. Map the parameters and progress into `EffectUniforms` in `compute_effect_uniforms` (same file).
-
-4. Add deserialization and uniform-computation tests. Verify with `wallr validate <yaml>`.
+3. Map the parameters and progress into `EffectUniforms` in `compute_effect_uniforms` (same file). Extend the `effect_types_match_shader_arms` test so the numbering can never drift from the shader.
 
 ## Adding a theme provider
 

@@ -5,6 +5,80 @@ All notable changes to Wallr are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-09-18
+
+### Removed
+
+- Removed the animation package system: YAML specs, timelines, variables,
+  `extends`, the local registry, and remote install/fetch (`wallr install`,
+  `wallr search`, `wallr new`).
+- Removed custom WGSL effects (`custom_effects` transpiler, `shader` effect).
+- Removed the preview window (`wallr preview`) and the `winit` dependency.
+- Removed directory watching (`wallr watch`) and the `notify` dependency.
+- Removed the disk image cache (`wallr cache`) and the `humansize` dependency.
+- Removed the `wallr validate` command.
+- Reduced transitions to six built-in effects: `fade`, `wipe`, `slide`,
+  `wave`, `grow`, `outer` (plus `simple`, directional, `center`, `any`,
+  and `random` aliases). Removed `blur`, `zoom`, `pixelate`, `ripple`,
+  `dissolve`, and `shader`, with their CLI flags (`--speed`, `--scale`).
+  Reveal edges are pixel-scale sharp; the default with no `--effect` flag
+  is now a plain linear crossfade, matching the feel of awww's default
+  `simple` transition.
+- Removed the `animation`, `watch`, `cache`, and `plugins` config sections.
+  Existing config files still load; unknown keys are ignored.
+- Workspace now ships a `wallr-common` protocol crate (effects, IPC
+  vocabulary, CLI shapes, config schema) shared by the client and the
+  engine, mirroring the `client`/`common`/`daemon` split. Single `wallr`
+  binary and IPC wire format unchanged.
+- `wallr set -` reads image bytes from stdin, staged to a temp file.
+- Moved `naga` to dev-dependencies (WGSL validation in tests only).
+
+### Changed
+
+- GIF decoding now snapshots the file to memory once per set; loop wraps
+  re-decode from RAM instead of re-opening the file.
+- Static wallpapers ping-pong between two shared-memory buffers, so
+  steady-state switching never allocates; flood pressure falls back to the
+  GPU path instead of growing the pool without bound.
+- Settled outputs return their shared-memory pools to the OS within about
+  a second (the compositor already owns the displayed pixels), so idle
+  memory drops back after each static wallpaper. Quiescent heaps are also
+  trimmed back at the same time.
+- Fixed `wallr ipc info` killing the daemon when no GPU was initialized;
+  it now reports `not initialized` for static-only outputs.
+- Removed `panic = "abort"` from the release profile: a wallpaper daemon
+  must survive unexpected states instead of aborting the process.
+- Repeated sets of the active wallpaper skip state-file persistence
+  (previously two writes plus two fsyncs per call).
+- The daemon tunes glibc malloc at startup (fixed 128 KiB mmap threshold,
+  64 KiB trim threshold) so transient decode buffers return to the OS.
+- Video decoder queue and preload clamp tightened to at most 3 frames in
+  flight plus one pending frame; stale frames are dropped, not preserved.
+- Removed `Clone` from video frame types; frame bytes move from decoder
+  through queue to GPU upload.
+- Added an offscreen GPU test that renders a real fade transition without
+  a compositor and asserts the blended pixels, plus a test locking the
+  effect-to-shader numbering.
+- Fixed GIF playback stopping permanently on a single slow present; timeouts
+  now yield briefly and playback continues.
+- VA-API now probes every `/dev/dri/renderD*` node instead of hardcoding
+  `renderD128`.
+- GPU backend probing tries Vulkan alone before initializing the GL driver
+  stack (about 15 ms saved on every cold start); GL-only systems still fall
+  back automatically.
+- Static GPU uploads share the SIMD resize path with the `wl_shm` fast path.
+
+### Measured
+
+- Dependency closure: 341 to 258 crates. Release binary: 11 MiB to 8.8 MiB.
+- Live Wayland matrix (`benchmarks/`, same host, vs awww 0.12.1): Wallr leads
+  the latency rounds (static switches ~20 ms, GIF submission ~25 ms).
+  Post-GIF anonymous memory returns to ~24 MiB (was ~76 MiB); settled
+  static outputs return their shm pools, idling near 30 MiB RSS.
+- Idle and post-workload RSS still trail aww's minimal C daemon; process
+  PSS and private-dirty memory are sub-MiB at idle. See the benchmark
+  reports for full tables and methodology.
+
 ## [0.5.0] - 2026-09-16
 
 ### Added
@@ -232,8 +306,6 @@ Planned Sep 12-14, implemented Sep 15
 ## 0.2.0
 
 - Animated GIF playback with zstd-compressed frame cache.
-
-[0.5.0]: https://github.com/programmersd21/wallr/releases/tag/v0.5.0
 - Video wallpaper support (MP4, WebM, MKV) with hardware-accelerated decoding.
 - 11 transition effects with circular reveal system.
 - Background daemon with Unix IPC.

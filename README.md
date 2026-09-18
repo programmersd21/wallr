@@ -24,11 +24,10 @@ Wallr renders its own background surface on `wlr-layer-shell` compositors. It do
 ## Features
 
 - Static, GIF, and video wallpapers (MP4, WebM, MKV) with hardware-accelerated decode
-- 11 transitions: fade, blur, wipe, slide, zoom, pixelate, ripple, dissolve, wave, grow, outer
+- 6 transitions: fade, wipe, slide, wave, grow, outer
 - Per-monitor wallpapers and scaling modes
-- Background daemon over a Unix socket, with directory watching for auto-apply
+- Background daemon over a Unix socket
 - Optional post-apply theming via Matugen, Wallust, or Pywal
-- YAML animation packages with an install/search registry
 - Near-zero idle overhead: static wallpapers render once and sleep; video and GIFs pace to frame boundaries
 - Zero-duration static sets can use a low-memory `wl_shm` compositor buffer; GPU rendering remains available for transitions and live media
 - Performance harness for live Wayland measurements against `awww` (`scripts/benchmark-wallpapers.sh`)
@@ -76,8 +75,8 @@ wallr set wallpaper.jpg -e grow -o center -d 850ms
 wallr set wallpaper.jpg -e wipe -a 45 -d 800ms
 wallr set video.mp4 -e wave -d 900ms
 
-# Automatic directory rotation
-wallr watch ~/Pictures/Wallpapers
+# Instant switch for scripts
+wallr set wallpaper.jpg --duration 0 --no-theme
 ```
 
 `wallr set` starts the daemon automatically if it isn't already running. Full flag reference: [`docs/cli-reference.md`](docs/cli-reference.md).
@@ -90,10 +89,6 @@ wallr watch ~/Pictures/Wallpapers
 wallpaper:
   default: "~/Pictures/Wallpapers/default.png"
   mode: "fill"
-
-animation:
-  use: "smooth/crossfade"
-  duration: "2000ms"
 
 theme:
   provider: "matugen"
@@ -134,7 +129,7 @@ cargo install --path wallr
 
 ## Architecture
 
-The `wallr` CLI talks to `wallr daemon` over a Unix socket. The daemon owns the layer-shell surface, the `wgpu` renderer, and the animation engine. Wallpaper changes render as GPU transitions from the previous image; GIFs continue playing after the transition ends, and video is decoded by FFmpeg with hardware acceleration where available.
+The `wallr` CLI talks to `wallr daemon` over a Unix socket. The daemon owns the layer-shell surface, the `wgpu` renderer, and the transition engine. Wallpaper changes render as GPU transitions from the previous image; GIFs continue playing after the transition ends, and video is decoded by FFmpeg with hardware acceleration where available.
 
 Details: [`docs/architecture.md`](docs/architecture.md).
 
@@ -163,7 +158,7 @@ cargo install --path wallr --force
 
 ## Documentation
 
-[Changelog](CHANGELOG.md) · [CLI reference](docs/cli-reference.md) · [Config reference](docs/config-reference.md) · [Animation authoring](docs/animation-authoring.md) · [Architecture](docs/architecture.md) · [Matugen integration](docs/matugen-integration.md) · [Video wallpapers](docs/video-wallpaper.md)
+[Changelog](CHANGELOG.md) · [CLI reference](docs/cli-reference.md) · [Config reference](docs/config-reference.md) · [Architecture](docs/architecture.md) · [Matugen integration](docs/matugen-integration.md) · [Video wallpapers](docs/video-wallpaper.md)
 
 Last wallpaper per output is stored at `~/.cache/wallr/last_wallpaper/<OUTPUT>`; see [CLI reference](docs/cli-reference.md) and [Architecture](docs/architecture.md).
 

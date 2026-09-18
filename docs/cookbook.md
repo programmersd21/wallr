@@ -1,13 +1,9 @@
 # Cookbook
 
-1. Soft crossfade: use `animations/minimal/minimal.yaml`.
-2. Circular wipe: add `wipe: {direction: right, softness: 0.12}`. Direction selects the circle's edge origin; the wider feather keeps it calm and cinematic.
-3. Blur and fade pair: run both at `at: 0ms` with the same duration.
-4. Spring zoom: use `zoom` with `easing: spring` and an off-center origin.
-5. Two-stage reveal: use timeline entries at `0ms` and `300ms`.
-6. Custom scanlines: copy the `scanline` definition in `custom-effects.md`.
-7. Custom glass: see `animations/apple/liquid.yaml`.
-8. Custom retro treatment: see `animations/pixel/retro.yaml`.
-9. Raw WGSL: use the `shader` escape hatch described in [shaders](shaders.md).
-
-Validate every package before previewing it: `wallr validate path/to/wallr.yaml`.
+1. Soft crossfade: `wallr set ~/Pictures/wallpaper.png -e fade -d 800ms`.
+2. Circular wipe from a corner: `wallr set ~/Pictures/wallpaper.png -e grow -o bottom_right -d 850ms`.
+3. Angled wipe: `wallr set ~/Pictures/wallpaper.png -e wipe -a 45 -d 800ms`.
+4. Spring easing on any effect: add `--easing spring`.
+5. Instant switch for scripts: `wallr set ~/Pictures/wallpaper.png --duration 0 --no-theme`.
+6. Per-output wallpapers: add `-m DP-1` / `-m HDMI-A-1`.
+7. Pause all motion: `wallr ipc pause`; resume with `wallr ipc resume`.

@@ -1,26 +1,38 @@
 # Effects reference
 
-Built-in effects are `fade`, `blur`, `wipe`, `slide`, `zoom`, `pixelate`, `ripple`, `dissolve`, `wave`, `grow`, and `outer`. Each is a typed YAML variant with its own parameters; use `wallr validate` to catch invalid values.
+Wallr ships six built-in transitions. Pick one with `wallr set <path> -e <name>` and tune it with the flags below. With no `-e` flag you get a plain linear crossfade, matching awww's default `simple` feel.
 
-The default bundled package is `animations/minimal/minimal.yaml`: a restrained fade and blur crossfade. More visual effects are opt-in under `animations/`.
+| Name | Aliases | Look |
+|---|---|---|
+| `fade` | `simple` | Smooth crossfade between wallpapers. |
+| `wipe` | | Directional reveal sweep, optionally angled. |
+| `slide` | `left`, `right`, `top`, `bottom` | Directional reveal from an edge. |
+| `wave` | | Wipe with an oscillating edge. |
+| `grow` | `center`, `any` | Expanding circle from an origin. |
+| `outer` | | Shrinking circle onto an origin. |
 
-## awww-compatible transition model
+`any` grows or shrinks from a random point. `random` picks one of the six at random.
 
-Wallr follows the transition model used by [awww](https://codeberg.org/LGFae/awww): a transition is rendered between the retained outgoing wallpaper and the decoded incoming wallpaper, at the requested frame rate, with no synthetic black image inserted between them. `fade` is the polished crossfade equivalent of awww's `fade`; `left`, `right`, `top`, `bottom`, `wipe`, `wave`, `grow`, `center`, and `outer` cover its directional and shape-reveal family. `any` chooses a random circular reveal origin, while `random` chooses a transition family. Wallr keeps the source textures on the GPU and applies easing in WGSL, so the transition remains continuous instead of stepping individual RGB bytes.
+## Flags
 
-## Fixed-position guarantee
+| Flag | Used by | Meaning |
+|---|---|---|
+| `-d, --duration <TIME>` | all | Wall-clock length, e.g. `700ms`, `1s`, `1.2s`. |
+| `-o, --origin <PRESET\|X,Y>` | `grow`, `outer`, `wave` | Circle origin: `center` (default), `top_left`, `top`, `top_right`, `left`, `right`, `bottom_left`, `bottom`, `bottom_right`, or normalized `x,y`. |
+| `-a, --angle <DEG>` | `wipe`, `wave` | Sweep angle in degrees (`0` = right, `90` = up). |
+| `--direction <X,Y>` | `wipe`, `slide` | Direction vector, e.g. `1,0`. |
+| `--easing <CURVE>` | all | `linear`, `ease_in`, `ease_out`, `ease_in_out` (default), `emphatic`, `spring`. |
+| `--from, --to <VAL>` | `fade` | Opacity range, default `0` to `1`. |
+| `--frequency, --amplitude` | `wave` | Wave density and height. |
+| `--softness <VAL>` | `wipe` | Edge feather in screen fraction, `0.002` to `0.25` (default `0.01`: a sharp, pixel-scale edge). |
 
-Both wallpapers are mapped to their own stable `fill` crop for the entire transition. Wallr never reuses the incoming image's crop for the outgoing one. Every built-in masked effect uses a true screen-space circle; `direction` and `angle` choose the circle's edge origin instead of producing a straight sweep. This is deliberate: a background should feel like it is changing state, not flying across the desktop.
+## Examples
 
-`zoom` is therefore a stationary focus crossfade in the built-in renderer. It keeps the familiar name for package compatibility but does not pan or magnify the full wallpaper. Raw shaders and custom effects remain available when a package explicitly wants image deformation.
+```bash
+wallr set ~/Pictures/wallpaper.png -e grow -o center -d 850ms
+wallr set ~/Pictures/wallpaper.png -e wipe -a 45 -d 800ms
+wallr set ~/Pictures/wallpaper.png -e wave -d 900ms
+wallr set ~/Pictures/wallpaper.png --duration 0 --no-theme
+```
 
-The important quality rules are:
-
-- Keep the previous wallpaper alive until the new transition has presented its final frame.
-- Use `fade` or `fade` + `blur` for a restrained default. Reserve `wave`, `ripple`, and `dissolve` for images where their motion has a clear visual purpose.
-- Use `ease_out` for a reveal and `ease_in_out` for a symmetric crossfade. `linear` is intentionally blunt and is best reserved for progress-like wipes.
-- Tune `duration` independently; the daemon paces one frame per vsync, so a transition lasts exactly its configured duration on any refresh rate. A harsh curve or too much motion cannot be compensated by a shorter duration.
-
-## Circular reveal system
-
-`wipe`, `slide`, `pixelate`, `dissolve`, `wave`, `ripple`, `grow`, and `outer` share one aspect-correct radial mask. Their names and parameters remain compatible with packages, but none creates a triangle, a diagonal wedge, a rectangular sweep, or random pixel cells. `direction` and `angle` place the circle at a screen edge; `origin` chooses it directly. `fade`, `blur`, and the stationary `zoom` are deliberately full-frame blends.
+`--duration 0` skips the transition and presents the wallpaper directly.

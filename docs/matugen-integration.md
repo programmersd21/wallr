@@ -1,6 +1,6 @@
 # Matugen integration
 
-Wallr can call Matugen after an animation:
+Wallr can call Matugen after a wallpaper change:
 
 ```yaml
 theme: {provider: matugen}
