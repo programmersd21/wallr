@@ -57,6 +57,14 @@ yay -S wallr-bin
 nix run github:programmersd21/wallr
 ```
 
+```bash
+#First, install the Terra Repository (terrapkg.com)
+sudo dnf install --nogpgcheck --repofrompath 'terra,https://repos.fyralabs.com/terra$releasever' terra-release
+
+#Then, install wallr with dnf
+sudo dnf install wallr
+```
+
 ## Usage
 
 ```bash
