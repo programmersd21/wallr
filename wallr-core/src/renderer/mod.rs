@@ -51,6 +51,21 @@ impl VideoTexture {
     pub fn bind_group(&self) -> &wgpu::BindGroup {
         &self.effects_bind_group
     }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// True when an incoming frame can reuse the allocated Y/UV/output
+    /// textures, bind groups, and conversion buffer instead of recreating
+    /// GPU resources. Only a real resolution change requires recreation.
+    pub fn matches_dimensions(&self, width: u32, height: u32) -> bool {
+        self.width == width && self.height == height
+    }
 }
 
 #[repr(C)]
@@ -158,29 +173,47 @@ impl Renderer {
         // A Wayland wallpaper daemon on Linux only needs the native Linux GPU
         // backends. `Backends::all()` also probes browser/mobile/Apple
         // backends that cannot produce a Wayland surface here, increasing
-        // startup work and sometimes loading unnecessary driver state. Keep
-        // Vulkan as the primary path and OpenGL as a compatibility fallback.
-        #[cfg(target_os = "linux")]
-        let backends = wgpu::Backends::VULKAN | wgpu::Backends::GL;
-        #[cfg(not(target_os = "linux"))]
-        let backends = wgpu::Backends::all();
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends,
-            ..Default::default()
-        });
-
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                // A wallpaper is a persistent background workload. Prefer
-                // the power-efficient adapter so an integrated GPU is used
-                // when available; this avoids waking a discrete GPU and
-                // keeps idle power and driver allocations low on laptops.
-                power_preference: wgpu::PowerPreference::LowPower,
-                compatible_surface: None,
-                force_fallback_adapter: false,
-            })
-            .await
-            .ok_or_else(|| anyhow::anyhow!("Failed to find suitable adapter"))?;
+        // startup work and sometimes loading unnecessary driver state.
+        let adapter_opts = wgpu::RequestAdapterOptions {
+            // A wallpaper is a persistent background workload. Prefer
+            // the power-efficient adapter so an integrated GPU is used
+            // when available; this avoids waking a discrete GPU and
+            // keeps idle power and driver allocations low on laptops.
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        };
+        let (instance, adapter) = 'select: {
+            // Try Vulkan first without initializing the GL backend: probing
+            // GL loads its whole driver stack (~15 ms measured) for a
+            // fallback most systems never need.
+            #[cfg(target_os = "linux")]
+            {
+                let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                    backends: wgpu::Backends::VULKAN,
+                    ..Default::default()
+                });
+                if let Some(adapter) = instance.request_adapter(&adapter_opts).await {
+                    break 'select (instance, adapter);
+                }
+                tracing::info!("No Vulkan adapter found, falling back to GL");
+            }
+            // Keep Vulkan as the primary path and OpenGL as a compatibility
+            // fallback (plus everything elsewhere).
+            #[cfg(target_os = "linux")]
+            let backends = wgpu::Backends::VULKAN | wgpu::Backends::GL;
+            #[cfg(not(target_os = "linux"))]
+            let backends = wgpu::Backends::all();
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                backends,
+                ..Default::default()
+            });
+            let adapter = instance
+                .request_adapter(&adapter_opts)
+                .await
+                .ok_or_else(|| anyhow::anyhow!("Failed to find suitable adapter"))?;
+            (instance, adapter)
+        };
 
         let adapter_limits = adapter.limits();
         let required_limits = wgpu::Limits {
@@ -772,21 +805,11 @@ impl Renderer {
         output_height: u32,
         scaling_mode: u32,
     ) -> anyhow::Result<(wgpu::Texture, wgpu::BindGroup, u32, u32)> {
-        let (width, height) = prepared_image_dimensions(
-            image.width(),
-            image.height(),
-            output_width,
-            output_height,
-            scaling_mode,
-            self.device.limits().max_texture_dimension_2d,
-        );
-        let rgba = if (width, height) == image.dimensions() {
-            image.to_rgba8()
-        } else {
-            image
-                .resize_exact(width, height, image::imageops::FilterType::Lanczos3)
-                .to_rgba8()
-        };
+        // Share the output-aware sizing policy and the SIMD resize path with
+        // the wl_shm fast path so large static uploads pay one efficient
+        // downscale instead of uploading a huge texture for the GPU to scale.
+        let (rgba, width, height) =
+            self.prepare_image_rgba(image, output_width, output_height, scaling_mode)?;
         let (texture, bind_group) = self.create_texture(width, height)?;
         self.update_texture(&texture, &rgba, width, height);
         Ok((texture, bind_group, width, height))
@@ -1062,6 +1085,165 @@ pub struct FrameRequest<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Renders a real fade transition offscreen (no compositor needed) and
+    /// checks the blended pixels. Skips gracefully where no GPU exists.
+    /// This exercises the full path the unit tests cannot: pipeline lookup,
+    /// bind groups, uniform upload, and the WGSL blend for the renumbered
+    /// effect arms.
+    #[test]
+    fn transition_renders_mid_fade_blend_offscreen() {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(_) => return,
+        };
+        let renderer = match runtime.block_on(Renderer::new()) {
+            Ok(renderer) => renderer,
+            Err(_) => {
+                eprintln!("SKIP: no GPU adapter for offscreen transition test");
+                return;
+            }
+        };
+        const SIZE: u32 = 64;
+        let red = [255u8, 0, 0, 255].repeat((SIZE * SIZE) as usize);
+        let blue = [0u8, 0, 255, 255].repeat((SIZE * SIZE) as usize);
+        let (tex_old, bind_old) = renderer.create_texture(SIZE, SIZE).expect("old texture");
+        let (tex_new, bind_new) = renderer.create_texture(SIZE, SIZE).expect("new texture");
+        renderer.update_texture(&tex_old, &red, SIZE, SIZE);
+        renderer.update_texture(&tex_new, &blue, SIZE, SIZE);
+
+        let per_output = renderer.create_per_output_uniforms();
+        let render_at = |effect: &crate::animation::Effect, progress: f32| -> Vec<u8> {
+            let effect = crate::animation::compute_effect_uniforms(effect, progress);
+            let mut uniforms = Uniforms::from_effect(&effect);
+            uniforms.resolution = [SIZE as f32, SIZE as f32];
+            uniforms.image_resolution = [SIZE as f32, SIZE as f32];
+            uniforms.old_image_resolution = [SIZE as f32, SIZE as f32];
+            uniforms.scaling_mode = 0;
+            renderer.update_uniforms(&per_output.buffer, uniforms);
+
+            let target = renderer.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("offscreen transition target"),
+                size: wgpu::Extent3d {
+                    width: SIZE,
+                    height: SIZE,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+            let pipeline = renderer.get_pipeline(wgpu::TextureFormat::Rgba8UnormSrgb);
+            let mut encoder = renderer
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("offscreen transition"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &bind_old, &[]);
+                pass.set_bind_group(1, &bind_new, &[]);
+                pass.set_bind_group(2, &per_output.bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            let readback = renderer.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("offscreen readback"),
+                size: (SIZE * SIZE * 4) as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &target,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(SIZE * 4),
+                        rows_per_image: Some(SIZE),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: SIZE,
+                    height: SIZE,
+                    depth_or_array_layers: 1,
+                },
+            );
+            renderer.queue.submit([encoder.finish()]);
+            let slice = readback.slice(..);
+            slice.map_async(wgpu::MapMode::Read, |_| {});
+            renderer.device.poll(wgpu::Maintain::Wait);
+            let pixels = {
+                let mapped = slice.get_mapped_range();
+                mapped.to_vec()
+            };
+            readback.unmap();
+            pixels
+        };
+        let pixel_at = |frame: &[u8], x: u32, y: u32| -> [u8; 4] {
+            let i = ((y * SIZE + x) * 4) as usize;
+            [frame[i], frame[i + 1], frame[i + 2], frame[i + 3]]
+        };
+
+        let fade = crate::animation::Effect::Fade(crate::animation::FadeParams::default());
+        // Fade endpoints are exact (no blending artifacts at start/end).
+        let start = render_at(&fade, 0.0);
+        let start = pixel_at(&start, SIZE / 2, SIZE / 2);
+        assert!(start[0] > 240 && start[2] < 15, "start pixel: {start:?}");
+        let end = render_at(&fade, 1.0);
+        let end = pixel_at(&end, SIZE / 2, SIZE / 2);
+        assert!(end[2] > 240 && end[0] < 15, "end pixel: {end:?}");
+        // Mid-fade blends in linear light (sRGB textures decode on sample
+        // and re-encode on store), so red/blue meet near (187, 0, 187),
+        // not the gamma-space (127, 0, 127) that byte-stepping would give.
+        // The linear midpoint reads perceptually uniform instead of dipping
+        // dark halfway through the fade.
+        let mid = render_at(&fade, 0.5);
+        let mid = pixel_at(&mid, SIZE / 2, SIZE / 2);
+        assert!(
+            (170..=205).contains(&mid[0]) && (170..=205).contains(&mid[2]) && mid[1] < 20,
+            "mid pixel: {mid:?}"
+        );
+
+        // A mid-wipe is sharp: well outside the feathered edge the pixels
+        // are exactly old or new, with only a narrow blend band between.
+        // (Wipe moves left to right here, so the left edge is new/blue.)
+        let wipe = crate::animation::Effect::Wipe(crate::animation::WipeParams::default());
+        let frame = render_at(&wipe, 0.5);
+        let left = pixel_at(&frame, 4, SIZE / 2);
+        assert!(
+            left[2] > 240 && left[0] < 15,
+            "wipe revealed pixel: {left:?}"
+        );
+        let right = pixel_at(&frame, SIZE - 5, SIZE / 2);
+        assert!(
+            right[0] > 240 && right[2] < 15,
+            "wipe unrevealed pixel: {right:?}"
+        );
+    }
 
     #[test]
     fn selects_yuv_conversion_coefficients_and_range() {

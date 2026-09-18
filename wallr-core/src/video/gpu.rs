@@ -1,27 +1,7 @@
 use crate::video::error::{VideoError, VideoResult};
-use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum GpuSelection {
-    #[default]
-    Auto,
-    Integrated,
-    Discrete,
-    Named(String),
-}
-
-impl fmt::Display for GpuSelection {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Auto => write!(f, "auto"),
-            Self::Integrated => write!(f, "integrated"),
-            Self::Discrete => write!(f, "discrete"),
-            Self::Named(name) => write!(f, "{}", name),
-        }
-    }
-}
+pub use wallr_common::types::GpuSelection;
 
 #[derive(Debug, Clone)]
 pub struct AdapterInfo {
@@ -122,25 +102,4 @@ pub fn adapter_diagnostics(adapter: &wgpu::Adapter) -> String {
         "GPU: {} ({:?})\nBackend: {:?}\nDriver: {}\nDriver Info: {}",
         info.name, info.device_type, info.backend, info.driver, info.driver_info
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_gpu_selection_display() {
-        assert_eq!(GpuSelection::Auto.to_string(), "auto");
-        assert_eq!(GpuSelection::Integrated.to_string(), "integrated");
-        assert_eq!(GpuSelection::Discrete.to_string(), "discrete");
-        assert_eq!(
-            GpuSelection::Named("NVIDIA".to_string()).to_string(),
-            "NVIDIA"
-        );
-    }
-
-    #[test]
-    fn test_gpu_selection_default() {
-        assert_eq!(GpuSelection::default(), GpuSelection::Auto);
-    }
 }

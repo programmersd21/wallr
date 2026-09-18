@@ -47,18 +47,13 @@ IMAGES=(
     "samples/image_11.png"
 )
 
-# All 11 built-in transitions, one per image, in the order shown by
+# All 6 built-in transitions, one per image, in the order shown by
 # `wallr set --help`. Each effect keeps the wallpaper pinned to its
 # screen crop; only the blend or reveal mask moves.
 EFFECTS=(
     "fade"
-    "blur"
     "wipe"
     "slide"
-    "zoom"
-    "pixelate"
-    "ripple"
-    "dissolve"
     "wave"
     "grow"
     "outer"
@@ -67,13 +62,8 @@ EFFECTS=(
 # Optional per-effect parameters, aligned with EFFECTS by index.
 PARAMS=(
     ""
-    ""
     "--direction 1,0"
     "--direction 0,1"
-    "--origin center"
-    ""
-    "--origin center"
-    "--scale 12"
     "--angle 45"
     "--origin bottom_right"
     "--origin top_left"
@@ -85,8 +75,8 @@ PARAMS=(
 COMPLETED=0
 for i in "${!IMAGES[@]}"; do
     IMAGE="${IMAGES[$i]}"
-    EFFECT="${EFFECTS[$i]}"
-    EXTRA="${PARAMS[$i]}"
+    EFFECT="${EFFECTS[$((i % 6))]}"
+    EXTRA="${PARAMS[$((i % 6))]}"
     NUMBER=$((i + 1))
 
     if [[ ! -f "$IMAGE" ]]; then

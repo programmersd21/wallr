@@ -1,8 +1,0 @@
-# Wave: organic liquid boundary reveal with smooth ease-in-out curve.
-name: wave
-duration: 900ms
-effects:
-  - wave:
-      frequency: 3.2
-      amplitude: 0.035
-      easing: ease_in_out

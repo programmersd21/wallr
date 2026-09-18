@@ -1,7 +1,0 @@
-# Grow: expanding circular reveal from screen center with emphatic momentum.
-name: grow
-duration: 850ms
-effects:
-  - grow:
-      origin: center
-      easing: emphatic

@@ -24,6 +24,8 @@ static-ffmpeg = ["wallr-core/static-ffmpeg"]
 [dependencies]
 # Core library
 wallr-core.workspace = true
+# Shared protocol (CLI shapes, effects, config, IPC vocabulary)
+wallr-common.workspace = true
 
 # Error handling
 anyhow.workspace = true
@@ -41,6 +43,3 @@ tracing-subscriber.workspace = true
 
 # Serialization
 serde_yaml.workspace = true
-
-# Utilities
-humansize.workspace = true

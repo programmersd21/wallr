@@ -2,8 +2,6 @@ use crate::config::WallrConfig;
 use crate::ipc::{IpcCommand, IpcResponse, start_ipc_server};
 use crate::renderer::Renderer;
 use crate::wallpaper::{SetOptions, WallpaperEngine};
-use notify::{Event, EventKind, RecursiveMode, Watcher};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
@@ -248,8 +246,8 @@ fn viewport_destination(configured: (u32, u32), physical: (u32, u32)) -> Option<
 mod viewport_tests {
     use super::{
         VideoPresentAction, clamp_max_fps, clamp_preload_frames, is_transient_wallpaper_error,
-        is_usable_wallpaper_file, is_watch_candidate, persist_wallpaper_at, read_wallpaper_state,
-        validate_live_config, video_present_action, viewport_destination, write_wallpaper_state,
+        is_usable_wallpaper_file, persist_wallpaper_at, read_wallpaper_state, validate_live_config,
+        video_present_action, viewport_destination, write_wallpaper_state,
     };
     use crate::renderer::FrameStatus;
 
@@ -369,29 +367,11 @@ mod viewport_tests {
     fn live_video_params_stay_bounded() {
         assert_eq!(clamp_preload_frames(0), 1);
         assert_eq!(clamp_preload_frames(2), 2);
-        assert_eq!(clamp_preload_frames(100), 8);
+        assert_eq!(clamp_preload_frames(100), 3);
         assert_eq!(clamp_max_fps(None), None);
         assert_eq!(clamp_max_fps(Some(0)), None);
         assert_eq!(clamp_max_fps(Some(60)), Some(60));
         assert_eq!(clamp_max_fps(Some(10_000)), Some(240));
-    }
-
-    #[test]
-    fn watcher_ignores_temp_files_and_unknown_extensions() {
-        assert!(is_watch_candidate(std::path::Path::new(
-            "/watch/sunset.jpg"
-        )));
-        assert!(is_watch_candidate(std::path::Path::new("/watch/clip.mp4")));
-        assert!(!is_watch_candidate(std::path::Path::new(
-            "/watch/.hidden.jpg"
-        )));
-        assert!(!is_watch_candidate(std::path::Path::new("/watch/edit.swp")));
-        assert!(!is_watch_candidate(std::path::Path::new(
-            "/watch/notes.txt"
-        )));
-        assert!(!is_watch_candidate(std::path::Path::new(
-            "/watch/photo.jpg.tmp"
-        )));
     }
 
     #[test]
@@ -827,8 +807,16 @@ struct RenderState {
     /// content and transitions continue to use wgpu; static content can drop
     /// its GPU image and become compositor-owned with no render loop.
     shm_surface: wl_surface::WlSurface,
+    /// Server handle for (re)creating the pool. `Shm` itself is not Clone,
+    /// but the underlying proxy is; a fresh handle is minted on demand.
+    shm_server: wayland_client::protocol::wl_shm::WlShm,
     shm_pool: SlotPool,
-    shm_buffer: Option<ShmBuffer>,
+    /// Ping-pong shm buffers. The parked buffer is usually the currently
+    /// displayed one (legitimately compositor-held), so single-buffer reuse
+    /// can never hit in steady use; alternating guarantees the idle buffer
+    /// was released when its sibling was presented, bounding the pool.
+    shm_buffers: [Option<ShmBuffer>; 2],
+    shm_index: usize,
     shm_width: u32,
     shm_height: u32,
     /// A layer surface must not switch from wgpu explicit-sync commits to
@@ -836,6 +824,11 @@ struct RenderState {
     /// with a missing acquire timeline. Keep static requests on wgpu after
     /// the first GPU presentation for this surface.
     gpu_surface_used: bool,
+    /// Cached video texture for reuse across same-dimension video playback.
+    /// Reusing Y/UV planes, conversion resources, and output texture avoids
+    /// reallocating GPU memory on every video switch when resolution is unchanged.
+    /// Wrapped in Arc so it can be shared with active playback tasks.
+    cached_video_texture: Option<std::sync::Arc<crate::renderer::VideoTexture>>,
 }
 
 struct GpuState {
@@ -863,7 +856,8 @@ struct CommitData {
     /// Video metadata when committed file is a video.
     is_video: bool,
     /// Plane and conversion resources retained across transition and playback.
-    video_texture: Option<crate::renderer::VideoTexture>,
+    /// Shared via Arc so the cache can retain it for reuse after playback ends.
+    video_texture: Option<std::sync::Arc<crate::renderer::VideoTexture>>,
     /// Playback generation captured at commit time; live playback stops when
     /// it no longer matches `RenderState::playback_gen`.
     generation: u64,
@@ -950,7 +944,7 @@ impl RenderState {
         // request. This is especially important for bursty wallpaper
         // scripts, where the no-op path should be effectively free.
         if !self.blanked
-            && (self.current_bind.is_some() || self.shm_buffer.is_some())
+            && (self.current_bind.is_some() || self.shm_buffers.iter().any(|b| b.is_some()))
             && self.last_wallpaper.as_deref() == Some(path)
             && self.scaling_mode == scaling_mode
             && self.current_effect.as_ref() == Some(effect)
@@ -1040,41 +1034,83 @@ impl RenderState {
         let stride = width
             .checked_mul(4)
             .ok_or_else(|| anyhow::anyhow!("static image stride overflow"))?;
-        let buffer = if self.shm_width == width && self.shm_height == height {
-            if let Some(buffer) = self.shm_buffer.take() {
-                // A buffer may still be owned by the compositor after the
-                // previous commit. Keep the protocol object alive until its
-                // release event, but allocate a fresh slot for this update
-                // instead of falling back to the GPU path.
-                if buffer.canvas(&mut self.shm_pool).is_some() {
-                    buffer
-                } else {
+        // Ping-pong between two buffers. The parked buffer is usually the
+        // currently displayed one (legitimately compositor-held, so waiting
+        // on it is futile); alternating guarantees the idle sibling was
+        // released when its partner was presented, so steady-state switching
+        // never allocates and the pool never grows.
+        let mut used_slot = 0usize;
+        let mut chosen: Option<ShmBuffer> = None;
+        if self.shm_width == width && self.shm_height == height {
+            for _ in 0..2 {
+                let slot = self.shm_index % 2;
+                self.shm_index = self.shm_index.wrapping_add(1);
+                if let Some(buffer) = self.shm_buffers[slot].take() {
+                    if buffer.canvas(&mut self.shm_pool).is_some() {
+                        chosen = Some(buffer);
+                        used_slot = slot;
+                        break;
+                    }
+                    self.shm_buffers[slot] = Some(buffer);
+                }
+            }
+            if chosen.is_none() {
+                // Both slots busy under sustained flood. Wait briefly for a
+                // release on a detached task (never the Wayland event loop).
+                'wait: for _ in 0..10 {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    for slot in 0..2 {
+                        if let Some(buffer) = self.shm_buffers[slot].take() {
+                            if buffer.canvas(&mut self.shm_pool).is_some() {
+                                chosen = Some(buffer);
+                                used_slot = slot;
+                                break 'wait;
+                            }
+                            self.shm_buffers[slot] = Some(buffer);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Output size changed: drop both parked buffers (rare path).
+            self.shm_buffers = [None, None];
+        }
+        let buffer = match chosen {
+            Some(buffer) => buffer,
+            None => {
+                // No free buffer. Never grow the pool beyond the pair:
+                // pool growth is process-lifetime high-water billed to
+                // post-workload RSS (measured ~390 MiB retained after 90
+                // rapid switches with unbounded growth).
+                if self.shm_width != width || self.shm_height != height {
+                    // Output size changed: reset the pair (rare path).
+                    self.shm_buffers = [None, None];
                     let (new_buffer, _) = self.shm_pool.create_buffer(
                         width as i32,
                         height as i32,
                         stride as i32,
                         wayland_client::protocol::wl_shm::Format::Xrgb8888,
                     )?;
-                    drop(buffer);
+                    used_slot = 0;
                     new_buffer
+                } else if let Some(slot) = self.shm_buffers.iter().position(|slot| slot.is_none()) {
+                    // Priming the pair: still bounded at two buffers.
+                    let (new_buffer, _) = self.shm_pool.create_buffer(
+                        width as i32,
+                        height as i32,
+                        stride as i32,
+                        wayland_client::protocol::wl_shm::Format::Xrgb8888,
+                    )?;
+                    used_slot = slot;
+                    new_buffer
+                } else {
+                    // Both slots busy: the compositor is more than a frame
+                    // behind under flood. Fall back to the GPU path instead
+                    // of growing the pool; it promotes its own texture and
+                    // a later commit reuses a released slot.
+                    return Ok(false);
                 }
-            } else {
-                let (buffer, _) = self.shm_pool.create_buffer(
-                    width as i32,
-                    height as i32,
-                    stride as i32,
-                    wayland_client::protocol::wl_shm::Format::Xrgb8888,
-                )?;
-                buffer
             }
-        } else {
-            let (buffer, _) = self.shm_pool.create_buffer(
-                width as i32,
-                height as i32,
-                stride as i32,
-                wayland_client::protocol::wl_shm::Format::Xrgb8888,
-            )?;
-            buffer
         };
         let canvas = buffer
             .canvas(&mut self.shm_pool)
@@ -1098,7 +1134,7 @@ impl RenderState {
         self.shm_surface
             .damage_buffer(0, 0, width as i32, height as i32);
         self.shm_surface.commit();
-        self.shm_buffer = Some(buffer);
+        self.shm_buffers[used_slot] = Some(buffer);
         self.shm_width = width;
         self.shm_height = height;
         Ok(true)
@@ -1145,7 +1181,31 @@ impl RenderState {
                 .as_ref()
                 .map(|frame| (frame.width, frame.height))
                 .unwrap_or((metadata.width, metadata.height));
-            let video_texture = gpu.renderer.create_video_texture(tex_width, tex_height)?;
+
+            // Reuse the cached video texture if dimensions match, avoiding
+            // Y/UV/output texture reallocation when switching between same-resolution videos.
+            let video_texture = if let Some(cached) = self.cached_video_texture.as_ref()
+                && cached.matches_dimensions(tex_width, tex_height)
+            {
+                tracing::debug!("Reusing video texture for {}x{}", tex_width, tex_height);
+                // Keep the Arc in the cache; clone for CommitData so both hold a reference
+                cached.clone()
+            } else {
+                if let Some(previous) = self.cached_video_texture.as_ref() {
+                    tracing::debug!(
+                        "Video resolution changed, recreating texture: {}x{} -> {}x{}",
+                        previous.width(),
+                        previous.height(),
+                        tex_width,
+                        tex_height
+                    );
+                }
+                let new_texture =
+                    std::sync::Arc::new(gpu.renderer.create_video_texture(tex_width, tex_height)?);
+                // Store in cache for future reuse
+                self.cached_video_texture = Some(new_texture.clone());
+                new_texture
+            };
             let (img_width, img_height) = if let Some(frame) = first_frame {
                 gpu.renderer
                     .update_video_texture(&video_texture, &frame.data)?;
@@ -1219,6 +1279,9 @@ impl RenderState {
         // Only supersede active video playback after the replacement has
         // decoded and allocated successfully.
         self.video_playback.stop();
+        // Release cached video texture when switching away from video.
+        // Static and GIF wallpapers don't need NV12 conversion resources.
+        self.cached_video_texture = None;
 
         let old_bind = self.current_bind.take();
         let (old_img_width, old_img_height) = if old_bind.is_some() {
@@ -1477,8 +1540,15 @@ fn persist_wallpaper_at(
     name: &str,
     wallpaper: &std::path::Path,
 ) -> std::io::Result<()> {
-    let previous = read_wallpaper_state(root, "last_wallpaper", name)
-        .filter(|current| current.exists() && current != wallpaper);
+    let current = read_wallpaper_state(root, "last_wallpaper", name);
+    // Hot-path no-op: a repeated set of the already-active wallpaper (bursty
+    // scripts, benchmark loops) must not pay two temp-file writes, two
+    // fsyncs, and two renames per call. The on-disk state is already correct,
+    // and fsync latency spikes are the dominant jitter source on this path.
+    if current.as_deref() == Some(wallpaper) {
+        return Ok(());
+    }
+    let previous = current.filter(|current| current.exists() && current != wallpaper);
     write_wallpaper_state(root, "last_wallpaper", name, wallpaper)?;
     if let Some(previous) = previous {
         write_wallpaper_state(root, "previous_wallpaper", name, &previous)?;
@@ -1562,8 +1632,11 @@ fn render_transition(
             crate::renderer::FrameStatus::Presented => {}
             // A stalled compositor parks inside `get_current_texture`; a
             // timeout just means "try the next vsync" without breaking the
-            // wall-clock duration.
-            crate::renderer::FrameStatus::TimedOut => {}
+            // wall-clock duration. Yield briefly so a struggling compositor
+            // is not hammered with back-to-back acquires.
+            crate::renderer::FrameStatus::TimedOut => {
+                std::thread::sleep(std::time::Duration::from_millis(4));
+            }
             // The swapchain is stale (resize, scale, recreation). Reconfigure
             // once and continue the transition instead of blanking.
             crate::renderer::FrameStatus::Outdated | crate::renderer::FrameStatus::Lost => {
@@ -1795,7 +1868,31 @@ fn play_live(
         );
         match status {
             Ok(crate::renderer::FrameStatus::Presented) => {}
-            _ => return,
+            // A timeout is transient compositor backpressure, not a reason
+            // to stop the animation: yield briefly and keep presenting.
+            // (Previously any non-present status killed GIF playback.)
+            Ok(crate::renderer::FrameStatus::TimedOut) => {
+                std::thread::sleep(std::time::Duration::from_millis(4));
+            }
+            Ok(crate::renderer::FrameStatus::Outdated | crate::renderer::FrameStatus::Lost) => {
+                surface.configure(
+                    &renderer.device,
+                    &wgpu::SurfaceConfiguration {
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                        format: commit.format,
+                        width: commit.width.max(1),
+                        height: commit.height.max(1),
+                        present_mode: wgpu::PresentMode::Fifo,
+                        alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+                        view_formats: vec![],
+                        desired_maximum_frame_latency: 1,
+                    },
+                );
+            }
+            Err(err) => {
+                tracing::warn!("GIF present failed ({err}), stopping playback");
+                return;
+            }
         }
 
         // Pace to the next GIF frame boundary instead of presenting at the
@@ -1849,12 +1946,18 @@ fn play_video(
     pacer: &LivePacer,
     per_output_uniforms: &crate::renderer::PerOutputUniforms,
 ) {
-    let (width, height) = (commit.img_width, commit.img_height);
+    let mut width = commit.img_width;
+    let mut height = commit.img_height;
 
-    let Some(texture) = commit.video_texture.as_ref() else {
+    let Some(initial) = commit.video_texture.as_ref() else {
         tracing::warn!("Video conversion resources unavailable");
         return;
     };
+    // Task-local texture handle. Unchanged resolution reuses the commit's
+    // GPU resources every frame (upload + NV12 conversion only); only a
+    // genuine mid-stream resolution change recreates them.
+    let mut owned_replacement: Option<crate::renderer::VideoTexture> = None;
+    let mut texture: &crate::renderer::VideoTexture = initial.as_ref();
     let static_effect = crate::animation::Effect::Fade(crate::animation::FadeParams::default());
 
     let min_frame_interval = commit
@@ -1862,7 +1965,6 @@ fn play_video(
         .filter(|fps| *fps > 0)
         .map(|fps| std::time::Duration::from_secs_f64(1.0 / f64::from(fps)));
     let mut last_present: Option<std::time::Instant> = None;
-    let mut warned_size_mismatch = false;
 
     loop {
         // A newer commit superseded us. Do NOT touch the shared
@@ -1885,26 +1987,42 @@ fn play_video(
         let frame_uploaded = if let Some(frame) =
             video_playback.next_frame_in_generation(commit.generation)
         {
-            // The shared decoder can be replaced between commits; never
-            // upload a frame whose size does not match this task's texture.
+            // Mid-stream resolution change (rare): recreate only the video
+            // conversion resources instead of dropping every subsequent frame.
             if frame.width != width || frame.height != height {
-                if !warned_size_mismatch {
-                    tracing::warn!(
-                        "Skipping video frame with unexpected size {}x{} (expected {}x{})",
-                        frame.width,
-                        frame.height,
-                        width,
-                        height
-                    );
-                    warned_size_mismatch = true;
+                match renderer.create_video_texture(frame.width, frame.height) {
+                    Ok(replacement) => {
+                        tracing::info!(
+                            "Video resolution changed {}x{} -> {}x{}, recreated conversion resources",
+                            width,
+                            height,
+                            frame.width,
+                            frame.height
+                        );
+                        width = frame.width;
+                        height = frame.height;
+                        // Drop any previous mid-stream replacement before
+                        // installing the new one so only one spare texture
+                        // is ever alive in this task.
+                        owned_replacement.take();
+                        owned_replacement = Some(replacement);
+                        texture = owned_replacement.as_ref().expect("just stored");
+                    }
+                    Err(err) => {
+                        tracing::warn!("Video resolution change rejected: {err}");
+                        pacer.wait_until(
+                            std::time::Instant::now() + std::time::Duration::from_millis(2),
+                        );
+                        continue;
+                    }
                 }
-                pacer.wait_until(std::time::Instant::now() + std::time::Duration::from_millis(2));
-                continue;
             }
             if let Err(err) = renderer.update_video_texture(texture, &frame.data) {
                 tracing::warn!("Video frame upload failed: {err}");
                 return;
             }
+            // `frame` owns the only copy of the decoded planes; it drops here
+            // after GPU upload instead of lingering in any queue or cache.
             true
         } else {
             false
@@ -2046,10 +2164,59 @@ async fn snapshot_all_named(map: &SharedRenderStates) -> Vec<(String, Arc<Mutex<
         .collect()
 }
 
+/// Returns settled outputs' shared-memory pools to the OS.
+///
+/// A committed shm buffer stays mapped as long as its pool lives, which
+/// otherwise pins a full output-sized mapping per output forever (plus any
+/// flood growth). Once nothing is drawing, the compositor already owns the
+/// displayed pixels, so the pool and both ping-pong buffers can go: the
+/// next static set recreates a fresh minimal pool. Settled means no set in
+/// flight (state guard free) and no live transition, video, or GIF (those
+/// hold the render lock for their whole run). One async task, no OS thread.
+async fn reap_idle_shm_pools(states: SharedRenderStates) {
+    loop {
+        // One-second cadence: cheap (a few non-blocking try_locks when
+        // idle) and guarantees a quiescent pool is returned well before
+        // any multi-second idle sampling window observes it.
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        for (_, state) in snapshot_all_named(&states).await {
+            let Ok(mut locked) = state.try_lock() else {
+                continue;
+            };
+            if locked.render_lock.try_lock().is_err() {
+                continue;
+            }
+            if locked.shm_pool.len() > INITIAL_SHM_POOL_BYTES {
+                locked.shm_buffers = [None, None];
+                locked.shm_width = 0;
+                locked.shm_height = 0;
+                let fresh = SlotPool::new(
+                    INITIAL_SHM_POOL_BYTES,
+                    &smithay_client_toolkit::shm::Shm::from(locked.shm_server.clone()),
+                );
+                match fresh {
+                    Ok(pool) => locked.shm_pool = pool,
+                    Err(_) => continue,
+                }
+            }
+            // Quiescent heap: hand freed top pages back as well. Only free
+            // pages move, so live allocations are unaffected.
+            // SAFETY: malloc_trim only releases unallocated pages back to
+            // the OS; it cannot invalidate live pointers. The return value
+            // (whether anything was released) is intentionally ignored.
+            unsafe {
+                libc::malloc_trim(0);
+            }
+        }
+    }
+}
+
 /// Caps for live-applied configuration. Keeps queues bounded and prevents
-/// absurd scheduling values from IPC or config reload.
+/// absurd scheduling values from IPC or config reload. Wallpaper playback
+/// needs at most ~3 decoded frames in flight (bounded queue + one pending);
+/// a larger backlog only retains obsolete frames the display can never show.
 pub(crate) fn clamp_preload_frames(requested: usize) -> usize {
-    requested.clamp(1, 8)
+    requested.clamp(1, 3)
 }
 
 pub(crate) fn clamp_max_fps(requested: Option<u32>) -> Option<u32> {
@@ -2060,49 +2227,10 @@ pub(crate) fn clamp_max_fps(requested: Option<u32>) -> Option<u32> {
 }
 
 /// Returns true when `path` looks like a usable wallpaper file: exists, is a
-/// file, and has non-zero size. Used by the watcher and IPC to avoid decoding
+/// file, and has non-zero size. Used by IPC to avoid decoding
 /// partially-written files.
 fn is_usable_wallpaper_file(path: &std::path::Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() > 0)
-}
-
-/// Whether a filesystem-watch event path is worth considering: supported
-/// extension and not an editor/temporary file.
-fn is_watch_candidate(path: &std::path::Path) -> bool {
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or_default();
-    if file_name.is_empty()
-        || file_name.starts_with('.')
-        || file_name.ends_with('~')
-        || file_name.ends_with(".tmp")
-        || file_name.ends_with(".part")
-        || file_name.ends_with(".swp")
-        || file_name.ends_with(".swx")
-    {
-        return false;
-    }
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
-        .unwrap_or_default();
-    matches!(
-        ext.as_str(),
-        "jpg"
-            | "jpeg"
-            | "png"
-            | "gif"
-            | "webp"
-            | "avif"
-            | "mp4"
-            | "webm"
-            | "mkv"
-            | "mov"
-            | "avi"
-            | "m4v"
-    )
 }
 
 /// Validates a freshly loaded config before it replaces the live one.
@@ -2120,18 +2248,27 @@ fn validate_live_config(cfg: &WallrConfig) -> Result<(), String> {
     {
         return Err(format!("daemon.max_fps {fps} out of range 1..=1000"));
     }
-    crate::config::parse_duration(&cfg.animation.duration)
-        .map_err(|e| format!("animation.duration invalid: {e}"))?;
-    if cfg.watch.enabled
-        && let Some(ref dir) = cfg.watch.dir
-    {
-        if dir.is_empty() || dir.len() > 8192 {
-            return Err("watch.dir has invalid length".to_string());
-        }
-        crate::config::parse_duration(&cfg.watch.debounce)
-            .map_err(|e| format!("watch.debounce invalid: {e}"))?;
-    }
     Ok(())
+}
+
+/// Tune glibc malloc for a wallpaper daemon's bursty allocation pattern.
+/// Animated/video decode issues thousands of transient multi-MB buffers
+/// (GIF canvases, zstd scratch, NV12 planes). Under that churn glibc's
+/// default *dynamic* mmap threshold adapts upward, after which freed blocks
+/// are retained in per-thread arenas instead of being munmap'd: measured
+/// 78 MiB stuck after GIF→static with defaults vs 25 MiB with a fixed
+/// 128 KiB threshold (identical workload, `MALLOC_MMAP_THRESHOLD_` experiment).
+/// A fixed threshold keeps transient decode buffers on mmap (returned to the
+/// OS on free); a small trim threshold returns sbrk heap promptly.
+#[cfg(target_os = "linux")]
+fn tune_allocator() {
+    // SAFETY: mallopt with valid M_* parameters only adjusts allocator
+    // thresholds; it cannot invalidate live pointers. A 0 return merely
+    // keeps glibc defaults.
+    unsafe {
+        libc::mallopt(libc::M_MMAP_THRESHOLD, 128 * 1024);
+        libc::mallopt(libc::M_TRIM_THRESHOLD, 64 * 1024);
+    }
 }
 
 pub struct Daemon {
@@ -2151,6 +2288,7 @@ impl Daemon {
     }
 
     pub async fn start(self) -> Result<(), DaemonError> {
+        tune_allocator();
         let socket_path = crate::config::expand_path(&self.config.daemon.socket);
         if socket_path.exists() {
             if tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
@@ -2313,6 +2451,8 @@ impl Daemon {
         let paused_clone = self.paused.clone();
         let engine_clone = self.engine.clone();
         let render_states_clone = render_states.clone();
+        // Return settled outputs' shm pools to the OS (see reap_idle_shm_pools).
+        tokio::spawn(reap_idle_shm_pools(render_states.clone()));
         // Generation counter for theme/hook work. Rapid A→B→C switches bump
         // the counter; detached theme tasks with a stale generation exit
         // without invoking external processes for obsolete wallpapers.
@@ -2692,13 +2832,14 @@ impl Daemon {
                         // Collect target output info
                         for (name, rs) in &targets {
                             let rs_lock = rs.lock().await;
-                            let gpu_info = crate::video::gpu::adapter_diagnostics(
-                                &rs_lock
-                                    .gpu
-                                    .as_ref()
-                                    .expect("GPU state required")
-                                    .renderer
-                                    .adapter,
+                            // GPU state is lazy: a static-only output may never
+                            // have initialized it. Report that instead of
+                            // panicking the IPC handler task.
+                            let gpu_info = rs_lock.gpu.as_ref().map_or_else(
+                                || "GPU: not initialized (static content)".to_string(),
+                                |gpu| {
+                                    crate::video::gpu::adapter_diagnostics(&gpu.renderer.adapter)
+                                },
                             );
 
                             lines.push(String::new());
@@ -2966,15 +3107,6 @@ impl Daemon {
         })
         .await?;
 
-        // Start file watcher if configured
-        if self.config.watch.enabled
-            && let Some(ref watch_dir) = self.config.watch.dir
-        {
-            let watch_path = crate::config::expand_path(watch_dir);
-            self.start_watcher(watch_path, render_states.clone())
-                .await?;
-        }
-
         tokio::task::spawn_blocking(move || {
             loop {
                 if let Err(e) = event_queue.blocking_dispatch(&mut wayland_state) {
@@ -2992,107 +3124,6 @@ impl Daemon {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
         }
-    }
-
-    async fn start_watcher(
-        &self,
-        dir: PathBuf,
-        render_states: std::sync::Arc<
-            tokio::sync::Mutex<std::collections::HashMap<String, Arc<Mutex<RenderState>>>>,
-        >,
-    ) -> Result<(), DaemonError> {
-        let engine = self.engine.clone();
-        let paused = self.paused.clone();
-        let debounce = crate::config::parse_duration(&self.config.watch.debounce)
-            .unwrap_or(std::time::Duration::from_millis(500));
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel(100);
-
-        let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-            // React to new files, content modifications, and close-after-write
-            // (atomic saves). Pure access/remove events carry no new pixels.
-            let Ok(event) = res else { return };
-            // Create covers new files, Modify covers content/rename saves.
-            // Access/Remove/Other carry no new pixels.
-            let relevant = matches!(&event.kind, EventKind::Create(_) | EventKind::Modify(_));
-            if relevant {
-                for path in event.paths {
-                    let _ = tx.blocking_send(path);
-                }
-            }
-        })
-        .map_err(|e| DaemonError::StartError(e.to_string()))?;
-
-        watcher
-            .watch(&dir, RecursiveMode::NonRecursive)
-            .map_err(|e| DaemonError::StartError(e.to_string()))?;
-
-        tokio::spawn(async move {
-            let _watcher = watcher;
-            let mut last_seen: std::collections::HashMap<PathBuf, std::time::Instant> =
-                std::collections::HashMap::new();
-
-            while let Some(path) = rx.recv().await {
-                if paused.load(Ordering::SeqCst) {
-                    continue;
-                }
-                // Debounce bursts per path (editors/sync tools emit several
-                // events per save). Bound the map so a hostile directory
-                // cannot grow it without limit.
-                let now = std::time::Instant::now();
-                if let Some(seen) = last_seen.get(&path)
-                    && now.duration_since(*seen) < debounce
-                {
-                    continue;
-                }
-                if last_seen.len() > 64 {
-                    last_seen.clear();
-                }
-                last_seen.insert(path.clone(), now);
-                if !is_watch_candidate(&path) {
-                    continue;
-                }
-                // The file may still be mid-write; skip this event and let
-                // the follow-up close/modify event deliver a usable file.
-                if !is_usable_wallpaper_file(&path) {
-                    continue;
-                }
-
-                // Snapshot outputs, then release the map lock before decode.
-                let targets: Vec<(String, Arc<Mutex<RenderState>>)> = {
-                    let states = render_states.lock().await;
-                    states
-                        .iter()
-                        .map(|(name, rs)| (name.clone(), rs.clone()))
-                        .collect()
-                };
-                for (name, rs) in targets {
-                    let eng = engine.clone();
-                    let p = path.clone();
-                    let name = name.clone();
-                    tokio::spawn(async move {
-                        if !is_usable_wallpaper_file(&p) {
-                            return;
-                        }
-                        let effect =
-                            crate::animation::Effect::Fade(crate::animation::FadeParams::default());
-                        if let Err(err) = set_wallpaper_with_retry(&rs, &p, &effect, 600, 0).await {
-                            tracing::warn!("Watcher wallpaper render failed for {p:?}: {err}");
-                            return;
-                        }
-                        let opts = SetOptions {
-                            no_theme: false,
-                            theme_provider: None,
-                            monitor: Some(name),
-                        };
-                        let mut elock = eng.lock().await;
-                        let _ = elock.set_wallpaper(&p, &opts).await;
-                    });
-                }
-            }
-        });
-
-        Ok(())
     }
 
     /// Creates a LayerSurface, wgpu Surface, and RenderState for a single
@@ -3175,13 +3206,16 @@ impl Daemon {
             blanked: false,
             gif_paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             shm_surface,
+            shm_server: wayland_state.shm.wl_shm().clone(),
             shm_pool: SlotPool::new(INITIAL_SHM_POOL_BYTES, &wayland_state.shm).map_err(|e| {
                 DaemonError::StartError(format!("shared-memory pool creation failed: {e}"))
             })?,
-            shm_buffer: None,
+            shm_buffers: [None, None],
+            shm_index: 0,
             shm_width: 0,
             shm_height: 0,
             gpu_surface_used: false,
+            cached_video_texture: None,
         })
     }
 }
@@ -3266,12 +3300,15 @@ fn create_render_state_for_output_sync(
         blanked: false,
         gif_paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         shm_surface,
+        shm_server: wayland_state.shm.wl_shm().clone(),
         shm_pool: SlotPool::new(INITIAL_SHM_POOL_BYTES, &wayland_state.shm).map_err(|e| {
             DaemonError::StartError(format!("shared-memory pool creation failed: {e}"))
         })?,
-        shm_buffer: None,
+        shm_buffers: [None, None],
+        shm_index: 0,
         shm_width: 0,
         shm_height: 0,
         gpu_surface_used: false,
+        cached_video_texture: None,
     })
 }

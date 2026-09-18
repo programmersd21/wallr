@@ -1,0 +1,29 @@
+[package]
+name = "wallr-common"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared protocol between the wallr client and daemon: effects, IPC, CLI shapes, and config schema."
+categories.workspace = true
+keywords.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "wallr_common"
+path = "src/lib.rs"
+
+[dependencies]
+# Core utilities
+thiserror.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_yaml.workspace = true
+
+# GPU-layout derives for EffectUniforms
+bytemuck = { version = "1.25", features = ["derive"] }
+
+# CLI shapes
+clap.workspace = true

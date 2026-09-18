@@ -4,12 +4,11 @@ use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;
 use tracing_subscriber::EnvFilter;
-use wallr_core::animation::{Effect, FadeParams};
-use wallr_core::cli::{CacheCommands, Commands, ConfigCommands, EffectArgs, IpcCommands, WallrCli};
-use wallr_core::config;
+use wallr_common::cli::{Commands, ConfigCommands, EffectArgs, IpcCommands, WallrCli};
+use wallr_common::config;
+use wallr_common::effect::{Effect, FadeParams};
 use wallr_core::daemon::Daemon;
 use wallr_core::ipc::{IpcCommand, send_ipc_command};
-use wallr_core::preview::PreviewWindow;
 use wallr_core::wallpaper::{DiagnosticStatus, WallpaperEngine};
 
 fn config_value<'a>(value: &'a serde_yaml::Value, key: &str) -> Option<&'a serde_yaml::Value> {
@@ -36,44 +35,20 @@ fn set_config_value(
     Ok(())
 }
 
-/// Resolve the first effect of an animation package (path or registry name).
-fn resolve_animation_effect(anim: &str) -> Option<(Effect, Option<std::time::Duration>)> {
-    let spec = if std::path::Path::new(anim).exists() {
-        wallr_core::animation::load_animation(std::path::Path::new(anim)).ok()
-    } else {
-        let registry = wallr_core::packages::PackageRegistry::new().ok();
-        registry.and_then(|r| r.resolve_animation(anim).ok())
-    }?;
-    let duration = spec
-        .duration
-        .as_ref()
-        .and_then(|d| wallr_core::config::parse_duration(d).ok());
-    let effect = spec.effects.first().cloned().or_else(|| {
-        spec.timeline
-            .as_ref()
-            .and_then(|t| t.first().map(|e| e.effect.clone()))
-    });
-    Some((effect?, duration))
-}
-
-/// Combine an animation package's effect with CLI `--effect`/override flags.
-fn pick_effect(
-    animation: Option<&str>,
-    effect_args: &EffectArgs,
-) -> anyhow::Result<(Effect, Option<u32>)> {
-    let default_effect = Effect::Fade(FadeParams::default());
-    let (package_effect, package_duration) = animation
-        .and_then(resolve_animation_effect)
-        .unwrap_or((default_effect, None));
-
-    let effect = effect_args.to_effect(package_effect);
+/// Combine CLI `--effect`/override flags into the transition effect.
+/// With no `--effect` flag the default is a plain linear crossfade,
+/// matching awww's default `simple` feel; explicit `-e fade` keeps polish.
+fn pick_effect(effect_args: &EffectArgs) -> anyhow::Result<(Effect, Option<u32>)> {
+    let effect = effect_args.to_effect(Effect::Fade(FadeParams {
+        easing: wallr_common::effect::Easing::Linear,
+        ..FadeParams::default()
+    }));
     let duration_ms = effect_args
         .duration
         .as_deref()
-        .map(wallr_core::config::parse_duration)
+        .map(wallr_common::config::parse_duration)
         .transpose()?
-        .map(|d| d.as_millis() as u32)
-        .or_else(|| package_duration.map(|d| d.as_millis() as u32));
+        .map(|d| d.as_millis() as u32);
     Ok((effect, duration_ms))
 }
 
@@ -112,7 +87,6 @@ async fn async_main() -> Result<()> {
             no_theme,
             theme,
             monitor,
-            animation,
             mode,
             effect_args,
         } => {
@@ -146,9 +120,35 @@ async fn async_main() -> Result<()> {
                 }
             }
 
-            let anim_ref = animation.as_deref().or(config.animation.r#use.as_deref());
-            let (effect, duration_ms) = pick_effect(anim_ref, &effect_args)?;
+            let (effect, duration_ms) = pick_effect(&effect_args)?;
 
+            // A `-` path reads the image bytes from stdin (like `awww img -`),
+            // staging them in a temp file: downstream code paths key GIF
+            // animation and video detection off the file extension.
+            let path = if path.as_os_str() == "-" {
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                std::io::stdin().read_to_end(&mut bytes)?;
+                anyhow::ensure!(!bytes.is_empty(), "no image data on stdin");
+                let ext = if bytes.starts_with(b"GIF8") {
+                    "gif"
+                } else {
+                    "png"
+                };
+                let staged = std::env::temp_dir().join(format!(
+                    "wallr-stdin-{}-{}.{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis(),
+                    ext
+                ));
+                std::fs::write(&staged, &bytes)?;
+                staged
+            } else {
+                path
+            };
             let canonical_path = path.canonicalize().unwrap_or_else(|_| path.clone());
             let resp = send_ipc_command(
                 socket_path,
@@ -192,30 +192,6 @@ async fn async_main() -> Result<()> {
             println!();
         }
 
-        Commands::Validate { path } => {
-            let engine = WallpaperEngine::new(config)?;
-            let report = engine.validate_animation(&path)?;
-            println!("\n{}", format!("wallr validate {}", path.display()).bold());
-            println!("{}", "─".repeat(32).dimmed());
-            let mut all_passed = true;
-            for check in &report.checks {
-                let icon = if check.passed {
-                    "✓".green()
-                } else {
-                    "✗".red()
-                };
-                if !check.passed {
-                    all_passed = false;
-                }
-                let msg = check.message.as_deref().unwrap_or("");
-                println!("  {} {:<28} {}", icon, check.name.bold(), msg.dimmed());
-            }
-            println!();
-            if !all_passed {
-                std::process::exit(1);
-            }
-        }
-
         Commands::Config { subcommand } => match subcommand {
             ConfigCommands::Path => {
                 println!("{}", config::config_path().display());
@@ -246,32 +222,6 @@ async fn async_main() -> Result<()> {
             }
         },
 
-        Commands::Cache { subcommand } => {
-            use wallr_core::cache::CacheManager;
-            let cache = CacheManager::new(&config.cache)?;
-            match subcommand {
-                CacheCommands::Info => {
-                    let info = cache.info()?;
-                    println!("{}", "Cache Statistics".bold());
-                    println!("  Path:  {}", info.cache_dir.display());
-                    println!("  Files: {}", info.total_files);
-                    println!(
-                        "  Size:  {}",
-                        humansize::format_size(info.total_size, humansize::BINARY)
-                    );
-                }
-                CacheCommands::Clear => {
-                    let info = cache.clear()?;
-                    println!(
-                        "{} Cleared {} files ({})",
-                        "✓".green(),
-                        info.total_files,
-                        humansize::format_size(info.total_size, humansize::BINARY)
-                    );
-                }
-            }
-        }
-
         Commands::Reload => {
             let socket_path = config::expand_path(&config.daemon.socket);
             if socket_path.exists() && tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
@@ -287,7 +237,7 @@ async fn async_main() -> Result<()> {
         }
 
         Commands::Monitor { subcommand } => {
-            use wallr_core::cli::MonitorCommands;
+            use wallr_common::cli::MonitorCommands;
             let socket_path = config::expand_path(&config.daemon.socket);
             match subcommand {
                 MonitorCommands::List => {
@@ -324,30 +274,6 @@ async fn async_main() -> Result<()> {
             }
             let daemon = Daemon::new(final_config)?;
             daemon.start().await?;
-        }
-
-        Commands::Watch { dir } => {
-            let mut watch_config = config;
-            watch_config.watch.enabled = true;
-            watch_config.watch.dir = Some(dir.to_string_lossy().to_string());
-            let daemon = Daemon::new(watch_config)?;
-            daemon.start().await?;
-        }
-
-        Commands::Preview {
-            path,
-            watch: _,
-            animation,
-            effect_args,
-        } => {
-            let anim_ref = animation.clone().or_else(|| config.animation.r#use.clone());
-            let mut preview = PreviewWindow::new(path);
-            let (effect, duration_ms) = pick_effect(anim_ref.as_deref(), &effect_args)?;
-            preview.effect = effect;
-            if let Some(ms) = duration_ms {
-                preview.duration = std::time::Duration::from_millis(ms as u64);
-            }
-            preview.run().await?;
         }
 
         Commands::Ipc { subcommand } => {
@@ -398,7 +324,7 @@ async fn async_main() -> Result<()> {
                     monitor,
                     effect_args,
                 } => {
-                    let (effect, duration_ms) = pick_effect(None, &effect_args)?;
+                    let (effect, duration_ms) = pick_effect(&effect_args)?;
                     let opt_effect = if effect_args.effect.is_some()
                         || effect_args.from.is_some()
                         || effect_args.to.is_some()
@@ -417,7 +343,7 @@ async fn async_main() -> Result<()> {
                     monitor,
                     effect_args,
                 } => {
-                    let (effect, duration_ms) = pick_effect(None, &effect_args)?;
+                    let (effect, duration_ms) = pick_effect(&effect_args)?;
                     let opt_effect = if effect_args.effect.is_some()
                         || effect_args.from.is_some()
                         || effect_args.to.is_some()
@@ -436,41 +362,6 @@ async fn async_main() -> Result<()> {
             let resp = send_ipc_command(socket_path, cmd).await?;
             if let Some(msg) = resp.message {
                 println!("{}", msg);
-            }
-        }
-
-        Commands::Install { package } => {
-            use wallr_core::packages::PackageRegistry;
-            let registry = PackageRegistry::new()?;
-            let spec = registry.install_package(&package)?;
-            println!("{} {}", "Installed".green(), spec.name.bold());
-        }
-
-        Commands::New { name, shader } => {
-            let dir = std::path::PathBuf::from(&name);
-            std::fs::create_dir_all(&dir)?;
-            let yaml = format!(
-                "# Wallr animation package\nname: {}\nduration: 700ms\n\neffects:\n  - fade:\n      easing: ease_in_out\n",
-                name
-            );
-            std::fs::write(dir.join("wallr.yaml"), yaml)?;
-            if shader {
-                std::fs::write(dir.join("starter.wgsl"), "// Custom WGSL shader\n")?;
-            }
-            println!("{} {}", "Created".green(), dir.display());
-        }
-
-        Commands::Search { query } => {
-            use wallr_core::packages::PackageRegistry;
-            let registry = PackageRegistry::new()?;
-            let pkgs = registry.list_packages()?;
-            let matches: Vec<_> = pkgs.into_iter().filter(|p| p.contains(&query)).collect();
-            if matches.is_empty() {
-                println!("No packages found matching '{}'", query);
-            } else {
-                for pkg in matches {
-                    println!("  {}", pkg);
-                }
             }
         }
     }

@@ -78,7 +78,7 @@ pub struct VideoMetadata {
     pub total_frames: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum VideoFrameData {
     Rgba(Vec<u8>),
     Nv12 {
@@ -122,7 +122,7 @@ pub enum YuvRange {
     Full,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct VideoFrame {
     pub data: VideoFrameData,
     pub width: u32,
@@ -132,6 +132,8 @@ pub struct VideoFrame {
 }
 
 impl VideoFrame {
+    /// Move-only conversion into the scheduler representation. No frame
+    /// bytes are cloned: ownership of the decoded planes transfers.
     pub fn into_scheduled(self) -> ScheduledFrame {
         ScheduledFrame::new(self.data, self.width, self.height, self.pts, self.index)
     }
@@ -173,8 +175,7 @@ impl VideoDecoder {
     ) -> VideoResult<Self> {
         let path = path.as_ref().to_path_buf();
 
-        ffmpeg::init()
-            .map_err(|e| VideoError::SoftwareDecoderInit(anyhow::anyhow!("FFmpeg init: {}", e)))?;
+        ensure_ffmpeg_init()?;
 
         let metadata = Self::extract_metadata(&path)?;
 
@@ -187,7 +188,12 @@ impl VideoDecoder {
             metadata.codec
         );
 
-        let (frame_tx, frame_rx) = crossbeam_channel::bounded(preload_frames.max(1));
+        // Aggressively bounded decoded-frame queue: wallpaper playback never
+        // needs a backlog. At most `preload` frames are in flight, plus one
+        // pending frame in `VideoPlayback`. Stale frames are dropped by the
+        // scheduler rather than preserved. All transfers are moves.
+        let preload = preload_frames.clamp(1, 3);
+        let (frame_tx, frame_rx) = crossbeam_channel::bounded(preload);
         let (control_tx, control_rx) = crossbeam_channel::unbounded();
 
         let stop_flag = Arc::new(AtomicBool::new(false));
@@ -294,11 +300,17 @@ impl VideoDecoder {
     }
 
     fn init_hw_device(hw_accel: HwAccel) -> Option<(*mut ffmpeg::ffi::AVBufferRef, &'static str)> {
+        // VA-API render nodes are enumerated instead of hardcoding
+        // renderD128 so multi-GPU systems use the first working node and
+        // stay on the same physical GPU as the compositor where possible.
+        // NVDEC keeps its device index; VideoToolbox needs no device string.
+        if hw_accel == HwAccel::Vaapi {
+            return Self::init_vaapi_device();
+        }
         let (type_name, device) = match hw_accel {
-            HwAccel::Vaapi => ("vaapi", Some(c"/dev/dri/renderD128")),
             HwAccel::Nvdec => ("cuda", Some(c"0")),
             HwAccel::VideoToolbox => ("videotoolbox", None),
-            HwAccel::Software | HwAccel::Auto => return None,
+            HwAccel::Software | HwAccel::Auto | HwAccel::Vaapi => return None,
         };
 
         let type_name_c = CString::new(type_name).ok()?;
@@ -326,6 +338,40 @@ impl VideoDecoder {
             }
             Some((device_ctx, type_name))
         }
+    }
+
+    fn init_vaapi_device() -> Option<(*mut ffmpeg::ffi::AVBufferRef, &'static str)> {
+        let type_name_c = CString::new("vaapi").ok()?;
+        // SAFETY: read-only FFmpeg type lookup with a valid C string.
+        let hw_type = unsafe { ffmpeg::ffi::av_hwdevice_find_type_by_name(type_name_c.as_ptr()) };
+        if hw_type == ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
+            tracing::warn!("VAAPI hardware type unavailable");
+            return None;
+        }
+        for candidate in vaapi_device_candidates() {
+            // SAFETY: candidate is a valid NUL-terminated path; the returned
+            // device ctx is owned by the codec context on success.
+            let result = unsafe {
+                let mut device_ctx: *mut ffmpeg::ffi::AVBufferRef = std::ptr::null_mut();
+                let ret = ffmpeg::ffi::av_hwdevice_ctx_create(
+                    &mut device_ctx,
+                    hw_type,
+                    candidate.as_ptr(),
+                    std::ptr::null_mut(),
+                    0,
+                );
+                if ret < 0 || device_ctx.is_null() {
+                    None
+                } else {
+                    Some((device_ctx, "vaapi"))
+                }
+            };
+            if result.is_some() {
+                return result;
+            }
+        }
+        tracing::warn!("VAAPI device init failed on all render nodes");
+        None
     }
 
     /// Try to build a decoder with a hardware device context attached.
@@ -726,6 +772,50 @@ impl VideoDecoder {
                 )
             })
     }
+}
+
+fn ensure_ffmpeg_init() -> VideoResult<()> {
+    use std::sync::OnceLock;
+    static INIT: OnceLock<Result<(), String>> = OnceLock::new();
+    let result = INIT.get_or_init(|| {
+        ffmpeg::init().map_err(|e| format!("FFmpeg init: {e}"))?;
+        // Metadata extraction opens the input once on the calling thread so
+        // a failed video never replaces active playback; the decode thread
+        // then opens it a second time for the actual stream. The two opens
+        // are intentional: the first validates cheaply before committing.
+        Ok(())
+    });
+    result
+        .as_ref()
+        .map_err(|e| VideoError::SoftwareDecoderInit(anyhow::anyhow!(e.clone())))
+        .map(|_| ())
+}
+
+/// VA-API render-node candidates in probe order. Enumerates
+/// `/dev/dri/renderD*` so hybrid/multi-GPU systems try every node instead
+/// of assuming renderD128; falls back to renderD128 when enumeration fails.
+fn vaapi_device_candidates() -> Vec<CString> {
+    let mut candidates = Vec::new();
+    if let Ok(entries) = std::fs::read_dir("/dev/dri") {
+        let mut nodes: Vec<String> = entries
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("renderD"))
+            .collect();
+        nodes.sort();
+        for node in nodes {
+            let path = format!("/dev/dri/{node}");
+            if let Ok(c) = CString::new(path) {
+                candidates.push(c);
+            }
+        }
+    }
+    if candidates.is_empty()
+        && let Ok(fallback) = CString::new("/dev/dri/renderD128")
+    {
+        candidates.push(fallback);
+    }
+    candidates
 }
 
 fn copy_packed_rows(source: &[u8], stride: usize, row_bytes: usize, height: usize) -> Vec<u8> {

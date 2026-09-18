@@ -39,7 +39,7 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 }
 
 // ---------------------------------------------------------------------------
-// Easing functions (mirrors wallr-core/src/easing/mod.rs)
+// Easing functions (mirrors the Easing enum in animation/mod.rs)
 // 0 = Linear, 1 = EaseIn, 2 = EaseOut, 3 = EaseInOut, 4 = Emphatic, 5 = Spring
 // ---------------------------------------------------------------------------
 
@@ -237,37 +237,6 @@ fn linear_wipe_reveal(
 }
 
 // ---------------------------------------------------------------------------
-// High-Quality Multi-ring Gaussian Blur (16 golden-ratio samples)
-// ---------------------------------------------------------------------------
-fn sample_gaussian_blur(
-    tex: texture_2d<f32>,
-    smp: sampler,
-    uv: vec2<f32>,
-    blur_px: f32,
-    resolution: vec2<f32>,
-) -> vec4<f32> {
-    if (blur_px <= 0.05) {
-        return textureSample(tex, smp, uv);
-    }
-    let aspect = resolution.x / max(resolution.y, 1.0);
-    let texel_step = blur_px / max(min(resolution.x, resolution.y), 1.0);
-    var acc = textureSample(tex, smp, uv) * 0.18;
-    var total_weight = 0.18;
-
-    // Golden angle distribution for uniform circular disk bokeh
-    let golden_angle = 2.39996323; // radians
-    for (var i = 1; i <= 15; i = i + 1) {
-        let r = sqrt(f32(i) / 15.0);
-        let theta = f32(i) * golden_angle;
-        let weight = exp(-0.5 * (r * 2.0) * (r * 2.0));
-        let offset = vec2<f32>(cos(theta) / aspect, sin(theta)) * (r * texel_step);
-        acc = acc + textureSample(tex, smp, uv + offset) * weight;
-        total_weight = total_weight + weight;
-    }
-    return acc / total_weight;
-}
-
-// ---------------------------------------------------------------------------
 // Fragment Entry Point
 // ---------------------------------------------------------------------------
 
@@ -296,119 +265,49 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         return mix(color1, color2, clamp(opacity, 0.0, 1.0));
     }
 
-    // 1: Multi-ring Gaussian Blur crossfade
+    // 1: Directional Linear Wipe (awww / swww style linear angled sweep)
     else if (uniforms.effect_type == 1u) {
-        let blur_px = max(mix(uniforms.param_a, uniforms.param_b, p), 0.0);
-        let c1 = sample_gaussian_blur(t_diffuse1, s_diffuse1, uv_old, blur_px, uniforms.resolution);
-        let c2 = sample_gaussian_blur(t_diffuse2, s_diffuse2, uv_new, blur_px, uniforms.resolution);
-        return mix(c1, c2, p);
+        // Tight feather: awww-style reveals are pixel-sharp, not soft bands.
+        let softness = clamp(max(uniforms.param_a, 0.002), 0.002, 0.25);
+        let reveal = linear_wipe_reveal(uv, uniforms.direction, p, softness);
+        let color1 = textureSample(t_diffuse1, s_diffuse1, uv_old);
+        let color2 = textureSample(t_diffuse2, s_diffuse2, uv_new);
+        return mix(color1, color2, reveal);
     }
 
-    // 2: Directional Linear Wipe (awww / swww style linear angled sweep)
+    // 2: Slide (Smooth directional translation wipe without cropping artifacts)
     else if (uniforms.effect_type == 2u) {
-        let softness = clamp(max(uniforms.param_a, 0.04), 0.04, 0.25);
+        let softness = 0.006;
         let reveal = linear_wipe_reveal(uv, uniforms.direction, p, softness);
         let color1 = textureSample(t_diffuse1, s_diffuse1, uv_old);
         let color2 = textureSample(t_diffuse2, s_diffuse2, uv_new);
         return mix(color1, color2, reveal);
     }
 
-    // 3: Slide (Smooth directional translation wipe without cropping artifacts)
+    // 3: Wave reveal (organic oscillating border)
     else if (uniforms.effect_type == 3u) {
-        let softness = 0.08;
-        let reveal = linear_wipe_reveal(uv, uniforms.direction, p, softness);
-        let color1 = textureSample(t_diffuse1, s_diffuse1, uv_old);
-        let color2 = textureSample(t_diffuse2, s_diffuse2, uv_new);
-        return mix(color1, color2, reveal);
-    }
-
-    // 4: Zoom (subtle camera push focus crossfade)
-    else if (uniforms.effect_type == 4u) {
-        let zoom_scale = mix(uniforms.param_a, uniforms.param_b, p);
-        let origin = uniforms.origin;
-        let uv_zoom_old = (uv_old - origin) / max(zoom_scale, 0.1) + origin;
-        let uv_zoom_new = (uv_new - origin) * max(mix(1.04, 1.0, p), 0.1) + origin;
-        let color1 = textureSample(t_diffuse1, s_diffuse1, uv_zoom_old);
-        let color2 = textureSample(t_diffuse2, s_diffuse2, uv_zoom_new);
-        return mix(color1, color2, p);
-    }
-
-    // 5: Pixelate (smooth dynamic mosaic grid)
-    else if (uniforms.effect_type == 5u) {
-        let mosaic_size = mix(uniforms.param_a, uniforms.param_b, p);
-        var uv_p_old = uv_old;
-        var uv_p_new = uv_new;
-        if (mosaic_size > 1.5) {
-            let res = uniforms.resolution;
-            let blocks_x = max(res.x / mosaic_size, 4.0);
-            let blocks_y = max(res.y / mosaic_size, 4.0);
-            let block = vec2<f32>(blocks_x, blocks_y);
-            uv_p_old = floor(uv_old * block) / block;
-            uv_p_new = floor(uv_new * block) / block;
-        }
-        let color1 = textureSample(t_diffuse1, s_diffuse1, uv_p_old);
-        let color2 = textureSample(t_diffuse2, s_diffuse2, uv_p_new);
-        return mix(color1, color2, p);
-    }
-
-    // 6: Liquid ripple reveal (organic surface tension wave)
-    else if (uniforms.effect_type == 6u) {
-        let origin = uniforms.origin;
-        let dist = circular_distance(uv, origin, uniforms.resolution);
-        let freq = max(uniforms.param_a, 0.1);
-        let amp = max(uniforms.param_b, 0.0);
-        let speed = max(uniforms.param_c, 0.0);
-        let envelope = sin(raw_p * 3.14159265);
-        let ripple = sin(dist * freq * 6.2831853 - raw_p * speed * 6.2831853) * amp * envelope;
-        let reveal = circular_reveal(uv, origin, uniforms.resolution, p, 0.055, ripple);
-        let color1 = textureSample(t_diffuse1, s_diffuse1, uv_old);
-        let color2 = textureSample(t_diffuse2, s_diffuse2, uv_new);
-        return mix(color1, color2, reveal);
-    }
-
-    // 7: Dissolve (cellular noise dissolve)
-    else if (uniforms.effect_type == 7u) {
-        let scale = uniforms.param_a;
-        let softness = max(uniforms.param_b, 0.001);
-        let dist = circular_distance(uv, uniforms.origin, uniforms.resolution);
-        let rings = sin(dist * max(scale, 1.0) * 6.2831853) * softness * 0.5;
-        let reveal = circular_reveal(uv, uniforms.origin, uniforms.resolution, p, max(softness, 0.065), rings);
-        let color1 = textureSample(t_diffuse1, s_diffuse1, uv_old);
-        let color2 = textureSample(t_diffuse2, s_diffuse2, uv_new);
-        return mix(color1, color2, reveal);
-    }
-
-    // 8: Custom shader pass-through
-    else if (uniforms.effect_type == 8u) {
-        let color1 = textureSample(t_diffuse1, s_diffuse1, uv_old);
-        let color2 = textureSample(t_diffuse2, s_diffuse2, uv_new);
-        return mix(color1, color2, p);
-    }
-
-    // 9: Wave reveal (organic oscillating border)
-    else if (uniforms.effect_type == 9u) {
         let wave_freq = max(uniforms.param_a, 0.1);
         let wave_amp = max(uniforms.param_b, 0.0);
         let dist = circular_distance(uv, uniforms.origin, uniforms.resolution);
         let envelope = sin(raw_p * 3.14159265);
         let wave = sin(dist * wave_freq * 6.2831853 - raw_p * 6.2831853) * wave_amp * envelope;
-        let edge = circular_reveal(uv, uniforms.origin, uniforms.resolution, p, 0.065, wave);
+        let edge = circular_reveal(uv, uniforms.origin, uniforms.resolution, p, 0.008, wave);
         let color1 = textureSample(t_diffuse1, s_diffuse1, uv_old);
         let color2 = textureSample(t_diffuse2, s_diffuse2, uv_new);
         return mix(color1, color2, edge);
     }
 
-    // 10: Grow / Center (expanding circle from origin, swww-style)
-    else if (uniforms.effect_type == 10u) {
-        let edge = circular_reveal(uv, uniforms.origin, uniforms.resolution, p, 0.065, 0.0);
+    // 4: Grow / Center (expanding circle from origin, swww-style)
+    else if (uniforms.effect_type == 4u) {
+        let edge = circular_reveal(uv, uniforms.origin, uniforms.resolution, p, 0.008, 0.0);
         let color1 = textureSample(t_diffuse1, s_diffuse1, uv_old);
         let color2 = textureSample(t_diffuse2, s_diffuse2, uv_new);
         return mix(color1, color2, edge);
     }
 
-    // 11: Outer (shrinking circle toward origin, swww-style)
-    else if (uniforms.effect_type == 11u) {
-        let edge = circular_outer_reveal(uv, uniforms.origin, uniforms.resolution, p, 0.065);
+    // 5: Outer (shrinking circle toward origin, swww-style)
+    else if (uniforms.effect_type == 5u) {
+        let edge = circular_outer_reveal(uv, uniforms.origin, uniforms.resolution, p, 0.008);
         let color1 = textureSample(t_diffuse1, s_diffuse1, uv_old);
         let color2 = textureSample(t_diffuse2, s_diffuse2, uv_new);
         return mix(color1, color2, edge);

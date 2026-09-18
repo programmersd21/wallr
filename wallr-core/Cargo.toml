@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Core library for wallr - wallpaper engine, animation system, theme provider dispatch, and package management."
+description = "Core library for wallr - wallpaper engine, GPU transitions, theme provider dispatch, and video playback."
 categories.workspace = true
 keywords.workspace = true
 rust-version.workspace = true
@@ -24,6 +24,9 @@ default = []
 static-ffmpeg = ["ffmpeg-next/static"]
 
 [dependencies]
+# Shared protocol (effects, IPC vocabulary, CLI shapes, config schema)
+wallr-common.workspace = true
+
 # Error handling
 anyhow.workspace = true
 thiserror.workspace = true
@@ -50,10 +53,7 @@ zstd = "0.13"
 
 # Graphics
 wgpu.workspace = true
-naga.workspace = true
 raw-window-handle.workspace = true
-winit.workspace = true
-pollster.workspace = true
 bytemuck = { version = "1.25", features = ["derive"] }
 
 # Wayland
@@ -63,7 +63,6 @@ smithay-client-toolkit.workspace = true
 wayland-backend.workspace = true
 
 # File operations
-notify.workspace = true
 dirs.workspace = true
 tempfile = "3"
 
@@ -74,3 +73,15 @@ hex.workspace = true
 # Video support
 ffmpeg-next.workspace = true
 crossbeam-channel.workspace = true
+
+# Linux allocator tuning (mallopt); see `daemon::tune_allocator`.
+# Pinned to the version already in Cargo.lock: the registry index mirror
+# only advertises prereleases, so a caret requirement cannot resolve.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "=0.2.189"
+
+# WGSL validation for bundled shaders (tests only, never linked into the binary).
+# Pinned to the Cargo.lock version like libc above: the index mirror cannot
+# resolve caret requirements for this crate either.
+[dev-dependencies]
+naga = { version = "=24.0.0", features = ["wgsl-in"] }

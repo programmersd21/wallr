@@ -1,12 +1,12 @@
-use crate::animation::{Effect, EffectOverrides, apply_effect_overrides, effect_from_name};
-use crate::config::{ScalingMode, ThemeProvider};
+use crate::effect::{Effect, EffectOverrides, apply_effect_overrides, effect_from_name};
+use crate::types::{ScalingMode, ThemeProvider};
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
 /// Transition options for wallpaper changes.
 #[derive(Args, Debug, Clone, Default)]
 pub struct EffectArgs {
-    /// Transition effect: simple, fade, blur, wipe, slide, left, right, top, bottom, zoom, pixelate, ripple, dissolve, wave, grow, center, outer, any, random
+    /// Transition effect: simple, fade, wipe, slide, left, right, top, bottom, wave, grow, center, outer, any, random
     #[arg(short = 'e', long, value_name = "NAME", value_parser = parse_effect_name)]
     pub effect: Option<String>,
 
@@ -28,35 +28,27 @@ pub struct EffectArgs {
 
     /// Easing curve: linear, ease_in, ease_out, ease_in_out, emphatic, spring
     #[arg(long, value_enum)]
-    pub easing: Option<crate::animation::Easing>,
+    pub easing: Option<crate::effect::Easing>,
 
-    /// Initial parameter value (fade opacity, blur radius, zoom scale, mosaic size)
+    /// Initial parameter value (fade opacity)
     #[arg(long, value_name = "VAL")]
     pub from: Option<f32>,
 
-    /// Target parameter value (fade opacity, blur radius, zoom scale, mosaic size)
+    /// Target parameter value (fade opacity)
     #[arg(long, value_name = "VAL")]
     pub to: Option<f32>,
 
-    /// Wave or ripple frequency in Hz
+    /// Wave frequency in Hz
     #[arg(long, value_name = "HZ")]
     pub frequency: Option<f32>,
 
-    /// Wave or ripple amplitude
+    /// Wave amplitude
     #[arg(long, value_name = "VAL")]
     pub amplitude: Option<f32>,
 
-    /// Liquid ripple expansion speed
-    #[arg(long, value_name = "VAL")]
-    pub speed: Option<f32>,
-
-    /// Wipe feather or dissolve boundary softness (0.01 - 0.5)
+    /// Wipe feather softness (0.01 - 0.5)
     #[arg(long, value_name = "VAL")]
     pub softness: Option<f32>,
-
-    /// Dissolve noise frequency scale
-    #[arg(long, value_name = "VAL")]
-    pub scale: Option<f32>,
 }
 
 impl EffectArgs {
@@ -88,22 +80,20 @@ impl EffectArgs {
             to: self.to,
             frequency: self.frequency,
             amplitude: self.amplitude,
-            speed: self.speed,
             softness: self.softness,
-            scale: self.scale,
         }
     }
 }
 
 /// Validate `--effect` against the known effect names.
 fn parse_effect_name(s: &str) -> Result<String, String> {
-    if crate::animation::effect_names().contains(&s) {
+    if crate::effect::effect_names().contains(&s) {
         Ok(s.to_string())
     } else {
         Err(format!(
             "unknown effect '{}' - expected one of: {}",
             s,
-            crate::animation::effect_names().join(", ")
+            crate::effect::effect_names().join(", ")
         ))
     }
 }
@@ -152,12 +142,8 @@ pub enum Commands {
     /// Set wallpaper image or video
     #[command(alias = "img")]
     Set {
-        /// Wallpaper file path (image, GIF, or video)
+        /// Wallpaper file path (image, GIF, or video); `-` reads from stdin
         path: PathBuf,
-
-        /// Animation package name or path
-        #[arg(long, value_name = "PKG")]
-        animation: Option<String>,
 
         /// Target output/monitor
         #[arg(short = 'm', long, value_name = "OUTPUT")]
@@ -183,22 +169,10 @@ pub enum Commands {
     /// Run system and dependency diagnostics
     Doctor,
 
-    /// Validate animation package YAML
-    Validate {
-        /// Path to animation YAML
-        path: PathBuf,
-    },
-
     /// View and edit configuration
     Config {
         #[command(subcommand)]
         subcommand: ConfigCommands,
-    },
-
-    /// Inspect and clear decoded frame cache
-    Cache {
-        #[command(subcommand)]
-        subcommand: CacheCommands,
     },
 
     /// Reload config and restart theme hooks
@@ -215,52 +189,6 @@ pub enum Commands {
         /// Max render FPS limit
         #[arg(long)]
         max_fps: Option<u32>,
-    },
-
-    /// Scaffold a new animation package
-    New {
-        /// Package name or directory
-        name: String,
-
-        /// Generate starter WGSL shader
-        #[arg(long)]
-        shader: bool,
-    },
-
-    /// Watch a directory and rotate wallpapers automatically
-    Watch {
-        /// Directory containing wallpapers
-        dir: PathBuf,
-    },
-
-    /// Preview wallpaper and animation in an interactive window
-    Preview {
-        /// Image path
-        path: PathBuf,
-
-        /// Auto-reload on file changes
-        #[arg(short = 'w', long)]
-        watch: bool,
-
-        /// Animation package or file
-        #[arg(long, value_name = "PKG")]
-        animation: Option<String>,
-
-        /// Transition options
-        #[command(flatten)]
-        effect_args: EffectArgs,
-    },
-
-    /// Install animation package from GitHub (`user/repo`)
-    Install {
-        /// Remote package repository (`user/repo`)
-        package: String,
-    },
-
-    /// Search installed animation packages
-    Search {
-        /// Search term
-        query: String,
     },
 
     /// Daemon IPC controls (playback, blanking, info)
@@ -281,14 +209,6 @@ pub enum ConfigCommands {
     Set { key: String, value: String },
     /// Print path to active config file
     Path,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum CacheCommands {
-    /// Delete cached frames and palettes
-    Clear,
-    /// Display cache usage statistics
-    Info,
 }
 
 #[derive(Subcommand, Debug)]

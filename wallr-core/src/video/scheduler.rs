@@ -2,7 +2,10 @@ use crate::video::VideoFrameData;
 use crate::video::error::{VideoError, VideoResult};
 use std::time::{Duration, Instant};
 
-#[derive(Debug, Clone)]
+/// Move-only scheduler representation. Frame bytes travel
+/// FFmpeg -> bounded queue -> one pending frame -> GPU upload by ownership
+/// transfer; cloning a decoded frame is never required on the hot path.
+#[derive(Debug)]
 pub struct ScheduledFrame {
     pub data: VideoFrameData,
     pub width: u32,

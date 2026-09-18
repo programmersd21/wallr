@@ -2,21 +2,24 @@
 //!
 //! The daemon parses the GIF header blocks once to learn frame delays and
 //! total duration (no pixel decode), then decodes frames on demand with the
-//! fast `gif` crate. Decoded frames are stored in memory, raw when they fit
-//! the budget and zstd-compressed otherwise, so looping playback skips the
-//! re-decode entirely: each loop is a memcpy (raw) or a decompress (zstd).
+//! fast `gif` crate. Recently displayed frames are cached in memory, raw
+//! when they fit the budget and zstd-compressed otherwise, up to
+//! [`CACHE_BUDGET`]. Larger animations stream the uncached tail on demand so
+//! peak RSS stays bounded and the cache drops entirely with the wallpaper.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use gif::DisposalMethod;
 
 /// Maximum bytes of decoded frame data kept in RAM. Frames beyond this are
 /// still decoded on demand, but not cached across loop wraps.
-// Keep animated wallpapers bounded without forcing normal 1080p animations to
-// re-decode every loop. At 128 MiB this fits roughly 15 full 1080p RGBA
-// frames, while preventing a single large GIF from dominating daemon RSS.
-const CACHE_BUDGET: usize = 128 * 1024 * 1024;
+// Keep animated wallpapers bounded: 32 MiB fits roughly 4 full 1080p RGBA
+// frames raw, or ~20-30 photographic GIF frames zstd-compressed. Larger
+// animations stream-decode the uncached tail each loop (a few fps of decode)
+// instead of retaining 100+ MiB that can never be returned to the idle
+// baseline after the wallpaper is replaced.
+const CACHE_BUDGET: usize = 32 * 1024 * 1024;
 const MAX_GIF_WORKING_SET: usize = 512 * 1024 * 1024;
 
 /// A cached frame: raw RGBA8 or zstd-compressed RGBA8. The whole animation
@@ -29,8 +32,11 @@ enum CachedFrame {
     Zstd(Vec<u8>),
 }
 
+/// Streaming GIF decoder over an in-memory snapshot. The snapshot is
+/// reference-counted so loop restarts re-decode from RAM instead of
+/// re-opening and re-reading the file on every animation wrap.
 struct GifReader {
-    decoder: gif::Decoder<std::io::BufReader<std::fs::File>>,
+    decoder: gif::Decoder<std::io::BufReader<std::io::Cursor<std::sync::Arc<[u8]>>>>,
 }
 
 struct DecodedFrame {
@@ -43,11 +49,10 @@ struct DecodedFrame {
 }
 
 impl GifReader {
-    fn open(path: &Path) -> anyhow::Result<Self> {
-        let file = std::fs::File::open(path)?;
+    fn open_bytes(bytes: std::sync::Arc<[u8]>) -> anyhow::Result<Self> {
         let mut options = gif::DecodeOptions::new();
         options.set_color_output(gif::ColorOutput::RGBA);
-        let decoder = options.read_info(std::io::BufReader::new(file))?;
+        let decoder = options.read_info(std::io::BufReader::new(std::io::Cursor::new(bytes)))?;
         Ok(Self { decoder })
     }
 
@@ -78,7 +83,11 @@ struct GifInfo {
 }
 
 pub struct AnimatedImage {
-    path: PathBuf,
+    /// In-memory snapshot of the GIF file taken at `decode` time. Frame
+    /// streaming and loop restarts decode from this snapshot: one file read
+    /// per wallpaper set instead of one per set plus one per loop wrap, and
+    /// a mid-play file replacement can never tear a looping animation.
+    bytes: std::sync::Arc<[u8]>,
     pub width: u32,
     pub height: u32,
     delays: Vec<Duration>,
@@ -115,7 +124,7 @@ impl AnimatedImage {
         if !is_gif {
             return Ok(None);
         }
-        let bytes = std::fs::read(path)?;
+        let bytes: std::sync::Arc<[u8]> = std::sync::Arc::from(std::fs::read(path)?);
         let Some(info) = scan_gif(&bytes)? else {
             return Ok(None);
         };
@@ -134,14 +143,14 @@ impl AnimatedImage {
             );
         }
         Ok(Some(Self {
-            path: path.to_path_buf(),
+            bytes: bytes.clone(),
             width: info.width,
             height: info.height,
             delays: info.delays,
             total,
             cache: vec![None; frame_count],
             cache_bytes: 0,
-            reader: Some(GifReader::open(path)?),
+            reader: Some(GifReader::open_bytes(bytes)?),
             next_index: 0,
             canvas: vec![0; pixels * 4],
             scratch: vec![0; pixels * 4],
@@ -153,7 +162,7 @@ impl AnimatedImage {
     }
 
     fn restart(&mut self) {
-        self.reader = GifReader::open(&self.path).ok();
+        self.reader = GifReader::open_bytes(self.bytes.clone()).ok();
         self.next_index = 0;
     }
 
@@ -506,7 +515,7 @@ mod tests {
 
     fn anim_with(delays: Vec<Duration>) -> AnimatedImage {
         AnimatedImage {
-            path: PathBuf::new(),
+            bytes: std::sync::Arc::from(Vec::new()),
             width: 1,
             height: 1,
             total: delays.iter().copied().sum(),

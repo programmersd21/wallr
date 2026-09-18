@@ -31,24 +31,10 @@ pub struct DiagnosticReport {
     pub checks: Vec<DiagnosticCheck>,
 }
 
-#[derive(Debug, Clone)]
-pub struct ValidationCheck {
-    pub name: String,
-    pub passed: bool,
-    pub message: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ValidationReport {
-    pub checks: Vec<ValidationCheck>,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum WallpaperError {
     #[error("Theme error: {0}")]
     Theme(#[from] crate::theme::ThemeError),
-    #[error("Package error: {0}")]
-    Package(#[from] crate::packages::PackageError),
     #[error("Custom error: {0}")]
     Custom(String),
 }
@@ -124,54 +110,6 @@ impl WallpaperEngine {
         }
 
         DiagnosticReport { checks }
-    }
-
-    pub fn validate_animation(&self, path: &Path) -> Result<ValidationReport, WallpaperError> {
-        info!("Validating animation package: {:?}", path);
-        let mut checks = Vec::new();
-
-        match crate::packages::load_local_animation(path) {
-            Ok(spec) => {
-                checks.push(ValidationCheck {
-                    name: "YAML Syntax & Parsing".to_string(),
-                    passed: true,
-                    message: Some(format!("Successfully parsed spec '{}'", spec.name)),
-                });
-
-                match crate::animation::validate_animation(&spec) {
-                    Ok(_) => {
-                        checks.push(ValidationCheck {
-                            name: "Timeline & Effects Validation".to_string(),
-                            passed: true,
-                            message: Some(
-                                "Valid animation settings and timeline structure.".to_string(),
-                            ),
-                        });
-                    }
-                    Err(errs) => {
-                        let msg = errs
-                            .into_iter()
-                            .map(|e| e.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        checks.push(ValidationCheck {
-                            name: "Timeline & Effects Validation".to_string(),
-                            passed: false,
-                            message: Some(msg),
-                        });
-                    }
-                }
-            }
-            Err(e) => {
-                checks.push(ValidationCheck {
-                    name: "YAML Syntax & Parsing".to_string(),
-                    passed: false,
-                    message: Some(e.to_string()),
-                });
-            }
-        }
-
-        Ok(ValidationReport { checks })
     }
 
     pub async fn set_wallpaper(
