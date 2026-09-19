@@ -168,11 +168,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Credits
 
-Sample wallpapers in `samples/` are mostly taken from:
+Sample wallpapers in `samples/` are taken from:
 
-- [AngelJumbo/gruvbox-wallpapers](https://github.com/AngelJumbo/gruvbox-wallpapers)
-- [vyrx-dev/Wallpapers](https://github.com/vyrx-dev/Wallpapers)
-- [`samples/extra.gif`](samples/extra.gif) from [binnewbs/arch-hyprland](https://github.com/binnewbs/arch-hyprland/blob/main/wallpapers/bbd85fa86d8dc8e3fc64d086f6641a5c.gif)
+- [zhichaoh/catppuccin-wallpapers](https://github.com/zhichaoh/catppuccin-wallpapers)
 
 All rights belong to their respective owners; thanks to the original authors for sharing their work.
 
