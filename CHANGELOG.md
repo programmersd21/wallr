@@ -12,9 +12,21 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Removed the overshoot easings (`emphatic`, `spring`) and their complex
   shader curves. The easing set is now `linear`, `ease_in`, `ease_out`,
   `ease_in_out`, and `bezier`.
+- `--angle` applies to `wipe` only; `slide` takes `--direction`.
 
 ### Fixed
 
+- Video decoding is resilient: transient FFmpeg errors (corrupt packets,
+  readback hiccups, conversion failures) skip a frame instead of killing
+  the decode thread and silently freezing playback.
+- `wallpaper.loop_video` is now honored. When disabled the stream plays
+  once and holds the final frame; seek restarts it.
+- A stalled or dead video decoder stops playback after a grace period
+  instead of spinning and freezing the frame.
+- Interim GPU upload failures retry on the next video frame instead of
+  ending playback.
+- Slow software decoders get a five-second window to produce the first
+  frame before the black start fallback.
 - Directional wipes and slides were reversed and never completed: the
   sweep threshold ran the wrong way, so mid-frames showed mostly the old
   image and the new image snapped in at the end. `up`/`down` entered from

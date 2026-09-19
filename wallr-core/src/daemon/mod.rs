@@ -854,6 +854,8 @@ struct RenderState {
     /// reallocating GPU memory on every video switch when resolution is unchanged.
     /// Wrapped in Arc so it can be shared with active playback tasks.
     cached_video_texture: Option<std::sync::Arc<crate::renderer::VideoTexture>>,
+    /// Whether videos restart from the beginning at end of stream.
+    loop_video: bool,
 }
 
 struct GpuState {
@@ -1192,7 +1194,10 @@ impl RenderState {
                 path,
                 self.hw_accel,
                 self.preload_frames,
-                std::time::Duration::from_millis(1000),
+                self.loop_video,
+                // Allow slow software decoders a fair window to produce the
+                // first frame before falling back to a black start.
+                std::time::Duration::from_secs(5),
                 move |metadata| {
                     renderer
                         .validate_video_texture(metadata.width, metadata.height)
@@ -2043,6 +2048,9 @@ fn play_video(
         .filter(|fps| *fps > 0)
         .map(|fps| std::time::Duration::from_secs_f64(1.0 / f64::from(fps)));
     let mut last_present: Option<std::time::Instant> = None;
+    // Watchdog: if the decoder dies or stalls, stop instead of presenting
+    // the same frozen frame forever at a millisecond cadence.
+    let mut last_frame_at = std::time::Instant::now();
 
     loop {
         // A newer commit superseded us. Do NOT touch the shared
@@ -2062,9 +2070,8 @@ fn play_video(
 
         // Pull the next displayable frame. The decoder queue is bounded, so
         // this never blocks; unchanged frames need no upload or presentation.
-        let frame_uploaded = if let Some(frame) =
-            video_playback.next_frame_in_generation(commit.generation)
-        {
+        let mut frame_uploaded = false;
+        if let Some(frame) = video_playback.next_frame_in_generation(commit.generation) {
             // Mid-stream resolution change (rare): recreate only the video
             // conversion resources instead of dropping every subsequent frame.
             if frame.width != width || frame.height != height {
@@ -2096,18 +2103,28 @@ fn play_video(
                 }
             }
             if let Err(err) = renderer.update_video_texture(texture, &frame.data) {
+                // A transient GPU hiccup must not end playback; retry on the
+                // next frame instead.
                 tracing::warn!("Video frame upload failed: {err}");
-                return;
+            } else {
+                last_frame_at = std::time::Instant::now();
+                frame_uploaded = true;
             }
             // `frame` owns the only copy of the decoded planes; it drops here
             // after GPU upload instead of lingering in any queue or cache.
-            true
-        } else {
-            false
-        };
+        }
 
         if !frame_uploaded {
             if playback_gen.load(Ordering::SeqCst) != commit.generation {
+                return;
+            }
+            if video_playback.is_paused() {
+                // Deliberately paused: rest cheaply and wait for resume.
+                pacer.wait_until(std::time::Instant::now() + std::time::Duration::from_millis(100));
+                continue;
+            }
+            if last_frame_at.elapsed() > std::time::Duration::from_secs(5) {
+                tracing::warn!("Video playback stalled, stopping");
                 return;
             }
             let wait = video_playback
@@ -3294,6 +3311,7 @@ impl Daemon {
             shm_height: 0,
             gpu_surface_used: false,
             cached_video_texture: None,
+            loop_video: config.wallpaper.loop_video,
         })
     }
 }
@@ -3388,5 +3406,6 @@ fn create_render_state_for_output_sync(
         shm_height: 0,
         gpu_surface_used: false,
         cached_video_texture: None,
+        loop_video: config.wallpaper.loop_video,
     })
 }

@@ -40,8 +40,24 @@ wallpaper:
 video:
   hw_decode: "auto"          # auto, vaapi, nvdec, software
   preferred_gpu: "auto"      # auto, integrated, discrete, or adapter name
-  preload_frames: 2          # frames decoded ahead of the playhead (1..=8)
+  preload_frames: 2          # frames decoded ahead of the playhead (1..=3)
 ```
+
+`loop_video: false` plays the file once and then holds the final frame until
+the wallpaper changes; `wallr ipc seek` restarts playback from the new
+position.
+
+## Robustness
+
+- Transient FFmpeg errors (corrupt packets, readback hiccups, conversion
+  failures) skip the affected frame instead of killing the decoder.
+- A stalled or dead decoder stops playback after a grace period rather
+  than freezing the frame at a burning CPU loop.
+- Mid-stream resolution changes recreate only the video conversion
+  resources; unchanged formats reuse them every frame.
+- A slow software decoder gets up to five seconds to produce the first
+  frame before the fallback black start.
+- `loop_video` is honored: no hidden rewinding when disabled.
 
 ## Requirements
 

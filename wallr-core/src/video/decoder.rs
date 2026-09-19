@@ -165,13 +165,14 @@ pub struct VideoDecoder {
 
 impl VideoDecoder {
     pub fn new<P: AsRef<Path>>(path: P, hw_accel: HwAccel) -> VideoResult<Self> {
-        Self::with_preload(path, hw_accel, 2)
+        Self::with_preload(path, hw_accel, 2, true)
     }
 
     pub fn with_preload<P: AsRef<Path>>(
         path: P,
         hw_accel: HwAccel,
         preload_frames: usize,
+        loop_video: bool,
     ) -> VideoResult<Self> {
         let path = path.as_ref().to_path_buf();
 
@@ -214,6 +215,7 @@ impl VideoDecoder {
                     stop_flag_clone,
                     seek_epoch_clone,
                     hw_in_use_clone.clone(),
+                    loop_video,
                 );
                 let used = match used {
                     Ok(used) => used,
@@ -455,6 +457,7 @@ impl VideoDecoder {
         stop_flag: Arc<AtomicBool>,
         seek_epoch: Arc<AtomicU64>,
         hw_in_use: Arc<AtomicU8>,
+        loop_video: bool,
     ) -> VideoResult<HwAccel> {
         let mut ictx = ffmpeg::format::input(&path).map_err(|e| VideoError::FileOpen {
             path: path.clone(),
@@ -529,9 +532,14 @@ impl VideoDecoder {
                     continue;
                 }
 
-                decoder
-                    .send_packet(&packet)
-                    .map_err(|e| VideoError::DecodeFailed(anyhow::anyhow!("send_packet: {}", e)))?;
+                // A corrupt or transiently unreadable packet must not end
+                // wallpaper playback: skip it and keep decoding. Previously a
+                // single `send_packet` error terminated the thread, silently
+                // freezing the video forever.
+                if let Err(e) = decoder.send_packet(&packet) {
+                    tracing::warn!("video packet skipped: {e}");
+                    continue;
+                }
 
                 while decoder.receive_frame(&mut decoded_frame).is_ok() {
                     if stop_flag.load(Ordering::Relaxed) {
@@ -604,51 +612,25 @@ impl VideoDecoder {
 
                     let width = src_frame.width();
                     let height = src_frame.height();
-                    let data = if src_frame.format() == ffmpeg::format::Pixel::NV12 {
-                        let color_space = match decoded_frame.color_space() {
-                            ffmpeg::color::Space::Unspecified => decoder.color_space(),
-                            value => value,
-                        };
-                        let color_range = match decoded_frame.color_range() {
-                            ffmpeg::color::Range::Unspecified => decoder.color_range(),
-                            value => value,
-                        };
-                        let color = select_yuv_color(color_space, color_range, width, height);
-                        let (y_plane, uv_plane) = copy_nv12_planes(src_frame);
-                        VideoFrameData::Nv12 {
-                            y_plane,
-                            uv_plane,
-                            color,
+                    // Conversion failures (unexpected pixel format, hardware
+                    // readback hiccup) skip the frame instead of killing the
+                    // decode thread. Previous behavior froze playback forever
+                    // on the first hiccup.
+                    let data = match convert_frame(
+                        src_frame,
+                        &decoded_frame,
+                        &mut scaler,
+                        &mut scaler_src,
+                        &mut rgb_frame,
+                        width,
+                        height,
+                        &decoder,
+                    ) {
+                        Ok(data) => data,
+                        Err(e) => {
+                            tracing::warn!("video frame conversion skipped: {e}");
+                            continue;
                         }
-                    } else {
-                        let src_format = src_frame.format();
-                        if scaler_src != Some(src_format) {
-                            scaler = Some(
-                                ffmpeg::software::scaling::context::Context::get(
-                                    src_format,
-                                    width,
-                                    height,
-                                    ffmpeg::format::Pixel::RGBA,
-                                    width,
-                                    height,
-                                    ffmpeg::software::scaling::Flags::BILINEAR,
-                                )
-                                .map_err(|e| VideoError::FormatConversionFailed(e.into()))?,
-                            );
-                            scaler_src = Some(src_format);
-                        }
-
-                        scaler
-                            .as_mut()
-                            .expect("scaler initialized above")
-                            .run(src_frame, &mut rgb_frame)
-                            .map_err(|e| VideoError::FormatConversionFailed(e.into()))?;
-                        VideoFrameData::Rgba(copy_packed_rows(
-                            rgb_frame.data(0),
-                            rgb_frame.stride(0),
-                            rgb_frame.width() as usize * 4,
-                            rgb_frame.height() as usize,
-                        ))
                     };
 
                     let video_frame = VideoFrame {
@@ -680,10 +662,15 @@ impl VideoDecoder {
             if stop_flag.load(Ordering::Relaxed) {
                 break;
             }
-            if !paused {
+            if loop_video && !paused {
                 ictx.seek(0, ..)
                     .map_err(|e| VideoError::SeekFailed(Duration::ZERO, e.into()))?;
                 decoder.flush();
+            } else if !paused {
+                // Reached the end without looping (single play-through).
+                // Stay parked so pause/seek/stop still work, and a later
+                // seek restarts the stream from the requested position.
+                thread::sleep(Duration::from_millis(50));
             }
         }
 
@@ -824,6 +811,67 @@ fn copy_packed_rows(source: &[u8], stride: usize, row_bytes: usize, height: usiz
         packed.extend_from_slice(&row[..row_bytes]);
     }
     packed
+}
+
+/// Converts a decoded frame into `VideoFrameData`, keeping NV12 on the GPU
+/// path when the decoder produced it natively and falling back to a software
+/// RGBA conversion for anything else.
+fn convert_frame(
+    src_frame: &ffmpeg::frame::Video,
+    decoded_frame: &ffmpeg::frame::Video,
+    scaler: &mut Option<ffmpeg::software::scaling::Context>,
+    scaler_src: &mut Option<ffmpeg::format::Pixel>,
+    rgb_frame: &mut ffmpeg::frame::Video,
+    width: u32,
+    height: u32,
+    decoder: &ffmpeg::codec::decoder::Video,
+) -> VideoResult<VideoFrameData> {
+    if src_frame.format() == ffmpeg::format::Pixel::NV12 {
+        let color_space = match decoded_frame.color_space() {
+            ffmpeg::color::Space::Unspecified => decoder.color_space(),
+            value => value,
+        };
+        let color_range = match decoded_frame.color_range() {
+            ffmpeg::color::Range::Unspecified => decoder.color_range(),
+            value => value,
+        };
+        let color = select_yuv_color(color_space, color_range, width, height);
+        let (y_plane, uv_plane) = copy_nv12_planes(src_frame);
+        Ok(VideoFrameData::Nv12 {
+            y_plane,
+            uv_plane,
+            color,
+        })
+    } else {
+        let src_format = src_frame.format();
+        if *scaler_src != Some(src_format) {
+            *scaler = Some(
+                ffmpeg::software::scaling::context::Context::get(
+                    src_format,
+                    width,
+                    height,
+                    ffmpeg::format::Pixel::RGBA,
+                    width,
+                    height,
+                    ffmpeg::software::scaling::Flags::BILINEAR,
+                )
+                .map_err(|e| VideoError::FormatConversionFailed(e.into()))?,
+            );
+            *scaler_src = Some(src_format);
+        }
+
+        scaler
+            .as_mut()
+            .expect("scaler initialized above")
+            .run(src_frame, rgb_frame)
+            .map_err(|e| VideoError::FormatConversionFailed(e.into()))?;
+        Ok(VideoFrameData::Rgba(copy_packed_rows(
+            rgb_frame.data(0),
+            rgb_frame.stride(0),
+            rgb_frame.width() as usize * 4,
+            rgb_frame.height() as usize,
+        )))
+    }
 }
 
 fn copy_nv12_planes(frame: &ffmpeg::frame::Video) -> (Vec<u8>, Vec<u8>) {

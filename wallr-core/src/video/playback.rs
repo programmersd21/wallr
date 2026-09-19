@@ -44,12 +44,14 @@ impl VideoPlayback {
         path: &Path,
         hw_accel: HwAccel,
         preload_frames: usize,
+        loop_video: bool,
         generation: u64,
     ) -> Result<VideoMetadata, crate::video::error::VideoError> {
         let prepared = Self::prepare(
             path,
             hw_accel,
             preload_frames,
+            loop_video,
             Duration::from_millis(0),
             |_| Ok(()),
         )?;
@@ -60,13 +62,14 @@ impl VideoPlayback {
         path: &Path,
         hw_accel: HwAccel,
         preload_frames: usize,
+        loop_video: bool,
         first_frame_timeout: Duration,
         validate: F,
     ) -> Result<PreparedVideoPlayback, crate::video::error::VideoError>
     where
         F: FnOnce(&VideoMetadata) -> Result<(), crate::video::error::VideoError>,
     {
-        let decoder = VideoDecoder::with_preload(path, hw_accel, preload_frames)?;
+        let decoder = VideoDecoder::with_preload(path, hw_accel, preload_frames, loop_video)?;
         let metadata = decoder.metadata().clone();
         validate(&metadata)?;
         let deadline = Instant::now() + first_frame_timeout;
