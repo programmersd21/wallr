@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Wallr wallpaper rotation demo: cycles the six built-in transitions over
-# the sample images in samples/.
+# Wallr transition demo: applies every built-in transition over the sample
+# images and records each change, ending with a coverage summary.
 
 set -euo pipefail
 
@@ -28,8 +28,8 @@ for image in samples/*.png; do
 done
 [[ ${#IMAGES[@]} -gt 0 ]] || { echo "no samples/*.png found" >&2; exit 1; }
 
-# The six built-in transitions, one per effect index. Params are aligned
-# with EFFECTS by index.
+# The six built-in transitions. Effects are the outer loop so every one is
+# exercised exactly once per cycle regardless of how many images exist.
 EFFECTS=("fade" "wipe" "slide" "wave" "grow" "outer")
 PARAMS=(
     ""
@@ -43,26 +43,39 @@ PARAMS=(
 echo "=========================================="
 echo "Starting Wallpaper Rotation Demo"
 echo "=========================================="
-COMPLETED=0
-for ((i = 0; i < ${#IMAGES[@]}; i++)); do
-    IMAGE="${IMAGES[$i]}"
-    EFFECT="${EFFECTS[$((i % ${#EFFECTS[@]}))]}"
-    EXTRA="${PARAMS[$((i % ${#PARAMS[@]}))]}"
+
+record=()
+APPLIED=0
+for ((e = 0; e < ${#EFFECTS[@]}; e++)); do
+    EFFECT="${EFFECTS[$e]}"
+    EXTRA="${PARAMS[$e]}"
+    IMAGE="${IMAGES[$((e % ${#IMAGES[@]}))]}"
     # shellcheck disable=SC2206
     EXTRA_ARGS=($EXTRA)
 
-    echo "--- $((i + 1))/$(( ${#IMAGES[@]} )): $EFFECT ${EXTRA_ARGS[*]:-}"
+    echo "[record] $((e + 1))/${#EFFECTS[@]} $EFFECT ${EXTRA_ARGS[*]:-} <- $(basename "$IMAGE")"
     # shellcheck disable=SC2086 # intentional word splitting for effect flags
-    "$WALLR" set "$IMAGE" \
+    if "$WALLR" set "$IMAGE" \
         --effect "$EFFECT" \
         ${EXTRA_ARGS[@]} \
         --duration 2000ms \
         --no-theme
-
-    COMPLETED=$((COMPLETED + 1))
+    then
+        record+=("$EFFECT")
+        APPLIED=$((APPLIED + 1))
+    fi
     sleep 3
 done
 
 echo "=========================================="
-echo "Demo completed: $COMPLETED wallpaper(s) shown."
+echo "Applied: $APPLIED transition(s)."
+echo "------------------------------------------"
+count=0
+for EFFECT in "${EFFECTS[@]}"; do
+    count=0
+    for applied in "${record[@]}"; do
+        [[ "$applied" == "$EFFECT" ]] && count=$((count + 1))
+    done
+    printf '  %-6s %sx\n' "$EFFECT" "$count"
+done
 echo "=========================================="
