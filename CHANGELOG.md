@@ -5,6 +5,18 @@ All notable changes to Wallr are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] - 2026-09-19
+
+### Changed
+
+- Transition feel now follows awww: a new `bezier` easing implements
+  awww's default cubic curve and is the default for every named effect.
+  With no `--effect` flag the fade stays plain linear, like awww `simple`.
+- Reveal edges are pixel-scale sharp across wipe, slide, wave, grow, and
+  outer (previously wide soft bands).
+- Slow presents no longer spin the transition loop or kill GIF playback;
+  timeouts yield briefly and playback continues.
+
 ## [0.6.0] - 2026-09-18
 
 ### Removed
