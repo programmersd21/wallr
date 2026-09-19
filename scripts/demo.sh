@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Wallr transition demo: applies every built-in transition over the sample
-# images and records each change, ending with a coverage summary.
+# images, records a frame sequence of each change with grim, and assembles
+# the result into a looping GIF with ffmpeg.
 
 set -euo pipefail
 
@@ -28,8 +29,6 @@ for image in samples/*.png; do
 done
 [[ ${#IMAGES[@]} -gt 0 ]] || { echo "no samples/*.png found" >&2; exit 1; }
 
-# The six built-in transitions. Effects are the outer loop so every one is
-# exercised exactly once per cycle regardless of how many images exist.
 EFFECTS=("fade" "wipe" "slide" "wave" "grow" "outer")
 PARAMS=(
     ""
@@ -40,12 +39,22 @@ PARAMS=(
     "--origin top_left"
 )
 
+DURATION_MS="${DEMO_DURATION_MS:-2000}"
+FRAMES="${DEMO_FRAMES:-10}"
+OUT_GIF="${1:-demo.gif}"
+GAP_MS=$((DURATION_MS / FRAMES))
+GAP_SECS="$(awk -v ms="$GAP_MS" 'BEGIN { printf "%.3f", ms / 1000 }')"
+
+RECORD_DIR="$(mktemp -d)"
+trap 'rm -rf "$RECORD_DIR"' EXIT
+
 echo "=========================================="
 echo "Starting Wallpaper Rotation Demo"
 echo "=========================================="
 
 record=()
 APPLIED=0
+SEQUENCE=0
 for ((e = 0; e < ${#EFFECTS[@]}; e++)); do
     EFFECT="${EFFECTS[$e]}"
     EXTRA="${PARAMS[$e]}"
@@ -55,22 +64,31 @@ for ((e = 0; e < ${#EFFECTS[@]}; e++)); do
 
     echo "[record] $((e + 1))/${#EFFECTS[@]} $EFFECT ${EXTRA_ARGS[*]:-} <- $(basename "$IMAGE")"
     # shellcheck disable=SC2086 # intentional word splitting for effect flags
-    if "$WALLR" set "$IMAGE" \
+    "$WALLR" set "$IMAGE" \
         --effect "$EFFECT" \
         ${EXTRA_ARGS[@]} \
-        --duration 2000ms \
+        --duration "$DURATION_MS"ms \
         --no-theme
-    then
-        record+=("$EFFECT")
-        APPLIED=$((APPLIED + 1))
+
+    # Capture this transition mid-flight: wallr set returns immediately and
+    # the transition runs async for DURATION_MS, so grab frames on a timer.
+    if command -v grim >/dev/null && command -v ffmpeg >/dev/null; then
+        for ((f = 0; f < FRAMES; f++)); do
+            grim "$RECORD_DIR/$(printf '%04d' "$SEQUENCE").png" || true
+            SEQUENCE=$((SEQUENCE + 1))
+            sleep "$GAP_SECS"
+        done
+    else
+        sleep 2
     fi
-    sleep 3
+
+    record+=("$EFFECT")
+    APPLIED=$((APPLIED + 1))
 done
 
 echo "=========================================="
 echo "Applied: $APPLIED transition(s)."
 echo "------------------------------------------"
-count=0
 for EFFECT in "${EFFECTS[@]}"; do
     count=0
     for applied in "${record[@]}"; do
@@ -78,4 +96,19 @@ for EFFECT in "${EFFECTS[@]}"; do
     done
     printf '  %-6s %sx\n' "$EFFECT" "$count"
 done
+
+if [[ -z "$(find "$RECORD_DIR" -name '*.png' 2>/dev/null)" ]]; then
+    echo "------------------------------------------"
+    echo "No frames captured (grim/ffmpeg unavailable?); skipping GIF."
+    exit 0
+fi
+
+echo "------------------------------------------"
+echo "Encoding $OUT_GIF from $SEQUENCE frame(s)..."
+ffmpeg -y -loglevel error -framerate "${FRAMES}" \
+    -i "$RECORD_DIR/%04d.png" \
+    -vf "split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5" \
+    -loop 0 "$OUT_GIF"
+echo "------------------------------------------"
+echo "Demo complete. GIF written to: $OUT_GIF"
 echo "=========================================="
