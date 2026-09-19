@@ -1217,14 +1217,16 @@ mod tests {
         let end = pixel_at(&end, SIZE / 2, SIZE / 2);
         assert!(end[2] > 240 && end[0] < 15, "end pixel: {end:?}");
         // Mid-fade blends in linear light (sRGB textures decode on sample
-        // and re-encode on store), so red/blue meet near (187, 0, 187),
-        // not the gamma-space (127, 0, 127) that byte-stepping would give.
-        // The linear midpoint reads perceptually uniform instead of dipping
-        // dark halfway through the fade.
+        // and re-encode on store). The default Bezier easing runs ahead at
+        // midpoint (awww's fast-start character), so blue leads red here
+        // while their sum still matches a uniform mix.
         let mid = render_at(&fade, 0.5);
         let mid = pixel_at(&mid, SIZE / 2, SIZE / 2);
         assert!(
-            (170..=205).contains(&mid[0]) && (170..=205).contains(&mid[2]) && mid[1] < 20,
+            (160..=215).contains(&mid[0])
+                && (160..=215).contains(&mid[2])
+                && mid[2] > mid[0]
+                && mid[1] < 20,
             "mid pixel: {mid:?}"
         );
 
@@ -1242,6 +1244,21 @@ mod tests {
         assert!(
             right[0] > 240 && right[2] < 15,
             "wipe unrevealed pixel: {right:?}"
+        );
+
+        // A mid-grow is sharp too: the center is exactly new while the
+        // far corner is still exactly old.
+        let grow = crate::animation::Effect::Grow(crate::animation::GrowParams::default());
+        let frame = render_at(&grow, 0.5);
+        let center = pixel_at(&frame, SIZE / 2, SIZE / 2);
+        assert!(
+            center[2] > 240 && center[0] < 15,
+            "grow revealed pixel: {center:?}"
+        );
+        let corner = pixel_at(&frame, 2, 2);
+        assert!(
+            corner[0] > 240 && corner[2] < 15,
+            "grow unrevealed pixel: {corner:?}"
         );
     }
 

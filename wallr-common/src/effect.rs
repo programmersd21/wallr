@@ -82,7 +82,7 @@ impl Default for FadeParams {
         Self {
             from: 0.0,
             to: 1.0,
-            easing: Easing::EaseInOut,
+            easing: Easing::Bezier,
         }
     }
 }
@@ -103,9 +103,9 @@ impl Default for WipeParams {
     fn default() -> Self {
         Self {
             direction: WipeDirection::Left,
-            softness: 0.01,
+            softness: 0.006,
             angle: None,
-            easing: Easing::EaseInOut,
+            easing: Easing::Bezier,
         }
     }
 }
@@ -132,7 +132,7 @@ impl Default for SlideParams {
     fn default() -> Self {
         Self {
             direction: SlideDirection::Left,
-            easing: Easing::EaseInOut,
+            easing: Easing::Bezier,
         }
     }
 }
@@ -174,7 +174,7 @@ impl Default for WaveParams {
             frequency: 3.0,
             amplitude: 0.05,
             angle: None,
-            easing: Easing::EaseInOut,
+            easing: Easing::Bezier,
         }
     }
 }
@@ -191,7 +191,7 @@ impl Default for GrowParams {
     fn default() -> Self {
         Self {
             origin: Origin::Center,
-            easing: Easing::EaseInOut,
+            easing: Easing::Bezier,
         }
     }
 }
@@ -208,7 +208,7 @@ impl Default for OuterParams {
     fn default() -> Self {
         Self {
             origin: Origin::Center,
-            easing: Easing::EaseInOut,
+            easing: Easing::Bezier,
         }
     }
 }
@@ -227,6 +227,10 @@ pub enum Easing {
     EaseInOut,
     Emphatic,
     Spring,
+    /// Cubic-bezier(.54, 0, .34, .99): awww's default transition curve.
+    /// Evaluated on the CPU once per frame and sent with linear passthrough,
+    /// since the shader only implements fixed curves.
+    Bezier,
 }
 
 fn default_one() -> f32 {
@@ -234,13 +238,53 @@ fn default_one() -> f32 {
 }
 
 fn default_wipe_softness() -> f32 {
-    0.01
+    0.006
 }
 fn default_wave_frequency() -> f32 {
     3.0
 }
 fn default_wave_amplitude() -> f32 {
     0.05
+}
+
+/// Cubic-bezier y(x) with awww's default control points, in the style of
+/// gre/bezier-easing (the same family awww ports): Newton-Raphson with a
+/// bisection fallback.
+fn cubic_bezier_y(x: f32) -> f32 {
+    const X1: f32 = 0.54;
+    const Y1: f32 = 0.0;
+    const X2: f32 = 0.34;
+    const Y2: f32 = 0.99;
+    fn sample_curve_x(t: f32) -> f32 {
+        ((1.0 - 3.0 * X2 + 3.0 * X1) * t + (3.0 * X2 - 6.0 * X1)) * t * t + 3.0 * X1 * t
+    }
+    fn sample_curve_y(t: f32) -> f32 {
+        ((1.0 - 3.0 * Y2 + 3.0 * Y1) * t + (3.0 * Y2 - 6.0 * Y1)) * t * t + 3.0 * Y1 * t
+    }
+    fn sample_slope_x(t: f32) -> f32 {
+        3.0 * (1.0 - 3.0 * X2 + 3.0 * X1) * t * t + 2.0 * (3.0 * X2 - 6.0 * X1) * t + 3.0 * X1
+    }
+    let mut t = x.clamp(0.0, 1.0);
+    for _ in 0..5 {
+        let slope = sample_slope_x(t);
+        if slope.abs() < 1e-4 {
+            break;
+        }
+        t -= (sample_curve_x(t) - x) / slope;
+    }
+    if !(0.0..=1.0).contains(&t) {
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+        t = x;
+        while hi - lo > 1e-4 {
+            if sample_curve_x(t) < x {
+                lo = t;
+            } else {
+                hi = t;
+            }
+            t = (lo + hi) / 2.0;
+        }
+    }
+    sample_curve_y(t.clamp(0.0, 1.0))
 }
 
 #[repr(C)]
@@ -260,17 +304,23 @@ pub struct EffectUniforms {
 pub fn compute_effect_uniforms(effect: &Effect, progress: f32) -> EffectUniforms {
     let progress = progress.clamp(0.0, 1.0);
     let easing_index = |e: &Easing| match e {
-        Easing::Linear => 0,
+        Easing::Linear | Easing::Bezier => 0,
         Easing::EaseIn => 1,
         Easing::EaseOut => 2,
         Easing::EaseInOut => 3,
         Easing::Emphatic => 4,
         Easing::Spring => 5,
     };
+    // Bezier is pre-evaluated here (once per frame) and sent with linear
+    // passthrough; the shader only implements fixed curves.
+    let eased = |easing: &Easing| match easing {
+        Easing::Bezier => cubic_bezier_y(progress),
+        _ => progress,
+    };
     match effect {
         Effect::Fade(params) => EffectUniforms {
             effect_type: 0,
-            progress,
+            progress: eased(&params.easing),
             param_a: params.from,
             param_b: params.to,
             param_c: 0.0,
@@ -296,7 +346,7 @@ pub fn compute_effect_uniforms(effect: &Effect, progress: f32) -> EffectUniforms
             };
             EffectUniforms {
                 effect_type: 1,
-                progress,
+                progress: eased(&params.easing),
                 param_a: params.softness,
                 param_b: 0.0,
                 param_c: 0.0,
@@ -315,7 +365,7 @@ pub fn compute_effect_uniforms(effect: &Effect, progress: f32) -> EffectUniforms
             };
             EffectUniforms {
                 effect_type: 2,
-                progress,
+                progress: eased(&params.easing),
                 param_a: 0.0,
                 param_b: 0.0,
                 param_c: 0.0,
@@ -337,7 +387,7 @@ pub fn compute_effect_uniforms(effect: &Effect, progress: f32) -> EffectUniforms
             };
             EffectUniforms {
                 effect_type: 3,
-                progress,
+                progress: eased(&params.easing),
                 param_a: params.frequency,
                 param_b: params.amplitude,
                 param_c: 0.0,
@@ -354,7 +404,7 @@ pub fn compute_effect_uniforms(effect: &Effect, progress: f32) -> EffectUniforms
             };
             EffectUniforms {
                 effect_type: 4,
-                progress,
+                progress: eased(&params.easing),
                 param_a: 0.0,
                 param_b: 0.0,
                 param_c: 0.0,
@@ -371,7 +421,7 @@ pub fn compute_effect_uniforms(effect: &Effect, progress: f32) -> EffectUniforms
             };
             EffectUniforms {
                 effect_type: 5,
-                progress,
+                progress: eased(&params.easing),
                 param_a: 0.0,
                 param_b: 0.0,
                 param_c: 0.0,
@@ -625,5 +675,23 @@ mod tests {
         for name in ["blur", "zoom", "pixelate", "ripple", "dissolve", "shader"] {
             assert_eq!(effect_from_name(name), None);
         }
+    }
+
+    #[test]
+    fn bezier_easing_matches_awww_curve() {
+        assert_eq!(cubic_bezier_y(0.0), 0.0);
+        assert_eq!(cubic_bezier_y(1.0), 1.0);
+        let mut prev = 0.0;
+        let mut i = 1;
+        while i <= 20 {
+            let y = cubic_bezier_y(i as f32 / 20.0);
+            assert!(y >= prev, "bezier must not decrease");
+            prev = y;
+            i += 1;
+        }
+        // awww's (.54, 0, .34, .99): slow start, fast middle, soft landing.
+        let mid = cubic_bezier_y(0.5);
+        assert!((0.4..0.7).contains(&mid), "mid: {mid}");
+        assert!(cubic_bezier_y(0.25) < 0.25);
     }
 }

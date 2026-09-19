@@ -228,7 +228,7 @@ fn linear_wipe_reveal(
     // Range of dot(uv - 0.5, d) is [-half_span, half_span].
     let half_span = 0.5 * (abs(d.x) + abs(d.y));
     let coord = dot(uv - vec2<f32>(0.5, 0.5), d);
-    let f = max(feather, 0.005);
+    let f = max(feather, 0.001);
     // As progress goes from 0 to 1, threshold moves across the screen
     let min_pos = -half_span - f;
     let max_pos = half_span + f;
@@ -277,7 +277,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // 2: Slide (Smooth directional translation wipe without cropping artifacts)
     else if (uniforms.effect_type == 2u) {
-        let softness = 0.006;
+        let softness = 0.004;
         let reveal = linear_wipe_reveal(uv, uniforms.direction, p, softness);
         let color1 = textureSample(t_diffuse1, s_diffuse1, uv_old);
         let color2 = textureSample(t_diffuse2, s_diffuse2, uv_new);
@@ -291,7 +291,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let dist = circular_distance(uv, uniforms.origin, uniforms.resolution);
         let envelope = sin(raw_p * 3.14159265);
         let wave = sin(dist * wave_freq * 6.2831853 - raw_p * 6.2831853) * wave_amp * envelope;
-        let edge = circular_reveal(uv, uniforms.origin, uniforms.resolution, p, 0.008, wave);
+        let edge = circular_reveal(uv, uniforms.origin, uniforms.resolution, p, 0.004, wave);
         let color1 = textureSample(t_diffuse1, s_diffuse1, uv_old);
         let color2 = textureSample(t_diffuse2, s_diffuse2, uv_new);
         return mix(color1, color2, edge);
@@ -299,7 +299,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // 4: Grow / Center (expanding circle from origin, swww-style)
     else if (uniforms.effect_type == 4u) {
-        let edge = circular_reveal(uv, uniforms.origin, uniforms.resolution, p, 0.008, 0.0);
+        let edge = circular_reveal(uv, uniforms.origin, uniforms.resolution, p, 0.004, 0.0);
         let color1 = textureSample(t_diffuse1, s_diffuse1, uv_old);
         let color2 = textureSample(t_diffuse2, s_diffuse2, uv_new);
         return mix(color1, color2, edge);
@@ -307,7 +307,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // 5: Outer (shrinking circle toward origin, swww-style)
     else if (uniforms.effect_type == 5u) {
-        let edge = circular_outer_reveal(uv, uniforms.origin, uniforms.resolution, p, 0.008);
+        let edge = circular_outer_reveal(uv, uniforms.origin, uniforms.resolution, p, 0.004);
         let color1 = textureSample(t_diffuse1, s_diffuse1, uv_old);
         let color2 = textureSample(t_diffuse2, s_diffuse2, uv_new);
         return mix(color1, color2, edge);

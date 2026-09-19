@@ -53,7 +53,7 @@ wallr set ~/Pictures/wallpaper.png --no-theme
 | `-m` | `--monitor <OUTPUT>` | Target output (e.g. `DP-1`, `HDMI-A-1`) |
 | `-t` | `--theme <PROVIDER>` | One-shot theme generator: `matugen`, `wallust`, `pywal`, `none` |
 | | `--mode <MODE>` | Scaling mode: `fill`, `fit`, `stretch`, `center`, `tile` (default: `fill`) |
-| | `--easing <CURVE>` | Easing curve: `linear`, `ease_in`, `ease_out`, `ease_in_out`, `emphatic`, `spring` |
+| | `--easing <CURVE>` | Easing curve: `linear`, `ease_in`, `ease_out`, `ease_in_out`, `emphatic`, `spring`, `bezier` |
 | | `--direction <X,Y>` | Direction vector for `wipe` and `slide` (e.g. `1,0`) |
 | | `--from <VAL>`, `--to <VAL>` | Fade opacity range (default `0` to `1`) |
 | | `--frequency <HZ>`, `--amplitude <VAL>` | Wave density and height |

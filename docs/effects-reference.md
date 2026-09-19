@@ -21,7 +21,7 @@ Wallr ships six built-in transitions. Pick one with `wallr set <path> -e <name>`
 | `-o, --origin <PRESET\|X,Y>` | `grow`, `outer`, `wave` | Circle origin: `center` (default), `top_left`, `top`, `top_right`, `left`, `right`, `bottom_left`, `bottom`, `bottom_right`, or normalized `x,y`. |
 | `-a, --angle <DEG>` | `wipe`, `wave` | Sweep angle in degrees (`0` = right, `90` = up). |
 | `--direction <X,Y>` | `wipe`, `slide` | Direction vector, e.g. `1,0`. |
-| `--easing <CURVE>` | all | `linear`, `ease_in`, `ease_out`, `ease_in_out` (default), `emphatic`, `spring`. |
+| `--easing <CURVE>` | all | `linear`, `ease_in`, `ease_out`, `ease_in_out`, `emphatic`, `spring`, `bezier`. Named effects default to `bezier` (awww-style cubic curve); with no `-e` flag the fade is plain linear. |
 | `--from, --to <VAL>` | `fade` | Opacity range, default `0` to `1`. |
 | `--frequency, --amplitude` | `wave` | Wave density and height. |
 | `--softness <VAL>` | `wipe` | Edge feather in screen fraction, `0.002` to `0.25` (default `0.01`: a sharp, pixel-scale edge). |
