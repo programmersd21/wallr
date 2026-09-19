@@ -510,11 +510,12 @@ pub fn effect_from_name(name: &str) -> Option<Effect> {
     })
 }
 
+/// Canonical effect names. Directional and convenience aliases (`simple`,
+/// `left`, `right`, `top`, `bottom`, `center`, `any`, `random`) still map
+/// through `effect_from_name`; this list drives CLI help and errors so
+/// users see the six real transitions rather than every alias.
 pub fn effect_names() -> &'static [&'static str] {
-    &[
-        "simple", "fade", "wipe", "slide", "left", "right", "top", "bottom", "wave", "grow",
-        "center", "outer", "any", "random",
-    ]
+    &["fade", "wipe", "slide", "wave", "grow", "outer"]
 }
 
 #[derive(Debug, Clone, Default)]

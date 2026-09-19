@@ -6,7 +6,8 @@ use std::path::PathBuf;
 /// Transition options for wallpaper changes.
 #[derive(Args, Debug, Clone, Default)]
 pub struct EffectArgs {
-    /// Transition effect: simple, fade, wipe, slide, left, right, top, bottom, wave, grow, center, outer, any, random
+    /// Transition effect: fade, wipe, slide, wave, grow, outer (plus aliases:
+    /// simple, left, right, top, bottom, center, any, random)
     #[arg(short = 'e', long, value_name = "NAME", value_parser = parse_effect_name)]
     pub effect: Option<String>,
 
@@ -85,9 +86,11 @@ impl EffectArgs {
     }
 }
 
-/// Validate `--effect` against the known effect names.
+/// Validate `--effect`. Aliases (left, right, top, bottom, center, any,
+/// random, simple) resolve through the real parser; the error message shows
+/// only the six canonical transitions.
 fn parse_effect_name(s: &str) -> Result<String, String> {
-    if crate::effect::effect_names().contains(&s) {
+    if crate::effect::effect_from_name(s).is_some() {
         Ok(s.to_string())
     } else {
         Err(format!(

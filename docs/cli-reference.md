@@ -46,7 +46,7 @@ wallr set ~/Pictures/wallpaper.png --no-theme
 #### Flags
 | Flag | Long | Description |
 |---|---|---|
-| `-e` | `--effect <NAME>` | Transition: `simple`, `fade`, `wipe`, `slide`, `left`, `right`, `top`, `bottom`, `wave`, `grow`, `center`, `outer`, `any`, `random` (see [effects](effects-reference.md)) |
+| `-e` | `--effect <NAME>` | Transition: `fade`, `wipe`, `slide`, `wave`, `grow`, `outer` (plus aliases `simple`, `left`, `right`, `top`, `bottom`, `center`, `any`, `random`; see [effects](effects-reference.md)) |
 | `-d` | `--duration <TIME>` | Wall-clock duration (`700ms`, `1s`, `1.2s`) |
 | `-o` | `--origin <PRESET\|X,Y>` | Origin: `top_left`, `top`, `top_right`, `left`, `center`, `right`, `bottom_left`, `bottom`, `bottom_right`, or normalized `x,y` |
 | `-a` | `--angle <DEG>` | Wipe sweep angle: `0` = right-to-left, `90` = top-to-bottom, `270` = bottom-to-top (slide uses `--direction`) |
