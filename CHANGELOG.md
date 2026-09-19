@@ -16,6 +16,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `video.hw_decode: auto` now probes only the hardware this machine
+  actually has: NVDEC is skipped entirely unless an NVIDIA GPU is present,
+  so AMD and iGPU systems no longer trigger a spurious
+  "Cannot load libcuda.so.1" warning while FFmpeg falls through to VAAPI.
 - Video decoding is resilient: transient FFmpeg errors (corrupt packets,
   readback hiccups, conversion failures) skip a frame instead of killing
   the decode thread and silently freezing playback.

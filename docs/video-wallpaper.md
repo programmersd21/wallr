@@ -9,7 +9,11 @@ MP4, WebM, MKV, MOV, and AVI. Anything FFmpeg can demux is a candidate; the FFmp
 ## Decoding
 
 - Hardware acceleration mode can be set via `video.hw_decode`:
-  - `auto` (default): tries all hardware backends (NVDEC, VAAPI, VideoToolbox) in priority order before falling back to software
+  - `auto` (default): probes **only the hardware this machine has**.
+    NVIDIA GPUs try NVDEC first; every other system goes straight to
+    VAAPI (or software, when no render node exists). NVDEC is never
+    probed without NVIDIA hardware, so AMD/iGPU users never see a
+    "Cannot load libcuda.so.1" warning.
   - `vaapi`, `nvdec`, or `videotoolbox`: tries the specified backend first, then falls back to software if unavailable
   - `software`: uses software-only decoding without attempting hardware backends
 - `video.preferred_gpu` controls adapter selection when both integrated and discrete GPUs are present.

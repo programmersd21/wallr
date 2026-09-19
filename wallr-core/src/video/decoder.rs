@@ -59,11 +59,21 @@ impl HwAccel {
         }
     }
 
-    /// All hardware backends in priority order for auto-detection fallback.
-    /// NVDEC preferred on Linux (common primary GPU on hybrid systems),
-    /// then VAAPI, then VideoToolbox on macOS.
-    fn all_hardware() -> &'static [HwAccel] {
-        &[HwAccel::Nvdec, HwAccel::Vaapi, HwAccel::VideoToolbox]
+    /// Hardware backends in priority order for auto-detection, matched to
+    /// the GPU actually present. Probing NVDEC on an AMD or iGPU machine
+    /// makes FFmpeg attempt to load `libcuda.so.1` first, fail, and print a
+    /// scary CUDA warning before ever reaching VAAPI; only NVIDIA hardware
+    /// should ever touch the NVDEC path.
+    #[cfg(target_os = "linux")]
+    fn auto_hardware_order() -> Vec<HwAccel> {
+        let mut order = Vec::new();
+        if nvidia_gpu_present() {
+            order.push(HwAccel::Nvdec);
+        }
+        if vaapi_available() {
+            order.push(HwAccel::Vaapi);
+        }
+        order
     }
 }
 
@@ -415,14 +425,23 @@ impl VideoDecoder {
     ) -> (ffmpeg::codec::decoder::Video, HwAccel) {
         match hw_accel {
             HwAccel::Auto => {
-                // Try all hardware backends in priority order
-                for &backend in HwAccel::all_hardware() {
+                // Probe only what this machine can actually use, in
+                // vendor-matched priority: NVDEC for NVIDIA hardware, VAAPI
+                // for everything else with a render node. Never probe NVDEC
+                // on AMD/iGPU machines (that makes FFmpeg try to load
+                // libcuda.so.1, print a CUDA error, then fall through).
+                let mut tried = 0;
+                for backend in HwAccel::auto_hardware_order() {
+                    tried += 1;
                     if let Some(result) = Self::try_hw_decoder(stream, backend) {
                         return result;
                     }
                 }
-                // Fall back to software
-                tracing::info!("All hardware backends failed, using software decoder");
+                if tried == 0 {
+                    tracing::info!("No hardware decoder present, using software decoder");
+                } else {
+                    tracing::info!("Hardware decoders failed, using software decoder");
+                }
             }
             HwAccel::Software => {
                 // Explicit software request: skip hardware entirely
@@ -778,6 +797,39 @@ fn ensure_ffmpeg_init() -> VideoResult<()> {
         .map(|_| ())
 }
 
+/// True when any `/sys/class/drm/card*` sibling reports NVIDIA vendor 0x10de.
+fn nvidia_gpu_present() -> bool {
+    any_nvidia_card(std::path::Path::new("/sys/class/drm"))
+}
+
+fn any_nvidia_card(root: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return false;
+    };
+    entries.filter_map(|e| e.ok()).any(|entry| {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("card") {
+            return false;
+        }
+        std::fs::read_to_string(entry.path().join("device/vendor"))
+            .is_ok_and(|vendor| vendor.trim().eq_ignore_ascii_case("0x10de"))
+    })
+}
+
+/// True when a usable DRM render node exists (`/dev/dri/renderD*`).
+fn vaapi_available() -> bool {
+    any_render_node(std::path::Path::new("/dev/dri"))
+}
+
+fn any_render_node(root: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return false;
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .any(|entry| entry.file_name().to_string_lossy().starts_with("renderD"))
+}
+
 /// VA-API render-node candidates in probe order. Enumerates
 /// `/dev/dri/renderD*` so hybrid/multi-GPU systems try every node instead
 /// of assuming renderD128; falls back to renderD128 when enumeration fails.
@@ -816,6 +868,7 @@ fn copy_packed_rows(source: &[u8], stride: usize, row_bytes: usize, height: usiz
 /// Converts a decoded frame into `VideoFrameData`, keeping NV12 on the GPU
 /// path when the decoder produced it natively and falling back to a software
 /// RGBA conversion for anything else.
+#[allow(clippy::too_many_arguments)]
 fn convert_frame(
     src_frame: &ffmpeg::frame::Video,
     decoded_frame: &ffmpeg::frame::Video,
@@ -933,6 +986,31 @@ impl Drop for VideoDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nvidia_probe_detects_vendor_via_sysfs_layout() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let card0 = temp.path().join("card0");
+        let card1 = temp.path().join("card1");
+
+        std::fs::create_dir_all(card0.join("device")).expect("dirs");
+        std::fs::create_dir_all(card1.join("device")).expect("dirs");
+        assert!(!any_nvidia_card(temp.path()));
+
+        std::fs::write(card1.join("device/vendor"), "0x10de\n").expect("vendor");
+        assert!(any_nvidia_card(temp.path()));
+
+        std::fs::write(card1.join("device/vendor"), "0x1002\n").expect("vendor");
+        assert!(!any_nvidia_card(temp.path()));
+    }
+
+    #[test]
+    fn render_node_probe_detects_render_entries() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        assert!(!any_render_node(temp.path()));
+        std::fs::create_dir_all(temp.path().join("renderD128")).expect("create");
+        assert!(any_render_node(temp.path()));
+    }
 
     #[test]
     fn test_is_video_file() {
