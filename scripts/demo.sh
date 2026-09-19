@@ -50,6 +50,7 @@ PARAMS=(
 DURATION_MS="${DEMO_DURATION_MS:-2000}"
 OUT_GIF="${1:-assets/demo.gif}"
 FPS="${DEMO_FPS:-60}"
+MAX_GIF_WIDTH="${DEMO_MAX_WIDTH:-1280}"
 DURATION_SECS=$((DURATION_MS / 1000))
 
 mkdir -p "$(dirname "$OUT_GIF")"
@@ -65,6 +66,53 @@ fi
 
 RECORD_DIR="$(mktemp -d)"
 trap 'rm -rf "$RECORD_DIR"' EXIT
+
+# Render a looping GIF from a video (wf-recorder path). Palette generation
+# over a full-resolution 60fps source is the usual OOM point, so scale
+# down first (a demo GIF does not need native res) and reserve no
+# transparent slot. If the encode still dies, retry once at a smaller
+# size and lower rate.
+encode_gif_video() {
+    local src="$1" width="$MAX_GIF_WIDTH" rate="$FPS" ok=0
+    for attempt in 1 2; do
+        if ffmpeg -y -loglevel error -i "$src" \
+            -vf "fps=${rate},scale=${width}:-2:flags=lanczos,split[a][b];[a]palettegen=reserve_transparent=0:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5" \
+            -loop 0 "$OUT_GIF" 2>"$RECORD_DIR/ffmpeg.err"; then
+            echo "ffmpeg succeeded (attempt $attempt)."
+            ok=1
+            break
+        fi
+        echo "warning: ffmpeg encode failed (attempt $attempt); retrying smaller/lower rate."
+        width=$((width * 3 / 4))
+        rate=$((rate / 2))
+    done
+    if [[ $ok -eq 0 ]]; then
+        echo "error: ffmpeg encode failed twice. Last error:" >&2
+        tail -n 5 "$RECORD_DIR/ffmpeg.err" >&2 || true
+        return 1
+    fi
+}
+
+# Same approach for an image sequence (grim path).
+encode_gif_seq() {
+    local src="$1" rate="$2" width="$MAX_GIF_WIDTH" ok=0
+    for attempt in 1 2; do
+        if ffmpeg -y -loglevel error -framerate "$rate" -i "$src" \
+            -vf "scale=${width}:-2:flags=lanczos,fps=${FPS},split[a][b];[a]palettegen=reserve_transparent=0:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5" \
+            -loop 0 "$OUT_GIF" 2>"$RECORD_DIR/ffmpeg.err"; then
+            echo "ffmpeg succeeded (attempt $attempt)."
+            ok=1
+            break
+        fi
+        echo "warning: ffmpeg encode failed (attempt $attempt); retrying smaller/lower rate."
+        width=$((width * 3 / 4))
+    done
+    if [[ $ok -eq 0 ]]; then
+        echo "error: ffmpeg encode failed twice. Last error:" >&2
+        tail -n 5 "$RECORD_DIR/ffmpeg.err" >&2 || true
+        return 1
+    fi
+}
 
 record_transition() {
     # Sample the transition while it renders async in the background.
@@ -135,9 +183,7 @@ case "$CAPTURE" in
         sleep 1
         [[ -f "$RECORD_DIR/seq.mkv" ]] || { echo "recording failed" >&2; exit 1; }
         echo "Encoding $OUT_GIF ..."
-        ffmpeg -y -loglevel error -i "$RECORD_DIR/seq.mkv" \
-            -vf "fps=$FPS,split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5" \
-            -loop 0 "$OUT_GIF"
+        encode_gif_video "$RECORD_DIR/seq.mkv"
         ;;
     grim)
         echo "note: grim captures at its own rate; output is upsampled to ${FPS}fps."
@@ -150,9 +196,7 @@ case "$CAPTURE" in
         rate=$(awk -v f="$frames" -v s="${capture_secs:-1}" 'BEGIN { printf "%.2f", f / (s > 0 ? s : 1) }')
         echo "------------------------------------------"
         echo "Captured $frames frame(s) over ${capture_secs}s (~${rate} fps); encoding $OUT_GIF ..."
-        ffmpeg -y -loglevel error -framerate "$rate" -i "$RECORD_DIR/%05d.png" \
-            -vf "fps=$FPS,split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5" \
-            -loop 0 "$OUT_GIF"
+        encode_gif_seq "$RECORD_DIR/%05d.png" "$rate"
         ;;
     none)
         run_rotation
