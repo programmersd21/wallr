@@ -26,7 +26,7 @@ pub struct EffectArgs {
     #[arg(long, value_name = "X,Y")]
     pub direction: Option<String>,
 
-    /// Easing curve: linear, ease_in, ease_out, ease_in_out, emphatic, spring
+    /// Easing curve: linear, ease_in, ease_out, ease_in_out, bezier
     #[arg(long, value_enum)]
     pub easing: Option<crate::effect::Easing>,
 

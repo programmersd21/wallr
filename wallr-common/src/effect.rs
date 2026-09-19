@@ -230,8 +230,6 @@ pub enum Easing {
     #[serde(alias = "ease-in-out")]
     #[default]
     EaseInOut,
-    Emphatic,
-    Spring,
     /// Cubic-bezier(.54, 0, .34, .99): awww's default transition curve.
     /// Evaluated on the CPU once per frame and sent with linear passthrough,
     /// since the shader only implements fixed curves.
@@ -313,8 +311,6 @@ pub fn compute_effect_uniforms(effect: &Effect, progress: f32) -> EffectUniforms
         Easing::EaseIn => 1,
         Easing::EaseOut => 2,
         Easing::EaseInOut => 3,
-        Easing::Emphatic => 4,
-        Easing::Spring => 5,
     };
     // Bezier is pre-evaluated here (once per frame) and sent with linear
     // passthrough; the shader only implements fixed curves.

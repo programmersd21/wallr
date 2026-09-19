@@ -1914,6 +1914,11 @@ fn play_live(
             let (new_cur, new_cur_frame, new_next, displayable) =
                 advance_gif_slots(cur, cur_frame, next_frame, index, upload_ok);
             if !displayable {
+                // The decoder has not caught up yet. Yield briefly so it can
+                // produce the frame instead of busy-spinning the program
+                // whole (a spin keeps every present late and reads as
+                // heavy frame-by-frame staggering); then retry.
+                pacer.wait_until(std::time::Instant::now() + std::time::Duration::from_millis(2));
                 continue;
             }
             cur = new_cur;

@@ -39,8 +39,8 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 }
 
 // ---------------------------------------------------------------------------
-// Easing functions (mirrors the Easing enum in animation/mod.rs)
-// 0 = Linear, 1 = EaseIn, 2 = EaseOut, 3 = EaseInOut, 4 = Emphatic, 5 = Spring
+// Easing functions (mirrors the Easing enum in wallr-common)
+// 0 = Linear, 1 = EaseIn, 2 = EaseOut, 3 = EaseInOut
 // ---------------------------------------------------------------------------
 
 // Quintic smootherstep (C2 continuous): zero velocity and acceleration at ends
@@ -57,21 +57,6 @@ fn ease_out(t: f32) -> f32 {
     return 1.0 - u * u * u;
 }
 
-fn emphatic(t: f32) -> f32 {
-    let c = 1.20158;
-    let c3 = c + 1.0;
-    let u = t - 1.0;
-    return 1.0 + c3 * u * u * u + c * u * u;
-}
-
-fn spring_ease(t: f32) -> f32 {
-    let omega = 14.1421356; // sqrt(200.0)
-    let zeta = 0.9899495;  // 28.0 / (2 * sqrt(200.0))
-    let e = exp(-zeta * omega * t * 6.0);
-    let wd = omega * sqrt(max(1.0 - zeta * zeta, 0.0001));
-    return 1.0 - e * (cos(wd * t * 6.0) + (zeta * omega / wd) * sin(wd * t * 6.0));
-}
-
 fn apply_easing(t: f32, mode: u32) -> f32 {
     if (mode == 0u) {
         return t;
@@ -81,12 +66,6 @@ fn apply_easing(t: f32, mode: u32) -> f32 {
     }
     if (mode == 2u) {
         return ease_out(t);
-    }
-    if (mode == 4u) {
-        return emphatic(t);
-    }
-    if (mode == 5u) {
-        return spring_ease(t);
     }
     return ease_in_out(t);
 }

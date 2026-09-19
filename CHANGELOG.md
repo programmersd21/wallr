@@ -7,6 +7,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Removed the overshoot easings (`emphatic`, `spring`) and their complex
+  shader curves. The easing set is now `linear`, `ease_in`, `ease_out`,
+  `ease_in_out`, and `bezier`.
+
 ### Fixed
 
 - GIF playback no longer alternates between the old and new image when a
@@ -14,6 +20,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
   frame actually reaches the GPU; failed uploads (decoder catch-up after a
   loop wrap or on uncached tails) keep the last good frame on screen and
   retry instead of flipping to a stale texture.
+- GIF playback yields briefly while waiting for the decoder to catch up
+  instead of busy-spinning (heavy frame-by-frame staggering on large GIFs).
 - `--origin` is now honored by the `wave` effect; an `--angle` still takes
   precedence and derives the center from the sweep direction.
 
