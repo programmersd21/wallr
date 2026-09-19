@@ -245,11 +245,36 @@ fn viewport_destination(configured: (u32, u32), physical: (u32, u32)) -> Option<
 #[cfg(test)]
 mod viewport_tests {
     use super::{
-        VideoPresentAction, clamp_max_fps, clamp_preload_frames, is_transient_wallpaper_error,
-        is_usable_wallpaper_file, persist_wallpaper_at, read_wallpaper_state, validate_live_config,
-        video_present_action, viewport_destination, write_wallpaper_state,
+        VideoPresentAction, advance_gif_slots, clamp_max_fps, clamp_preload_frames,
+        is_transient_wallpaper_error, is_usable_wallpaper_file, persist_wallpaper_at,
+        read_wallpaper_state, validate_live_config, video_present_action, viewport_destination,
+        write_wallpaper_state,
     };
     use crate::renderer::FrameStatus;
+
+    #[test]
+    fn gif_slots_never_flip_to_an_unuploaded_frame() {
+        // Warm path: idle texture already holds the target frame.
+        let advanced = advance_gif_slots(0, 0, 1, 1, true);
+        assert_eq!((advanced.0, advanced.1, advanced.3), (1, 1, true));
+
+        // Upload failure: keep presenting the old frame, retry later.
+        let retry = advance_gif_slots(0, 0, 2, 1, false);
+        assert_eq!((retry.0, retry.1, retry.3), (0, 0, false));
+
+        // Retry succeeds once the decoder catches up.
+        let retried = advance_gif_slots(0, 0, 2, 1, true);
+        assert_eq!((retried.0, retried.1, retried.3), (1, 1, true));
+
+        // Same-frame repeats keep the current texture.
+        let same = advance_gif_slots(1, 1, 2, 1, true);
+        assert_eq!((same.0, same.1, same.3), (1, 1, true));
+
+        // Skip-ahead jump after a busy present still lands on the newest
+        // frame, never on a stale texture.
+        let jump = advance_gif_slots(1, 1, 2, 4, true);
+        assert_eq!((jump.0, jump.1, jump.3), (0, 4, true));
+    }
 
     #[test]
     fn preserves_complete_configure_size() {
@@ -1696,6 +1721,34 @@ fn reclaim_commit_resources(renderer: &Renderer, commit: CommitData) {
     renderer.device.poll(wgpu::Maintain::Wait);
 }
 
+/// GIF double-buffer slot advance.
+///
+/// Returns the new (displayed texture index, displayed frame, idle-texture
+/// frame) plus whether the requested frame can be shown. A failed upload
+/// leaves the previous frame presented so the caller retries; flipping to
+/// an unwritten texture makes the wallpaper visibly alternate between the
+/// old and new image.
+fn advance_gif_slots(
+    cur: usize,
+    cur_frame: usize,
+    next_frame: usize,
+    index: usize,
+    upload_ok: bool,
+) -> (usize, usize, usize, bool) {
+    if index == cur_frame {
+        return (cur, cur_frame, next_frame, true);
+    }
+    let target = cur ^ 1;
+    if next_frame == index {
+        // The idle texture was already warmed with this frame.
+        return (target, index, next_frame, true);
+    }
+    if upload_ok {
+        return (target, index, index, true);
+    }
+    (cur, cur_frame, next_frame, false)
+}
+
 /// Presents live wallpaper frames until the next commit. One frame is
 /// presented per GIF frame boundary instead of at the monitor refresh rate.
 /// Two textures are double-buffered and frames are decompressed directly
@@ -1840,13 +1893,32 @@ fn play_live(
 
         let index = animated.frame_index_at(start.elapsed() - paused_elapsed);
         if index != cur_frame {
-            if next_frame != index {
-                upload(renderer, cur ^ 1, index, slot, animated);
-                slot ^= 1;
-                next_frame = index;
+            // Advance the double buffer only when the next frame actually
+            // reaches the GPU. Uploads fail transiently while the streaming
+            // decoder catches up (loop wrap, uncached tail). Flipping the
+            // presented texture without data would show a stale frame for a
+            // whole frame period: the on-screen result looks exactly like
+            // the wallpaper alternating old/new/old as uploads alternate
+            // success and failure. Keep displaying the last good frame and
+            // retry on the next pass instead.
+            let target = cur ^ 1;
+            let upload_ok = if next_frame == index {
+                true
+            } else {
+                let ok = upload(renderer, target, index, slot, animated);
+                if ok {
+                    slot ^= 1;
+                }
+                ok
+            };
+            let (new_cur, new_cur_frame, new_next, displayable) =
+                advance_gif_slots(cur, cur_frame, next_frame, index, upload_ok);
+            if !displayable {
+                continue;
             }
-            cur ^= 1;
-            cur_frame = index;
+            cur = new_cur;
+            cur_frame = new_cur_frame;
+            next_frame = new_next;
         }
         let uniforms = crate::animation::compute_effect_uniforms(&static_effect, 1.0);
         let status = renderer.render_frame(
@@ -1909,11 +1981,12 @@ fn play_live(
         let wait = next_change.saturating_sub(elapsed);
         if wait > std::time::Duration::ZERO {
             let next = index + 1;
-            if next_frame != next {
-                upload(renderer, cur ^ 1, next, slot, animated);
+            if next_frame != next && upload(renderer, cur ^ 1, next, slot, animated) {
                 slot ^= 1;
                 next_frame = next;
             }
+            // A failed warm leaves next_frame stale on purpose: the boundary
+            // path above re-attempts the upload when the frame is needed.
             pacer.wait_until(std::time::Instant::now() + wait);
         }
     }

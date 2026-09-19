@@ -164,6 +164,10 @@ pub struct WaveParams {
     pub amplitude: f32,
     #[serde(default)]
     pub angle: Option<f32>,
+    /// Wave center. An explicit `--origin` wins when no angle is given;
+    /// an angle derives the center from the sweep direction.
+    #[serde(default)]
+    pub origin: Origin,
     #[serde(default)]
     pub easing: Easing,
 }
@@ -174,6 +178,7 @@ impl Default for WaveParams {
             frequency: 3.0,
             amplitude: 0.05,
             angle: None,
+            origin: Origin::Center,
             easing: Easing::Bezier,
         }
     }
@@ -383,7 +388,11 @@ pub fn compute_effect_uniforms(effect: &Effect, progress: f32) -> EffectUniforms
                     [0.5 + 0.5 * rad.cos(), 0.5 - 0.5 * rad.sin()],
                 )
             } else {
-                ([0.0, 0.0], [0.5, 0.5])
+                let origin = match params.origin {
+                    Origin::Center | Origin::Cursor => [0.5, 0.5],
+                    Origin::Custom(x, y) => [x, y],
+                };
+                ([0.0, 0.0], origin)
             };
             EffectUniforms {
                 effect_type: 3,
@@ -601,6 +610,9 @@ pub fn apply_effect_overrides(effect: &mut Effect, o: &EffectOverrides) {
             if let Some(a) = o.angle {
                 p.angle = Some(a);
             }
+            if let Some((x, y)) = origin {
+                p.origin = Origin::Custom(x, y);
+            }
             if let Some(e) = o.easing {
                 p.easing = e;
             }
@@ -693,5 +705,32 @@ mod tests {
         let mid = cubic_bezier_y(0.5);
         assert!((0.4..0.7).contains(&mid), "mid: {mid}");
         assert!(cubic_bezier_y(0.25) < 0.25);
+    }
+
+    #[test]
+    fn wave_honors_explicit_origin_without_angle() {
+        let mut wave = Effect::Wave(WaveParams::default());
+        apply_effect_overrides(
+            &mut wave,
+            &EffectOverrides {
+                origin: Some((1.0, 1.0)),
+                ..EffectOverrides::default()
+            },
+        );
+        let uniforms = compute_effect_uniforms(&wave, 0.5);
+        assert_eq!(uniforms.origin, [1.0, 1.0]);
+
+        // An angle still derives the center from the sweep direction.
+        let mut angled = Effect::Wave(WaveParams::default());
+        apply_effect_overrides(
+            &mut angled,
+            &EffectOverrides {
+                origin: Some((1.0, 1.0)),
+                angle: Some(90.0),
+                ..EffectOverrides::default()
+            },
+        );
+        let uniforms = compute_effect_uniforms(&angled, 0.5);
+        assert_ne!(uniforms.origin, [1.0, 1.0]);
     }
 }

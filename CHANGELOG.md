@@ -5,6 +5,18 @@ All notable changes to Wallr are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- GIF playback no longer alternates between the old and new image when a
+  frame upload fails. The double buffer only advances when the decoded
+  frame actually reaches the GPU; failed uploads (decoder catch-up after a
+  loop wrap or on uncached tails) keep the last good frame on screen and
+  retry instead of flipping to a stale texture.
+- `--origin` is now honored by the `wave` effect; an `--angle` still takes
+  precedence and derives the center from the sweep direction.
+
 ## [0.6.1] - 2026-09-19
 
 ### Changed
