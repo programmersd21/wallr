@@ -203,15 +203,14 @@ fn linear_wipe_reveal(
     if (dir_len > 0.001) {
         d = direction / dir_len;
     }
-    // Project UV onto the normalized direction vector.
-    // Range of dot(uv - 0.5, d) is [-half_span, half_span].
+    // Coord is positive on the side the new image enters from (the
+    // direction points toward the entry edge). The sweep edge starts at
+    // the entry side and travels to the far side, so by progress 1.0 the
+    // whole screen shows the new image.
     let half_span = 0.5 * (abs(d.x) + abs(d.y));
     let coord = dot(uv - vec2<f32>(0.5, 0.5), d);
     let f = max(feather, 0.001);
-    // As progress goes from 0 to 1, threshold moves across the screen
-    let min_pos = -half_span - f;
-    let max_pos = half_span + f;
-    let threshold = mix(min_pos, max_pos, progress);
+    let threshold = mix(half_span + f, -half_span - f, progress);
     return smootherstep(threshold - f, threshold + f, coord);
 }
 

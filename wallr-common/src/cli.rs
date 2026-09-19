@@ -18,7 +18,7 @@ pub struct EffectArgs {
     #[arg(short = 'o', long, value_name = "PRESET|X,Y")]
     pub origin: Option<String>,
 
-    /// Angle for wipe/wave in degrees (0 = right, 90 = up)
+    /// Angle for wipe/slide in degrees (0 = right-to-left, 90 = top-to-bottom, 270 = bottom-to-top)
     #[arg(short = 'a', long, value_name = "DEG")]
     pub angle: Option<f32>,
 

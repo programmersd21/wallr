@@ -15,6 +15,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Directional wipes and slides were reversed and never completed: the
+  sweep threshold ran the wrong way, so mid-frames showed mostly the old
+  image and the new image snapped in at the end. `up`/`down` entered from
+  the wrong edge too. Wipes now enter from the named edge (left from the
+  left, right from the right, top from the top, bottom from the bottom),
+  sweep fully across by progress 1.0, and `--angle` follows awww's
+  convention (`0` = right-to-left, `90` = top-to-bottom, `270` =
+  bottom-to-top).
 - GIF playback no longer alternates between the old and new image when a
   frame upload fails. The double buffer only advances when the decoded
   frame actually reaches the GPU; failed uploads (decoder catch-up after a

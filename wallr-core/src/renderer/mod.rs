@@ -1232,7 +1232,7 @@ mod tests {
 
         // A mid-wipe is sharp: well outside the feathered edge the pixels
         // are exactly old or new, with only a narrow blend band between.
-        // (Wipe moves left to right here, so the left edge is new/blue.)
+        // (Default wipe enters from the LEFT, so the left edge is new/blue.)
         let wipe = crate::animation::Effect::Wipe(crate::animation::WipeParams::default());
         let frame = render_at(&wipe, 0.5);
         let left = pixel_at(&frame, 4, SIZE / 2);
@@ -1244,6 +1244,45 @@ mod tests {
         assert!(
             right[0] > 240 && right[2] < 15,
             "wipe unrevealed pixel: {right:?}"
+        );
+
+        // Every cardinal enters from its named edge and must be fully shown
+        // at p=1.0 (regression: a reversed threshold left the image mostly
+        // old, then snapped).
+        let at = |direction: crate::animation::WipeDirection, progress, x, y| {
+            let e = crate::animation::Effect::Wipe(crate::animation::WipeParams {
+                direction,
+                ..crate::animation::WipeParams::default()
+            });
+            let f = render_at(&e, progress);
+            pixel_at(&f, x, y)
+        };
+        let top = at(crate::animation::WipeDirection::Up, 1.0, SIZE / 2, 2);
+        assert!(top[2] > 240 && top[0] < 15, "up wipe end pixel: {top:?}");
+        let bottom = at(
+            crate::animation::WipeDirection::Down,
+            1.0,
+            SIZE / 2,
+            SIZE - 2,
+        );
+        assert!(
+            bottom[2] > 240 && bottom[0] < 15,
+            "down wipe end pixel: {bottom:?}"
+        );
+        let mid_top = at(
+            crate::animation::WipeDirection::Down,
+            0.5,
+            SIZE / 2,
+            SIZE - 2,
+        );
+        assert!(
+            mid_top[2] > 240 && mid_top[0] < 15,
+            "down wipe reveals bottom first: {mid_top:?}"
+        );
+        let far_top = at(crate::animation::WipeDirection::Down, 0.5, SIZE / 2, 2);
+        assert!(
+            far_top[0] > 240 && far_top[2] < 15,
+            "down wipe keeps top old: {far_top:?}"
         );
 
         // A mid-grow is sharp too: the center is exactly new while the

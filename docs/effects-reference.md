@@ -19,7 +19,7 @@ Wallr ships six built-in transitions. Pick one with `wallr set <path> -e <name>`
 |---|---|---|
 | `-d, --duration <TIME>` | all | Wall-clock length, e.g. `700ms`, `1s`, `1.2s`. |
 | `-o, --origin <PRESET\|X,Y>` | `grow`, `outer`, `wave` | Circle origin: `center` (default), `top_left`, `top`, `top_right`, `left`, `right`, `bottom_left`, `bottom`, `bottom_right`, or normalized `x,y`. On `wave` an `--angle` derives the center from the sweep direction. |
-| `-a, --angle <DEG>` | `wipe`, `wave` | Sweep angle in degrees (`0` = right, `90` = up). |
+| `-a, --angle <DEG>` | `wipe`, `slide` | Sweep angle in degrees: `0` = right-to-left, `90` = top-to-bottom, `270` = bottom-to-top. |
 | `--direction <X,Y>` | `wipe`, `slide` | Direction vector, e.g. `1,0`. |
 | `--easing <CURVE>` | all | `linear`, `ease_in`, `ease_out`, `ease_in_out`, `bezier`. Named effects default to `bezier` (awww-style cubic curve); with no `-e` flag the fade is plain linear. |
 | `--from, --to <VAL>` | `fade` | Opacity range, default `0` to `1`. |

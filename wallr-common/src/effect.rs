@@ -332,17 +332,19 @@ pub fn compute_effect_uniforms(effect: &Effect, progress: f32) -> EffectUniforms
         },
         Effect::Wipe(params) => {
             let (dir_vec, origin) = if let Some(angle_deg) = params.angle {
+                // awww angle convention: 0 = right-to-left, 90 = top-to-bottom,
+                // 270 = bottom-to-top. -sin keeps UV y (top-left origin) aligned.
                 let rad = angle_deg.to_radians();
                 (
-                    [rad.cos(), rad.sin()],
-                    [0.5 + 0.5 * rad.cos(), 0.5 - 0.5 * rad.sin()],
+                    [rad.cos(), -rad.sin()],
+                    [0.5 - 0.5 * rad.cos(), 0.5 + 0.5 * rad.sin()],
                 )
             } else {
                 match params.direction {
                     WipeDirection::Left => ([-1.0, 0.0], [0.0, 0.5]),
                     WipeDirection::Right => ([1.0, 0.0], [1.0, 0.5]),
-                    WipeDirection::Up => ([0.0, 1.0], [0.5, 0.0]),
-                    WipeDirection::Down => ([0.0, -1.0], [0.5, 1.0]),
+                    WipeDirection::Up => ([0.0, -1.0], [0.5, 0.0]),
+                    WipeDirection::Down => ([0.0, 1.0], [0.5, 1.0]),
                 }
             };
             EffectUniforms {
@@ -361,8 +363,8 @@ pub fn compute_effect_uniforms(effect: &Effect, progress: f32) -> EffectUniforms
             let (dir_vec, origin) = match params.direction {
                 SlideDirection::Left => ([-1.0, 0.0], [0.0, 0.5]),
                 SlideDirection::Right => ([1.0, 0.0], [1.0, 0.5]),
-                SlideDirection::Up => ([0.0, 1.0], [0.5, 0.0]),
-                SlideDirection::Down => ([0.0, -1.0], [0.5, 1.0]),
+                SlideDirection::Up => ([0.0, -1.0], [0.5, 0.0]),
+                SlideDirection::Down => ([0.0, 1.0], [0.5, 1.0]),
             };
             EffectUniforms {
                 effect_type: 2,

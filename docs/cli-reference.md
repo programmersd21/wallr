@@ -49,7 +49,7 @@ wallr set ~/Pictures/wallpaper.png --no-theme
 | `-e` | `--effect <NAME>` | Transition: `simple`, `fade`, `wipe`, `slide`, `left`, `right`, `top`, `bottom`, `wave`, `grow`, `center`, `outer`, `any`, `random` (see [effects](effects-reference.md)) |
 | `-d` | `--duration <TIME>` | Wall-clock duration (`700ms`, `1s`, `1.2s`) |
 | `-o` | `--origin <PRESET\|X,Y>` | Origin: `top_left`, `top`, `top_right`, `left`, `center`, `right`, `bottom_left`, `bottom`, `bottom_right`, or normalized `x,y` |
-| `-a` | `--angle <DEG>` | Wipe/wave travel angle in degrees (`0` = right, `90` = up) |
+| `-a` | `--angle <DEG>` | Wipe/slide sweep angle: `0` = right-to-left, `90` = top-to-bottom, `270` = bottom-to-top |
 | `-m` | `--monitor <OUTPUT>` | Target output (e.g. `DP-1`, `HDMI-A-1`) |
 | `-t` | `--theme <PROVIDER>` | One-shot theme generator: `matugen`, `wallust`, `pywal`, `none` |
 | | `--mode <MODE>` | Scaling mode: `fill`, `fit`, `stretch`, `center`, `tile` (default: `fill`) |
