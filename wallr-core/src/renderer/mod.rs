@@ -1285,6 +1285,74 @@ mod tests {
             "down wipe keeps top old: {far_top:?}"
         );
 
+        // Sweep must be monotonic: a boundary column switches old->new once,
+        // never back. This directly catches the old "new, old, new" symptom.
+        // For a left-entering wipe, a column sweeps in left-to-right, so a
+        // fixed middle column must be old early and new from halfway on.
+        let mid_col = SIZE / 2;
+        let sweep = [
+            at(
+                crate::animation::WipeDirection::Left,
+                0.2,
+                mid_col,
+                SIZE / 2,
+            ),
+            at(
+                crate::animation::WipeDirection::Left,
+                0.4,
+                mid_col,
+                SIZE / 2,
+            ),
+            at(
+                crate::animation::WipeDirection::Left,
+                0.6,
+                mid_col,
+                SIZE / 2,
+            ),
+            at(
+                crate::animation::WipeDirection::Left,
+                0.8,
+                mid_col,
+                SIZE / 2,
+            ),
+        ];
+        assert!(
+            sweep[0][0] > 240 && sweep[0][2] < 15,
+            "early old: {:?}",
+            sweep[0]
+        );
+        assert!(
+            sweep[1][0] > 240 && sweep[1][2] < 15,
+            "early old: {:?}",
+            sweep[1]
+        );
+        assert!(
+            sweep[2][2] > 240 && sweep[2][0] < 15,
+            "late new: {:?}",
+            sweep[2]
+        );
+        assert!(
+            sweep[3][2] > 240 && sweep[3][0] < 15,
+            "late new: {:?}",
+            sweep[3]
+        );
+        // Entry edges for the remaining cardinals.
+        let right_entry = at(
+            crate::animation::WipeDirection::Right,
+            0.5,
+            SIZE - 2,
+            SIZE / 2,
+        );
+        assert!(
+            right_entry[2] > 240 && right_entry[0] < 15,
+            "right wipe reveals right first: {right_entry:?}"
+        );
+        let up_entry = at(crate::animation::WipeDirection::Up, 0.5, SIZE / 2, 2);
+        assert!(
+            up_entry[2] > 240 && up_entry[0] < 15,
+            "up wipe reveals top first: {up_entry:?}"
+        );
+
         // A mid-grow is sharp too: the center is exactly new while the
         // far corner is still exactly old.
         let grow = crate::animation::Effect::Grow(crate::animation::GrowParams::default());
