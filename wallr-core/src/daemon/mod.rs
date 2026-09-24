@@ -2975,6 +2975,9 @@ impl Daemon {
                                     ));
                                     lines.push(format!("  Container: {}", meta.format));
                                     lines.push(format!("  Decoder: {}", hw.name()));
+                                    if let Some(info) = decoder_info.as_ref() {
+                                        lines.push(format!("  Decoder State: {}", info.state.name()));
+                                    }
                                     lines.push(format!(
                                         "  GPU Decode: {}",
                                         if hw == crate::video::HwAccel::Software {
@@ -2983,6 +2986,14 @@ impl Daemon {
                                             "enabled"
                                         }
                                     ));
+                                    if let Some(info) = decoder_info.as_ref()
+                                        && info.dropped_frames > 0
+                                    {
+                                        lines.push(format!(
+                                            "  Dropped Frames: {}",
+                                            info.dropped_frames
+                                        ));
+                                    }
                                     lines.push(format!("  State: {} @ {}", state, position));
                                 }
                                 None => {

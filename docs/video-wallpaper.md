@@ -17,9 +17,9 @@ MP4, WebM, MKV, MOV, and AVI. Anything FFmpeg can demux is a candidate; the FFmp
   - `vaapi`, `nvdec`, or `videotoolbox`: tries the specified backend first, then falls back to software if unavailable
   - `software`: uses software-only decoding without attempting hardware backends
 - `video.preferred_gpu` controls adapter selection when both integrated and discrete GPUs are present.
-- Frames are decoded ahead into a small bounded queue and presented on PTS timing, so playback stays in sync without buffering the whole file.
+- Frames are decoded into a small bounded latest-frame queue and presented on PTS timing. Temporary queue pressure drops stale frames instead of terminating the decoder or allowing memory growth.
 - `wallpaper.loop_video` (default `true`) restarts the stream when it ends, producing a continuous loop.
-- The active decoder backend is reported immediately in `wallr ipc info` after successful initialization.
+- `wallr ipc info` distinguishes hardware negotiation, active hardware frames, software decoding, software fallback, and decoder failure. A backend is not reported as active until a hardware frame has actually been received.
 
 ## Playback control
 
@@ -57,6 +57,10 @@ position.
   failures) skip the affected frame instead of killing the decoder.
 - A stalled or dead decoder stops playback after a grace period rather
   than freezing the frame at a burning CPU loop.
+- Hardware decoding uses FFmpeg pixel-format negotiation. Device creation
+  alone is not treated as proof that hardware frames are being produced.
+- `wallr ipc info` reports dropped stale frames when the renderer cannot keep
+  up with the decoder.
 - Mid-stream resolution changes recreate only the video conversion
   resources; unchanged formats reuse them every frame.
 - A slow software decoder gets up to five seconds to produce the first

@@ -1,11 +1,12 @@
 use crate::video::error::{VideoError, VideoResult};
 use crate::video::scheduler::ScheduledFrame;
-use crossbeam_channel::{Receiver, SendTimeoutError, Sender};
+use crossbeam_channel::{Receiver, Sender};
 use ffmpeg_next as ffmpeg;
+use std::collections::VecDeque;
 use std::ffi::{CString, c_char};
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -17,6 +18,51 @@ pub enum HwAccel {
     Nvdec,
     VideoToolbox,
     Software,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecoderState {
+    Initializing,
+    HardwareNegotiating,
+    HardwareActive,
+    SoftwareActive,
+    SoftwareFallback,
+    Failed,
+}
+
+impl DecoderState {
+    const fn code(self) -> u8 {
+        match self {
+            Self::Initializing => 0,
+            Self::HardwareNegotiating => 1,
+            Self::HardwareActive => 2,
+            Self::SoftwareActive => 3,
+            Self::SoftwareFallback => 4,
+            Self::Failed => 5,
+        }
+    }
+
+    const fn from_code(code: u8) -> Self {
+        match code {
+            1 => Self::HardwareNegotiating,
+            2 => Self::HardwareActive,
+            3 => Self::SoftwareActive,
+            4 => Self::SoftwareFallback,
+            5 => Self::Failed,
+            _ => Self::Initializing,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Initializing => "initializing",
+            Self::HardwareNegotiating => "hardware negotiation",
+            Self::HardwareActive => "hardware active",
+            Self::SoftwareActive => "software active",
+            Self::SoftwareFallback => "software fallback",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 impl HwAccel {
@@ -37,16 +83,6 @@ impl HwAccel {
             HwAccel::Vaapi => 2,
             HwAccel::Nvdec => 3,
             HwAccel::VideoToolbox => 4,
-        }
-    }
-
-    const fn from_code(code: u8) -> HwAccel {
-        match code {
-            2 => HwAccel::Vaapi,
-            3 => HwAccel::Nvdec,
-            4 => HwAccel::VideoToolbox,
-            1 => HwAccel::Software,
-            _ => HwAccel::Auto,
         }
     }
 
@@ -154,6 +190,8 @@ pub struct DecoderInfo {
     pub codec_name: String,
     pub hardware_accel: Option<String>,
     pub pixel_format: String,
+    pub dropped_frames: u64,
+    pub state: DecoderState,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -165,11 +203,13 @@ enum DecoderControl {
 
 pub struct VideoDecoder {
     metadata: VideoMetadata,
-    frame_rx: Receiver<VideoFrame>,
+    frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>,
+    dropped_frames: Arc<AtomicU64>,
     control_tx: Sender<DecoderControl>,
     stop_flag: Arc<AtomicBool>,
     seek_epoch: Arc<AtomicU64>,
     hw_in_use: Arc<AtomicU8>,
+    decoder_state: Arc<AtomicU8>,
     decode_thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -204,7 +244,8 @@ impl VideoDecoder {
         // pending frame in `VideoPlayback`. Stale frames are dropped by the
         // scheduler rather than preserved. All transfers are moves.
         let preload = preload_frames.clamp(1, 3);
-        let (frame_tx, frame_rx) = crossbeam_channel::bounded(preload);
+        let frame_queue = Arc::new(Mutex::new(VecDeque::with_capacity(preload)));
+        let dropped_frames = Arc::new(AtomicU64::new(0));
         let (control_tx, control_rx) = crossbeam_channel::unbounded();
 
         let stop_flag = Arc::new(AtomicBool::new(false));
@@ -213,6 +254,10 @@ impl VideoDecoder {
         let seek_epoch_clone = seek_epoch.clone();
         let hw_in_use = Arc::new(AtomicU8::new(0));
         let hw_in_use_clone = hw_in_use.clone();
+        let decoder_state = Arc::new(AtomicU8::new(DecoderState::Initializing.code()));
+        let decoder_state_clone = decoder_state.clone();
+        let frame_queue_clone = frame_queue.clone();
+        let dropped_frames_clone = dropped_frames.clone();
 
         let decode_thread = thread::Builder::new()
             .name("wallr-video-decoder".to_string())
@@ -220,17 +265,21 @@ impl VideoDecoder {
                 let used = Self::decode_loop(
                     path,
                     hw_accel,
-                    frame_tx,
+                    frame_queue_clone,
+                    preload,
+                    dropped_frames_clone,
                     control_rx,
                     stop_flag_clone,
                     seek_epoch_clone,
                     hw_in_use_clone.clone(),
+                    decoder_state_clone.clone(),
                     loop_video,
                 );
                 let used = match used {
                     Ok(used) => used,
                     Err(e) => {
                         tracing::error!("Video decode loop: {}", e);
+                        decoder_state_clone.store(DecoderState::Failed.code(), Ordering::Release);
                         HwAccel::Software
                     }
                 };
@@ -242,11 +291,13 @@ impl VideoDecoder {
 
         Ok(Self {
             metadata,
-            frame_rx,
+            frame_queue,
+            dropped_frames,
             control_tx,
             stop_flag,
             seek_epoch,
             hw_in_use,
+            decoder_state,
             decode_thread: Some(decode_thread),
         })
     }
@@ -400,11 +451,15 @@ impl VideoDecoder {
         // unrefs it when dropped.
         unsafe {
             (*context.as_mut_ptr()).hw_device_ctx = device_ctx;
+            (*context.as_mut_ptr()).get_format = Some(select_hw_pixel_format);
         }
 
         match context.decoder().video() {
             Ok(decoder) => {
-                tracing::info!("Hardware decode active: {}", hw_accel.name());
+                tracing::info!(
+                    "Hardware decoder initialized: {}; awaiting negotiated hardware frame",
+                    hw_accel.name()
+                );
                 Some((decoder, hw_accel))
             }
             Err(e) => {
@@ -471,11 +526,14 @@ impl VideoDecoder {
     fn decode_loop(
         path: std::path::PathBuf,
         hw_accel: HwAccel,
-        frame_tx: Sender<VideoFrame>,
+        frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>,
+        frame_capacity: usize,
+        dropped_frames: Arc<AtomicU64>,
         control_rx: Receiver<DecoderControl>,
         stop_flag: Arc<AtomicBool>,
         seek_epoch: Arc<AtomicU64>,
         hw_in_use: Arc<AtomicU8>,
+        decoder_state: Arc<AtomicU8>,
         loop_video: bool,
     ) -> VideoResult<HwAccel> {
         let mut ictx = ffmpeg::format::input(&path).map_err(|e| VideoError::FileOpen {
@@ -493,9 +551,14 @@ impl VideoDecoder {
 
         let (mut decoder, used_hw) = Self::build_decoder(&stream, hw_accel);
         tracing::info!("Decoder in use: {}", used_hw.name());
-
-        // Report the active backend immediately after successful initialization
-        hw_in_use.store(used_hw.code(), Ordering::Relaxed);
+        decoder_state.store(
+            if used_hw == HwAccel::Software {
+                DecoderState::SoftwareActive.code()
+            } else {
+                DecoderState::HardwareNegotiating.code()
+            },
+            Ordering::Release,
+        );
 
         let mut scaler: Option<ffmpeg::software::scaling::Context> = None;
         let mut scaler_src: Option<ffmpeg::format::Pixel> = None;
@@ -504,6 +567,7 @@ impl VideoDecoder {
         let mut pending_seek: Option<(Duration, u64)> = None;
         let mut applied_seek_epoch = 0;
         let mut frame_index = 0u64;
+        let mut hardware_frame_seen = false;
         let mut decoded_frame = ffmpeg::frame::Video::empty();
         let mut sw_frame = ffmpeg::frame::Video::empty();
         let mut rgb_frame = ffmpeg::frame::Video::empty();
@@ -565,8 +629,11 @@ impl VideoDecoder {
                         break 'outer;
                     }
 
-                    // Apply backpressure before GPU readback and color
-                    // conversion, retaining this decoded frame across pause.
+                    // A full queue is backpressure, not a decoder failure. Do
+                    // not block forever and do not terminate the decoder. The
+                    // consumer owns presentation timing, so replace the
+                    // oldest queued frame when necessary and keep the newest
+                    // frame available.
                     let mut interrupted = false;
                     loop {
                         if stop_flag.load(Ordering::Relaxed) {
@@ -587,7 +654,11 @@ impl VideoDecoder {
                             interrupted = true;
                             break;
                         }
-                        if !paused && !frame_tx.is_full() {
+                        let queue_full = frame_queue
+                            .lock()
+                            .map(|queue| queue.len() >= frame_capacity)
+                            .unwrap_or(false);
+                        if !paused && !queue_full {
                             break;
                         }
                         // The queue is intentionally bounded. Avoid a 1 ms
@@ -615,6 +686,9 @@ impl VideoDecoder {
                             tracing::warn!("hwframe transfer failed: {ret}");
                             continue;
                         }
+                        hardware_frame_seen = true;
+                        hw_in_use.store(used_hw.code(), Ordering::Release);
+                        decoder_state.store(DecoderState::HardwareActive.code(), Ordering::Release);
                         &sw_frame
                     } else {
                         &decoded_frame
@@ -661,13 +735,12 @@ impl VideoDecoder {
                     };
                     frame_index = frame_index.wrapping_add(1);
 
-                    match frame_tx.send_timeout(video_frame, Duration::from_millis(20)) {
-                        Ok(()) => {}
-                        Err(SendTimeoutError::Timeout(_)) => break,
-                        Err(SendTimeoutError::Disconnected(_)) => {
-                            tracing::warn!("Frame queue disconnected, ending decode loop");
-                            return Ok(used_hw);
+                    if let Ok(mut queue) = frame_queue.lock() {
+                        if queue.len() >= frame_capacity {
+                            queue.pop_front();
+                            dropped_frames.fetch_add(1, Ordering::Relaxed);
                         }
+                        queue.push_back(video_frame);
                     }
                 }
             }
@@ -693,7 +766,14 @@ impl VideoDecoder {
             }
         }
 
-        Ok(used_hw)
+        if hardware_frame_seen {
+            Ok(used_hw)
+        } else {
+            if used_hw != HwAccel::Software {
+                decoder_state.store(DecoderState::SoftwareFallback.code(), Ordering::Release);
+            }
+            Ok(HwAccel::Software)
+        }
     }
 
     fn apply_seek(
@@ -720,7 +800,7 @@ impl VideoDecoder {
     }
 
     pub fn next_frame(&self) -> Option<VideoFrame> {
-        self.frame_rx.try_recv().ok()
+        self.frame_queue.lock().ok()?.pop_front()
     }
 
     pub fn metadata(&self) -> &VideoMetadata {
@@ -728,26 +808,27 @@ impl VideoDecoder {
     }
 
     pub fn decoder_info(&self) -> DecoderInfo {
+        let hw_accel = self.hw_accel_in_use();
         DecoderInfo {
             codec_name: self.metadata.codec.clone(),
-            hardware_accel: if self.hw_accel_in_use() != HwAccel::Software {
-                Some(self.hw_accel_in_use().name().to_string())
+            hardware_accel: if hw_accel != HwAccel::Software {
+                Some(hw_accel.name().to_string())
             } else {
                 None
             },
             pixel_format: "NV12/RGBA".to_string(),
+            dropped_frames: self.dropped_frames(),
+            state: self.decoder_state(),
         }
     }
 
     pub fn hw_accel_in_use(&self) -> HwAccel {
-        for _ in 0..50 {
-            let code = self.hw_in_use.load(Ordering::Relaxed);
-            if code != 0 {
-                return HwAccel::from_code(code);
-            }
-            std::thread::sleep(Duration::from_millis(5));
+        match self.hw_in_use.load(Ordering::Acquire) {
+            2 => HwAccel::Vaapi,
+            3 => HwAccel::Nvdec,
+            4 => HwAccel::VideoToolbox,
+            _ => HwAccel::Software,
         }
-        HwAccel::Software
     }
 
     pub fn pause(&self) {
@@ -764,7 +845,17 @@ impl VideoDecoder {
     }
 
     pub fn drain(&mut self) {
-        while self.frame_rx.try_recv().is_ok() {}
+        if let Ok(mut queue) = self.frame_queue.lock() {
+            queue.clear();
+        }
+    }
+
+    pub fn dropped_frames(&self) -> u64 {
+        self.dropped_frames.load(Ordering::Relaxed)
+    }
+
+    pub fn decoder_state(&self) -> DecoderState {
+        DecoderState::from_code(self.decoder_state.load(Ordering::Acquire))
     }
 
     pub fn is_video_file<P: AsRef<Path>>(path: P) -> bool {
@@ -778,6 +869,60 @@ impl VideoDecoder {
                 )
             })
     }
+}
+
+/// Select the hardware pixel format advertised by FFmpeg for the attached
+/// device. Merely attaching `hw_device_ctx` does not make a decoder produce
+/// hardware frames; FFmpeg calls this callback during codec negotiation.
+unsafe extern "C" fn select_hw_pixel_format(
+    context: *mut ffmpeg::ffi::AVCodecContext,
+    formats: *const ffmpeg::ffi::AVPixelFormat,
+) -> ffmpeg::ffi::AVPixelFormat {
+    if context.is_null() || formats.is_null() {
+        return ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE;
+    }
+
+    let device_type = unsafe {
+        (*context).hw_device_ctx.as_ref().and_then(|device| {
+            (!device.data.is_null())
+                .then(|| (*(device.data as *const ffmpeg::ffi::AVHWDeviceContext)).type_)
+        })
+    };
+    choose_hw_pixel_format(device_type, formats)
+}
+
+fn choose_hw_pixel_format(
+    device_type: Option<ffmpeg::ffi::AVHWDeviceType>,
+    formats: *const ffmpeg::ffi::AVPixelFormat,
+) -> ffmpeg::ffi::AVPixelFormat {
+    let preferred = match device_type {
+        Some(ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA) => {
+            ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_CUDA
+        }
+        Some(ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI) => {
+            ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_VAAPI
+        }
+        Some(ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX) => {
+            ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX
+        }
+        _ => ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE,
+    };
+
+    if preferred != ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE {
+        let mut current = formats;
+        loop {
+            let format = unsafe { *current };
+            if format == ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE {
+                break;
+            }
+            if format == preferred {
+                return format;
+            }
+            current = unsafe { current.add(1) };
+        }
+    }
+
+    ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE
 }
 
 fn ensure_ffmpeg_init() -> VideoResult<()> {
@@ -1032,15 +1177,17 @@ mod tests {
     }
 
     #[test]
-    fn test_hwaccel_codes_roundtrip() {
-        for accel in [
-            HwAccel::Software,
-            HwAccel::Vaapi,
-            HwAccel::Nvdec,
-            HwAccel::VideoToolbox,
-        ] {
-            assert_eq!(HwAccel::from_code(accel.code()), accel);
-        }
+    fn decoder_states_have_stable_diagnostic_names() {
+        assert_eq!(
+            DecoderState::HardwareNegotiating.name(),
+            "hardware negotiation"
+        );
+        assert_eq!(DecoderState::HardwareActive.name(), "hardware active");
+        assert_eq!(DecoderState::SoftwareFallback.name(), "software fallback");
+        assert_eq!(
+            DecoderState::from_code(DecoderState::Failed.code()),
+            DecoderState::Failed
+        );
     }
 
     #[test]
@@ -1098,6 +1245,34 @@ mod tests {
                 matrix: YuvMatrix::Bt601,
                 range: YuvRange::Limited,
             }
+        );
+    }
+
+    #[test]
+    fn hardware_format_negotiation_selects_only_the_matching_backend() {
+        let formats = [
+            ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_YUV420P,
+            ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_CUDA,
+            ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE,
+        ];
+        assert_eq!(
+            choose_hw_pixel_format(
+                Some(ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA),
+                formats.as_ptr()
+            ),
+            ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_CUDA
+        );
+
+        let software_only = [
+            ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_YUV420P,
+            ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE,
+        ];
+        assert_eq!(
+            choose_hw_pixel_format(
+                Some(ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA),
+                software_only.as_ptr()
+            ),
+            ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE
         );
     }
 }

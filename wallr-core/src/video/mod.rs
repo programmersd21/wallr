@@ -5,8 +5,8 @@ pub mod playback;
 pub mod scheduler;
 
 pub use decoder::{
-    DecoderInfo, HwAccel, VideoDecoder, VideoFrame, VideoFrameData, VideoMetadata, YuvColorInfo,
-    YuvMatrix, YuvRange,
+    DecoderInfo, DecoderState, HwAccel, VideoDecoder, VideoFrame, VideoFrameData, VideoMetadata,
+    YuvColorInfo, YuvMatrix, YuvRange,
 };
 pub use error::{VideoError, VideoResult};
 pub use gpu::{GpuSelection, detect_adapters, select_adapter};

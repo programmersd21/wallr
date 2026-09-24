@@ -31,11 +31,7 @@ fn main() {
         "file: {path}\nresolution: {}x{}\nfps: {:.2}\nduration: {:?}\ncodec: {}\ncontainer: {}",
         meta.width, meta.height, meta.fps, meta.duration, meta.codec, meta.format
     );
-    println!(
-        "requested backend: {} (active: {})",
-        backend.name(),
-        decoder.hw_accel_in_use().name()
-    );
+    println!("requested backend: {}", backend.name());
 
     let mut count = 0u64;
     let mut dropped = 0u64;
@@ -68,6 +64,12 @@ fn main() {
     println!(
         "decoded {count} frames in {elapsed:?} ({fps:.1} fps, {} idle polls)",
         dropped
+    );
+    println!(
+        "active backend: {} (state: {}, dropped frames: {})",
+        decoder.hw_accel_in_use().name(),
+        decoder.decoder_state().name(),
+        decoder.dropped_frames()
     );
     println!("result: {}", if count > 30 { "PASS" } else { "FAIL" });
 }

@@ -100,7 +100,7 @@ Reads or edits the YAML config file.
 | `pause` / `resume` | Pause or resume video/GIF playback (`-m` for one output) |
 | `reload` | Same as `wallr reload` |
 | `status` | Daemon state (`running` / `paused`) |
-| `info` | GPU, decoder, and per-output details |
+| `info` | GPU, decoder state, dropped video frames, and per-output details |
 | `stop` | Same as `wallr quit` |
 | `seek <ts>` | Seek video (`HH:MM:SS` or seconds) |
 | `blank` / `restore` | Blank an output to black / restore its wallpaper |

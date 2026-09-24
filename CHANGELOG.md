@@ -5,9 +5,32 @@ All notable changes to Wallr are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.6.2] - 2026-09-24
 
 ### Changed
+
+- Hardware-decoder setup now negotiates FFmpeg's hardware pixel format before
+  accepting a hardware decoder.
+- Video queues remain bounded and replace stale frames under pressure instead
+  of terminating the decoder after a timed send failure.
+- Decoder diagnostics now distinguish hardware negotiation, active hardware
+  frames, software decoding, software fallback, and failure.
+
+### Performance
+
+- Video playback keeps the decode queue small and exposes dropped-frame counts
+  through `wallr ipc info` for diagnosing overloaded outputs.
+
+### Fixed
+
+- Fixed false hardware-decoding reports when a decoder opened but produced no
+  hardware frames.
+- Fixed decoder shutdown caused by transient queue pressure.
+
+### Documentation
+
+- Documented hardware pixel-format negotiation, fallback states, and bounded
+  video queue behavior.
 
 - Removed the overshoot easings (`emphatic`, `spring`) and their complex
   shader curves. The easing set is now `linear`, `ease_in`, `ease_out`,
