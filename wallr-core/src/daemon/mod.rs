@@ -811,6 +811,8 @@ struct RenderState {
     video_playback: std::sync::Arc<crate::video::VideoPlayback>,
     /// Hardware backend to request for new decoders (from `video.hw_decode`).
     hw_accel: crate::video::HwAccel,
+    /// GPU adapter policy shared by all outputs in this daemon.
+    preferred_gpu: crate::video::GpuSelection,
     /// Maximum decoded frames buffered ahead of presentation.
     preload_frames: usize,
     /// Optional cap for live video presentation.
@@ -909,7 +911,7 @@ impl RenderState {
                 renderer.clone()
             } else {
                 let renderer = tokio::runtime::Handle::current()
-                    .block_on(Renderer::new())
+                    .block_on(Renderer::new(&self.preferred_gpu))
                     .map_err(|e| anyhow::anyhow!("GPU init failed: {e}"))?;
                 let renderer = std::sync::Arc::new(renderer);
                 *shared = Some(renderer.clone());
@@ -3303,6 +3305,7 @@ impl Daemon {
             current_height: 0,
             video_playback: std::sync::Arc::new(crate::video::VideoPlayback::new()),
             hw_accel: crate::video::HwAccel::from_config(&config.video.hw_decode),
+            preferred_gpu: config.video.preferred_gpu.clone(),
             preload_frames: clamp_preload_frames(config.video.preload_frames),
             max_fps: clamp_max_fps(config.daemon.max_fps),
             scaling_mode: 0,
@@ -3398,6 +3401,7 @@ fn create_render_state_for_output_sync(
         current_height: 0,
         video_playback: std::sync::Arc::new(crate::video::VideoPlayback::new()),
         hw_accel: crate::video::HwAccel::from_config(&config.video.hw_decode),
+        preferred_gpu: config.video.preferred_gpu.clone(),
         preload_frames: clamp_preload_frames(config.video.preload_frames),
         max_fps: clamp_max_fps(config.daemon.max_fps),
         scaling_mode: 0,

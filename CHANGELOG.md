@@ -15,6 +15,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
   of terminating the decoder after a timed send failure.
 - Decoder diagnostics now distinguish hardware negotiation, active hardware
   frames, software decoding, software fallback, and failure.
+- `video.preferred_gpu` now selects the adapter actually used by wgpu instead
+  of only influencing adapter discovery.
 
 ### Performance
 

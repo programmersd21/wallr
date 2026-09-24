@@ -1,7 +1,7 @@
 use image::GenericImageView;
 use wgpu::util::DeviceExt;
 
-use crate::video::{VideoFrameData, YuvColorInfo, YuvMatrix, YuvRange};
+use crate::video::{GpuSelection, VideoFrameData, YuvColorInfo, YuvMatrix, YuvRange};
 
 const MAX_TEXTURE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_STATIC_DECODE_BYTES: u64 = 512 * 1024 * 1024;
@@ -169,20 +169,11 @@ impl Default for Uniforms {
 }
 
 impl Renderer {
-    pub async fn new() -> anyhow::Result<Self> {
+    pub async fn new(preference: &GpuSelection) -> anyhow::Result<Self> {
         // A Wayland wallpaper daemon on Linux only needs the native Linux GPU
         // backends. `Backends::all()` also probes browser/mobile/Apple
         // backends that cannot produce a Wayland surface here, increasing
         // startup work and sometimes loading unnecessary driver state.
-        let adapter_opts = wgpu::RequestAdapterOptions {
-            // A wallpaper is a persistent background workload. Prefer
-            // the power-efficient adapter so an integrated GPU is used
-            // when available; this avoids waking a discrete GPU and
-            // keeps idle power and driver allocations low on laptops.
-            power_preference: wgpu::PowerPreference::LowPower,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        };
         let (instance, adapter) = 'select: {
             // Try Vulkan first without initializing the GL backend: probing
             // GL loads its whole driver stack (~15 ms measured) for a
@@ -193,7 +184,7 @@ impl Renderer {
                     backends: wgpu::Backends::VULKAN,
                     ..Default::default()
                 });
-                if let Some(adapter) = instance.request_adapter(&adapter_opts).await {
+                if let Ok(adapter) = crate::video::select_adapter(&instance, preference).await {
                     break 'select (instance, adapter);
                 }
                 tracing::info!("No Vulkan adapter found, falling back to GL");
@@ -208,10 +199,9 @@ impl Renderer {
                 backends,
                 ..Default::default()
             });
-            let adapter = instance
-                .request_adapter(&adapter_opts)
+            let adapter = crate::video::select_adapter(&instance, preference)
                 .await
-                .ok_or_else(|| anyhow::anyhow!("Failed to find suitable adapter"))?;
+                .map_err(|e| anyhow::anyhow!(e))?;
             (instance, adapter)
         };
 
@@ -1100,7 +1090,7 @@ mod tests {
             Ok(runtime) => runtime,
             Err(_) => return,
         };
-        let renderer = match runtime.block_on(Renderer::new()) {
+        let renderer = match runtime.block_on(Renderer::new(&GpuSelection::Auto)) {
             Ok(renderer) => renderer,
             Err(_) => {
                 eprintln!("SKIP: no GPU adapter for offscreen transition test");

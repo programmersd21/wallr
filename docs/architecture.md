@@ -98,8 +98,8 @@ so both buffers are dropped and the pool is replaced with a fresh minimal
 one. The next static set recreates what it needs on demand.
 
 The daemon configures FIFO surfaces with a one-frame maximum latency target,
-uses shared immutable samplers and cached pipelines, requests the low-power
-adapter preference, and asks wgpu to favor memory usage. These are policies,
+uses shared immutable samplers and cached pipelines, applies the configured
+GPU adapter policy, and asks wgpu to favor memory usage. These are policies,
 not guarantees: the compositor and backend remain free to choose their own
 implementation. On Linux, Wallr limits wgpu instance probing to Vulkan and
 OpenGL because those are the supported native Wayland rendering backends;

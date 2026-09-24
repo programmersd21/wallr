@@ -55,7 +55,23 @@ pub async fn select_adapter(
     instance: &wgpu::Instance,
     preference: &GpuSelection,
 ) -> VideoResult<wgpu::Adapter> {
-    let adapters = detect_adapters(instance).await;
+    let adapters: Vec<_> = instance
+        .enumerate_adapters(wgpu::Backends::all())
+        .into_iter()
+        .map(|adapter| {
+            let info = adapter.get_info();
+            (
+                adapter,
+                AdapterInfo {
+                    name: info.name,
+                    backend: info.backend,
+                    device_type: info.device_type,
+                    driver: info.driver,
+                    driver_info: info.driver_info,
+                },
+            )
+        })
+        .collect();
     if adapters.is_empty() {
         return Err(VideoError::AdapterNotFound(
             "No GPU adapters detected".to_string(),
@@ -65,35 +81,24 @@ pub async fn select_adapter(
     let selected = match preference {
         GpuSelection::Auto => adapters
             .iter()
-            .find(|a| a.is_integrated())
+            .find(|(_, info)| info.is_integrated())
             .or_else(|| adapters.first()),
-        GpuSelection::Integrated => adapters.iter().find(|a| a.is_integrated()),
-        GpuSelection::Discrete => adapters.iter().find(|a| a.is_discrete()),
-        GpuSelection::Named(name) => adapters.iter().find(|a| a.name.contains(name)),
+        GpuSelection::Integrated => adapters.iter().find(|(_, info)| info.is_integrated()),
+        GpuSelection::Discrete => adapters.iter().find(|(_, info)| info.is_discrete()),
+        GpuSelection::Named(name) => {
+            let requested = name.to_ascii_lowercase();
+            adapters
+                .iter()
+                .find(|(_, info)| info.name.to_ascii_lowercase().contains(&requested))
+        }
     };
 
     let selected = selected.ok_or_else(|| {
         VideoError::AdapterNotFound(format!("No adapter matching preference: {}", preference))
     })?;
 
-    tracing::info!("Selected GPU adapter: {}", selected);
-
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: match preference {
-                GpuSelection::Integrated => wgpu::PowerPreference::LowPower,
-                GpuSelection::Discrete => wgpu::PowerPreference::HighPerformance,
-                _ => wgpu::PowerPreference::LowPower,
-            },
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        })
-        .await
-        .ok_or_else(|| {
-            VideoError::AdapterNotFound(format!("Failed to request adapter for: {}", preference))
-        })?;
-
-    Ok(adapter)
+    tracing::info!("Selected GPU adapter: {}", selected.1);
+    Ok(selected.0.clone())
 }
 
 pub fn adapter_diagnostics(adapter: &wgpu::Adapter) -> String {
