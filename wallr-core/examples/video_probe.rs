@@ -5,15 +5,16 @@
 //! Decodes the file for a few seconds and reports frame rate, timing, and the
 //! backend actually used - no Wayland or GPU required.
 
+use std::process::ExitCode;
 use std::time::{Duration, Instant};
-use wallr_core::video::{HwAccel, VideoDecoder};
+use wallr_core::video::{DecoderState, HwAccel, VideoDecoder};
 
-fn main() {
+fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let path = args.next().expect("usage: video_probe <video> [backend]");
     if path == "--capabilities" {
         print_capabilities();
-        return;
+        return ExitCode::SUCCESS;
     }
     let backend = match args.next().as_deref() {
         Some("vaapi") => HwAccel::Vaapi,
@@ -26,7 +27,7 @@ fn main() {
         Ok(d) => d,
         Err(e) => {
             eprintln!("failed to init decoder: {e}");
-            std::process::exit(1);
+            return ExitCode::FAILURE;
         }
     };
 
@@ -69,14 +70,38 @@ fn main() {
         "decoded {count} frames in {elapsed:?} ({fps:.1} fps, {} idle polls)",
         dropped
     );
+    let state = decoder.decoder_state();
     println!(
         "active backend: {} (state: {}, dropped frames: {})",
         decoder.hw_accel_in_use().name(),
-        decoder.decoder_state().name(),
+        state.name(),
         decoder.dropped_frames()
     );
     println!("fallback occurred: {}", decoder.fallback_occurred());
-    println!("result: {}", if count > 30 { "PASS" } else { "FAIL" });
+    let passed = probe_passed(count, state);
+    println!("result: {}", if passed { "PASS" } else { "FAIL" });
+    if passed {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn probe_passed(count: u64, state: DecoderState) -> bool {
+    count > 30 && state != DecoderState::Failed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_decoder_cannot_pass_after_producing_frames() {
+        assert!(!probe_passed(300, DecoderState::Failed));
+        assert!(!probe_passed(30, DecoderState::SoftwareActive));
+        assert!(probe_passed(31, DecoderState::SoftwareActive));
+        assert!(probe_passed(300, DecoderState::HardwareActive));
+    }
 }
 
 fn print_capabilities() {
