@@ -148,6 +148,16 @@ It requires a running Wayland session, `hyperfine`, `awww`, and release-built
 Wallr. Comparisons are machine- and workload-specific; do not interpret one
 run as a universal ranking.
 
+Video decoding has its own harness, which needs neither a compositor nor a GPU:
+
+```bash
+scripts/benchmark-video.sh assets/demo.mkv
+```
+
+It reports throughput and the backend the decoder actually achieved. The
+underlying probe is also usable directly and exits non-zero on failure, so it
+can gate a script or CI step. See [`docs/benchmarks.md`](docs/benchmarks.md).
+
 ## Troubleshooting
 
 **`error while loading shared libraries: libavutil.so.58`**: the installed binary was built against an older FFmpeg ABI. Reinstall the latest release (statically linked), or rebuild from source:

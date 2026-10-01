@@ -19,7 +19,9 @@ run_probe() {
     { time "$probe" "$input" "$backend"; } 2>&1
 }
 
-software=$(run_probe software) || { printf '%s\n' "$software" >&2; exit 1; }
+# The probe exits non-zero on failure; tolerate that here so the `result: PASS`
+# check below owns the failure path and prints the actionable message.
+software=$(run_probe software || true)
 if ! grep -qx 'result: PASS' <<<"$software"; then
     printf 'error: software probe failed; no benchmark report generated\n%s\n' "$software" >&2
     exit 1

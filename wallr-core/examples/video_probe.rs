@@ -7,7 +7,7 @@
 
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
-use wallr_core::video::{DecoderState, HwAccel, VideoDecoder};
+use wallr_core::video::{HwAccel, VideoDecoder, probe_succeeded};
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -78,29 +78,12 @@ fn main() -> ExitCode {
         decoder.dropped_frames()
     );
     println!("fallback occurred: {}", decoder.fallback_occurred());
-    let passed = probe_passed(count, state);
+    let passed = probe_succeeded(count, state);
     println!("result: {}", if passed { "PASS" } else { "FAIL" });
     if passed {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
-    }
-}
-
-fn probe_passed(count: u64, state: DecoderState) -> bool {
-    count > 30 && state != DecoderState::Failed
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn failed_decoder_cannot_pass_after_producing_frames() {
-        assert!(!probe_passed(300, DecoderState::Failed));
-        assert!(!probe_passed(30, DecoderState::SoftwareActive));
-        assert!(probe_passed(31, DecoderState::SoftwareActive));
-        assert!(probe_passed(300, DecoderState::HardwareActive));
     }
 }
 

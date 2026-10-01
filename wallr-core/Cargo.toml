@@ -9,7 +9,7 @@ description = "Core library for wallr - wallpaper engine, GPU transitions, theme
 categories.workspace = true
 keywords.workspace = true
 rust-version.workspace = true
-include = ["src/**", "Cargo.toml", "README.md", "shaders/**"]
+include = ["src/**", "Cargo.toml", "README.md", "shaders/**", "examples/**"]
 
 [lib]
 name = "wallr_core"

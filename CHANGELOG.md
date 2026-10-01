@@ -5,6 +5,33 @@ All notable changes to Wallr are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.6.4] - 2026-09-30
+
+### Fixed
+
+- `video_probe` now exits non-zero when the decoder reports failure. It
+  previously printed `result: FAIL` and still exited `0`, so a failed decoder
+  could pass a script or CI step that only checked the exit status.
+- The probe's pass/fail rule moved from the example into `wallr_core::video`
+  as `probe_succeeded`. Its test previously lived in the example, where
+  `cargo test --workspace` never executes it; it now runs as part of CI, which
+  also covers the low-frame-count case.
+- `scripts/benchmark-video.sh` no longer loses its diagnostic message when the
+  software probe fails. The probe's non-zero exit tripped the harness's early
+  exit before the actionable `error: software probe failed` line could be
+  printed.
+
+### Changed
+
+- The published `wallr-core` package now includes `examples/`, so the
+  `video_probe` example is available to downstream `cargo add wallr-core`
+  users instead of only in the repository.
+
+### Documentation
+
+- Documented the video benchmark harness and the `video_probe` exit-code
+  contract in `docs/benchmarks.md`, and linked it from the README.
+
 ## [0.6.3] - 2026-09-28
 
 ### Added

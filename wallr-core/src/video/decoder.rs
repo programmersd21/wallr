@@ -65,6 +65,18 @@ impl DecoderState {
     }
 }
 
+/// Minimum frames a decode probe must produce before it counts as usable.
+pub const PROBE_MIN_FRAMES: u64 = 30;
+
+/// Whether a decode probe run should be reported as successful.
+///
+/// A run passes only when it produced more than [`PROBE_MIN_FRAMES`] frames
+/// *and* the decoder never reported failure. Checking the frame count alone
+/// would let a decoder that failed after decoding part of the stream pass.
+pub const fn probe_succeeded(frames: u64, state: DecoderState) -> bool {
+    frames > PROBE_MIN_FRAMES && !matches!(state, DecoderState::Failed)
+}
+
 impl HwAccel {
     pub fn name(&self) -> &'static str {
         match self {
@@ -1274,6 +1286,27 @@ mod tests {
             observe_software_frame(HwAccel::Software, &fallback),
             DecoderState::SoftwareFallback
         );
+    }
+
+    #[test]
+    fn failed_decoder_cannot_pass_after_producing_frames() {
+        assert!(!probe_succeeded(300, DecoderState::Failed));
+        assert!(!probe_succeeded(30, DecoderState::SoftwareActive));
+        assert!(probe_succeeded(31, DecoderState::SoftwareActive));
+        assert!(probe_succeeded(300, DecoderState::HardwareActive));
+    }
+
+    #[test]
+    fn probe_fails_on_low_frames_even_when_hardware_active() {
+        assert!(!probe_succeeded(0, DecoderState::HardwareActive));
+        assert!(!probe_succeeded(
+            PROBE_MIN_FRAMES,
+            DecoderState::HardwareActive
+        ));
+        assert!(probe_succeeded(
+            PROBE_MIN_FRAMES + 1,
+            DecoderState::HardwareActive
+        ));
     }
 
     #[test]
