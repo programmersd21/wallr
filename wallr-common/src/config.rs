@@ -83,7 +83,7 @@ pub struct MonitorConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThemeConfig {
-    #[serde(default)]
+    #[serde(default = "default_theme_provider")]
     pub provider: ThemeProvider,
 }
 
@@ -136,7 +136,7 @@ pub struct HooksConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub auto_start: bool,
     #[serde(default = "default_socket")]
     pub socket: String,
@@ -167,8 +167,12 @@ fn default_mode() -> String {
 fn default_scheme() -> String {
     "scheme-tonal-spot".to_string()
 }
+fn default_theme_provider() -> ThemeProvider {
+    ThemeProvider::Matugen
+}
+
 fn default_socket() -> String {
-    "/tmp/wallr.sock".to_string()
+    "$XDG_RUNTIME_DIR/wallr.sock".to_string()
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -181,16 +185,27 @@ pub enum ConfigError {
     InvalidDuration(String),
     #[error("invalid config value: {0}")]
     InvalidValue(String),
+    #[error("environment variable {0} is not set")]
+    UnsetEnv(String),
 }
 
 pub fn load_config(path: Option<&Path>) -> Result<WallrConfig, ConfigError> {
-    let p = path.map(|p| p.to_path_buf()).unwrap_or_else(config_path);
-    if !p.exists() {
-        return Ok(apply_environment_overrides(WallrConfig::default()));
+    match path {
+        Some(path) => {
+            let content = std::fs::read_to_string(path)?;
+            let config: WallrConfig = serde_yaml::from_str(&content)?;
+            Ok(apply_environment_overrides(config))
+        }
+        None => {
+            let path = config_path();
+            if !path.exists() {
+                return Ok(apply_environment_overrides(WallrConfig::default()));
+            }
+            let content = std::fs::read_to_string(path)?;
+            let config: WallrConfig = serde_yaml::from_str(&content)?;
+            Ok(apply_environment_overrides(config))
+        }
     }
-    let content = std::fs::read_to_string(p)?;
-    let config: WallrConfig = serde_yaml::from_str(&content)?;
-    Ok(apply_environment_overrides(config))
 }
 
 /// Applies process-scoped overrides used by launchers and isolated benchmarks.
@@ -205,42 +220,75 @@ fn apply_environment_overrides(mut config: WallrConfig) -> WallrConfig {
     config
 }
 
-pub fn expand_path(path: &str) -> PathBuf {
+/// Expands a leading `~`, `$VAR`, and `${VAR}` in a configured path.
+///
+/// Referencing a variable that is not set is an error instead of silently
+/// deleting the reference: dropping `$XDG_RUNTIME_DIR` from a socket path
+/// used to turn `/run/user/1000/wallr.sock` into `/wallr.sock`, which either
+/// failed with a confusing permission error or connected to the wrong path.
+pub fn expand_path(path: &str) -> Result<PathBuf, ConfigError> {
     let mut path_str = path.to_string();
 
-    if (path_str.starts_with("~/") || path_str == "~")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        if path_str == "~" {
-            path_str = home;
+    if path_str == "~" || path_str.starts_with("~/") {
+        let home = std::env::var("HOME").map_err(|_| ConfigError::UnsetEnv("HOME".into()))?;
+        path_str = if path_str == "~" {
+            home
         } else {
-            path_str = path_str.replacen("~", &home, 1);
-        }
+            path_str.replacen('~', &home, 1)
+        };
     }
 
     let mut expanded = String::new();
     let mut chars = path_str.chars().peekable();
 
     while let Some(c) = chars.next() {
-        if c == '$' {
-            let mut env_var = String::new();
+        if c != '$' {
+            expanded.push(c);
+            continue;
+        }
+
+        let mut env_var = String::new();
+        if chars.peek() == Some(&'{') {
+            chars.next();
+            let mut closed = false;
+            for next_c in chars.by_ref() {
+                if next_c == '}' {
+                    closed = true;
+                    break;
+                }
+                if !(next_c.is_ascii_alphanumeric() || next_c == '_') {
+                    return Err(ConfigError::InvalidValue(format!(
+                        "invalid environment variable reference near '${{{env_var}{next_c}'"
+                    )));
+                }
+                env_var.push(next_c);
+            }
+            if !closed || env_var.is_empty() {
+                return Err(ConfigError::InvalidValue(
+                    "unterminated or empty ${...} environment variable reference".into(),
+                ));
+            }
+        } else {
             while let Some(&next_c) = chars.peek() {
-                if next_c.is_alphanumeric() || next_c == '_' {
+                if next_c.is_ascii_alphanumeric() || next_c == '_' {
                     env_var.push(next_c);
                     chars.next();
                 } else {
                     break;
                 }
             }
-            if let Ok(val) = std::env::var(&env_var) {
-                expanded.push_str(&val);
+            if env_var.is_empty() {
+                // A literal `$` (including `$$`) is not an environment reference.
+                expanded.push('$');
+                continue;
             }
-        } else {
-            expanded.push(c);
         }
+
+        let value = std::env::var(&env_var).map_err(|_| ConfigError::UnsetEnv(env_var))?;
+        expanded.push_str(&value);
     }
 
-    PathBuf::from(expanded)
+    Ok(PathBuf::from(expanded))
 }
 
 pub fn config_path() -> PathBuf {
@@ -273,7 +321,10 @@ pub fn parse_duration(s: &str) -> Result<std::time::Duration, ConfigError> {
         if !val.is_finite() || val < 0.0 {
             return Err(ConfigError::InvalidDuration(s.to_string()));
         }
-        Ok(std::time::Duration::from_secs_f64(val))
+        // `from_secs_f64` panics when the value exceeds `Duration::MAX`;
+        // malformed or hostile config must produce an error instead.
+        std::time::Duration::try_from_secs_f64(val)
+            .map_err(|_| ConfigError::InvalidDuration(s.to_string()))
     } else if let Ok(val) = s.parse::<u64>() {
         Ok(std::time::Duration::from_millis(val))
     } else {
@@ -290,13 +341,29 @@ mod tests {
         let cfg = WallrConfig::default();
         assert_eq!(cfg.wallpaper.mode, ScalingMode::Fill);
         assert!(cfg.matugen.enabled);
+        assert!(cfg.daemon.auto_start);
+        assert_eq!(cfg.daemon.socket, "$XDG_RUNTIME_DIR/wallr.sock");
+        assert_eq!(cfg.theme.provider, ThemeProvider::Matugen);
+    }
+
+    #[test]
+    fn partial_daemon_section_matches_programmatic_defaults() {
+        let cfg: WallrConfig = serde_yaml::from_str("daemon: {max_fps: 30}\n").unwrap();
+        assert!(cfg.daemon.auto_start);
+        assert_eq!(cfg.daemon.socket, "$XDG_RUNTIME_DIR/wallr.sock");
+        assert_eq!(cfg.daemon.max_fps, Some(30));
+    }
+
+    #[test]
+    fn partial_theme_section_keeps_matugen_default() {
+        let cfg: WallrConfig = serde_yaml::from_str("theme: {}\n").unwrap();
+        assert_eq!(cfg.theme.provider, ThemeProvider::Matugen);
     }
 
     #[test]
     fn test_load_config_missing_file() {
-        let path = Path::new("/nonexistent/config.yaml");
-        let cfg = load_config(Some(path)).unwrap();
-        assert_eq!(cfg.wallpaper.mode, ScalingMode::Fill);
+        let path = Path::new("/nonexistent/wallr-test-config.yaml");
+        assert!(load_config(Some(path)).is_err());
     }
 
     #[test]
@@ -307,23 +374,45 @@ mod tests {
 
     #[test]
     fn test_parse_duration_s() {
-        let dur = parse_duration("2s").unwrap();
-        assert_eq!(dur.as_secs(), 2);
+        assert_eq!(parse_duration("2s").unwrap().as_secs(), 2);
+        assert_eq!(parse_duration("1.5s").unwrap().as_millis(), 1500);
+    }
+
+    #[test]
+    fn parse_duration_rejects_extreme_and_invalid_values_without_panicking() {
+        for value in ["1e300s", "inf", "NaN", "-1s", "18446744073709551616ms"] {
+            assert!(parse_duration(value).is_err(), "{value} should be rejected");
+        }
     }
 
     #[test]
     fn test_expand_path_tilde() {
-        let expanded = expand_path("~/test.jpg");
+        let expanded = expand_path("~/test.jpg").unwrap();
         assert!(!expanded.to_string_lossy().starts_with('~'));
     }
 
     #[test]
     fn test_expand_path_env() {
-        unsafe {
-            std::env::set_var("TEST_VAR", "my_folder");
-        }
-        let expanded = expand_path("/tmp/$TEST_VAR/file.png");
-        assert!(expanded.to_string_lossy().contains("my_folder"));
+        let expanded = expand_path("/tmp/$PATH/file.png").unwrap();
+        assert!(
+            expanded
+                .to_string_lossy()
+                .contains(std::env::var("PATH").unwrap().as_str())
+        );
+        let braced = expand_path("/tmp/${PATH}/file.png").unwrap();
+        assert_eq!(expanded, braced);
+    }
+
+    #[test]
+    fn expand_path_reports_unset_and_malformed_references() {
+        let missing = format!("${}", "WALLR_TEST_VAR_THAT_IS_NOT_SET");
+        assert!(matches!(
+            expand_path(&missing),
+            Err(ConfigError::UnsetEnv(_))
+        ));
+        assert!(expand_path("/tmp/${/x").is_err());
+        assert!(expand_path("/tmp/${}").is_err());
+        assert_eq!(expand_path("/tmp/a$").unwrap(), PathBuf::from("/tmp/a$"));
     }
 
     #[test]
@@ -332,5 +421,7 @@ mod tests {
         let yaml = serde_yaml::to_string(&cfg).unwrap();
         let parsed: WallrConfig = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(parsed.wallpaper.mode, cfg.wallpaper.mode);
+        assert_eq!(parsed.daemon.socket, cfg.daemon.socket);
+        assert_eq!(parsed.theme.provider, cfg.theme.provider);
     }
 }

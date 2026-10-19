@@ -2,8 +2,18 @@ use crate::config::{MatugenConfig, ThemeProvider};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::UNIX_EPOCH;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant, UNIX_EPOCH};
+
+/// Upper bound for a theme provider run. A provider that hangs must not pin
+/// a daemon blocking thread forever.
+const THEME_TIMEOUT: Duration = Duration::from_secs(120);
+/// Upper bound for a user hook. Hooks commonly launch desktop utilities, so
+/// allow more than a provider but still bound the run.
+const HOOK_TIMEOUT: Duration = Duration::from_secs(60);
+/// Reload helpers should return quickly; a stuck `pkill`/shell is ignored
+/// after this deadline.
+const RELOAD_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ThemeError {
@@ -11,6 +21,8 @@ pub enum ThemeError {
     SpawnError(#[from] std::io::Error),
     #[error("theme provider exited with code {0}: {1}")]
     NonZeroExit(i32, String),
+    #[error("command timed out after {0:?}: {1}")]
+    Timeout(Duration, String),
 }
 
 pub fn dispatch_theme(
@@ -114,15 +126,19 @@ fn resolve_theme_image(image_path: &Path) -> Option<PathBuf> {
 
 fn theme_cache_key(path: &Path) -> Result<String, String> {
     let meta = fs::metadata(path).map_err(|e| e.to_string())?;
-    let mtime = meta
-        .modified()
-        .map_err(|e| e.to_string())?
+    let modified = meta.modified().map_err(|e| e.to_string())?;
+    let nanos = modified
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+        .map_err(|e| e.to_string())?
+        .as_nanos();
     let mut hasher = Sha256::new();
-    hasher.update(path.to_string_lossy().as_bytes());
-    hasher.update(mtime.to_string().as_bytes());
+    // Hash the OS string bytes rather than lossy UTF-8: distinct non-UTF-8
+    // paths must not share a cache entry.
+    hasher.update(path.as_os_str().as_encoded_bytes());
+    hasher.update(b"\0");
+    hasher.update(nanos.to_le_bytes());
+    hasher.update(b"\0");
+    hasher.update(meta.len().to_le_bytes());
     Ok(hex::encode(hasher.finalize()))
 }
 
@@ -138,11 +154,17 @@ fn extract_gif_first_frame(path: &Path, dest: &Path) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
 
-    // Write to a temp file then atomically rename to avoid partial writes
-    let tmp = dest.with_extension("tmp.png");
-    img.save_with_format(&tmp, image::ImageFormat::Png)
+    // Save to a unique temp file and atomically rename into the cache. A
+    // fixed `.tmp.png` name let two concurrent extractions corrupt each
+    // other's output.
+    let parent = dest
+        .parent()
+        .ok_or_else(|| "cache path has no parent".to_string())?;
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let tmp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+    img.save_with_format(tmp.path(), image::ImageFormat::Png)
         .map_err(|e| e.to_string())?;
-    fs::rename(&tmp, dest).map_err(|e| e.to_string())?;
+    tmp.persist(dest).map_err(|e| e.error.to_string())?;
     Ok(())
 }
 
@@ -205,16 +227,17 @@ fn extract_video_first_frame(path: &Path, dest: &Path) -> Result<(), String> {
         return Err("no frame decoded from video".to_string());
     }
 
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
+    let parent = dest
+        .parent()
+        .ok_or_else(|| "cache path has no parent".to_string())?;
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
 
     let img = image::RgbImage::from_raw(out_w, out_h, packed)
         .ok_or_else(|| "failed to create image buffer".to_string())?;
-    let tmp = dest.with_extension("tmp.png");
-    img.save_with_format(&tmp, image::ImageFormat::Png)
+    let tmp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+    img.save_with_format(tmp.path(), image::ImageFormat::Png)
         .map_err(|e| e.to_string())?;
-    fs::rename(&tmp, dest).map_err(|e| e.to_string())?;
+    tmp.persist(dest).map_err(|e| e.error.to_string())?;
     Ok(())
 }
 
@@ -284,13 +307,17 @@ fn run_matugen(image_path: &Path, config: &MatugenConfig) -> Result<(), ThemeErr
     let mut child = cmd.spawn().map_err(ThemeError::SpawnError)?;
 
     if config.wait {
-        let status = child.wait().map_err(ThemeError::SpawnError)?;
+        let status = wait_with_timeout(&mut child, THEME_TIMEOUT, "matugen")?;
         if !status.success() {
             return Err(ThemeError::NonZeroExit(
                 status.code().unwrap_or(-1),
                 "matugen failed".to_string(),
             ));
         }
+    } else {
+        // `Child` does not reap on drop. A daemon is long-lived, so spawn a
+        // small reaper thread instead of accumulating zombie processes.
+        std::thread::spawn(move || reap_with_timeout(&mut child, THEME_TIMEOUT));
     }
 
     Ok(())
@@ -303,7 +330,8 @@ fn run_wallust(image_path: &Path) -> Result<(), ThemeError> {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    let status = cmd.status().map_err(ThemeError::SpawnError)?;
+    let mut child = cmd.spawn().map_err(ThemeError::SpawnError)?;
+    let status = wait_with_timeout(&mut child, THEME_TIMEOUT, "wallust")?;
     if !status.success() {
         return Err(ThemeError::NonZeroExit(
             status.code().unwrap_or(-1),
@@ -321,7 +349,8 @@ fn run_pywal(image_path: &Path) -> Result<(), ThemeError> {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    let status = cmd.status().map_err(ThemeError::SpawnError)?;
+    let mut child = cmd.spawn().map_err(ThemeError::SpawnError)?;
+    let status = wait_with_timeout(&mut child, THEME_TIMEOUT, "pywal")?;
     if !status.success() {
         return Err(ThemeError::NonZeroExit(
             status.code().unwrap_or(-1),
@@ -367,11 +396,10 @@ pub fn detect_matugen_loop_risk() -> Option<String> {
 /// Runs hook commands sequentially. User hooks output is preserved.
 pub fn run_hooks(hooks: &[String]) -> Result<(), ThemeError> {
     for hook in hooks {
-        let status = Command::new("sh")
-            .arg("-c")
-            .arg(hook)
-            .status()
-            .map_err(ThemeError::SpawnError)?;
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(hook);
+        let mut child = command.spawn().map_err(ThemeError::SpawnError)?;
+        let status = wait_with_timeout(&mut child, HOOK_TIMEOUT, hook)?;
 
         if !status.success() {
             return Err(ThemeError::NonZeroExit(
@@ -386,23 +414,45 @@ pub fn run_hooks(hooks: &[String]) -> Result<(), ThemeError> {
 /// Runs reload commands, via shell or pkill quietly (swallows failure if app isn't running).
 pub fn run_reload_list(commands: &[String]) -> Result<(), ThemeError> {
     for cmd in commands {
-        if cmd.contains(' ') {
-            let _ = Command::new("sh")
-                .arg("-c")
-                .arg(cmd)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+        let mut command = if cmd.contains(' ') {
+            let mut command = Command::new("sh");
+            command.arg("-c").arg(cmd);
+            command
         } else {
-            let _ = Command::new("pkill")
-                .arg("-SIGUSR2")
-                .arg(cmd)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+            let mut command = Command::new("pkill");
+            command.arg("-SIGUSR2").arg(cmd);
+            command
+        };
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+        if let Ok(mut child) = command.spawn() {
+            let _ = wait_with_timeout(&mut child, RELOAD_TIMEOUT, cmd);
         }
     }
     Ok(())
+}
+
+fn wait_with_timeout(
+    child: &mut Child,
+    timeout: Duration,
+    label: &str,
+) -> Result<ExitStatus, ThemeError> {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) if started.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ThemeError::Timeout(timeout, label.to_string()));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Err(err) => return Err(ThemeError::SpawnError(err)),
+        }
+    }
+}
+
+fn reap_with_timeout(child: &mut Child, timeout: Duration) {
+    let _ = wait_with_timeout(child, timeout, "detached theme provider");
 }
 
 #[cfg(test)]
@@ -438,5 +488,33 @@ mod tests {
     fn test_detect_loop_risk() {
         // Should not detect a loop when wallr is not invoked by matugen
         assert!(detect_matugen_loop_risk().is_none());
+    }
+
+    #[test]
+    fn cache_key_uses_subsecond_mtime_and_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wall.gif");
+        std::fs::write(&path, b"one").unwrap();
+        let first = theme_cache_key(&path).unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_modified(UNIX_EPOCH + Duration::from_millis(1_000))
+            .unwrap();
+        let second = theme_cache_key(&path).unwrap();
+        assert_ne!(first, second, "sub-second mtime changes must invalidate");
+
+        file.set_modified(UNIX_EPOCH + Duration::from_millis(1_500))
+            .unwrap();
+        std::fs::write(&path, b"two").unwrap();
+        let third = theme_cache_key(&path).unwrap();
+        assert_ne!(second, third, "size changes must invalidate");
+    }
+
+    #[test]
+    fn hung_commands_are_killed_and_reported() {
+        let mut child = Command::new("sh").arg("-c").arg("sleep 5").spawn().unwrap();
+        let started = Instant::now();
+        let result = wait_with_timeout(&mut child, Duration::from_millis(50), "test");
+        assert!(matches!(result, Err(ThemeError::Timeout(..))));
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }

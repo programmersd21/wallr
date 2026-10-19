@@ -34,7 +34,7 @@ impl fmt::Display for AdapterInfo {
 
 pub async fn detect_adapters(instance: &wgpu::Instance) -> Vec<AdapterInfo> {
     let mut adapters = Vec::new();
-    for adapter in instance.enumerate_adapters(wgpu::Backends::all()) {
+    for adapter in instance.enumerate_adapters(wgpu::Backends::all()).await {
         let info = adapter.get_info();
         adapters.push(AdapterInfo {
             name: info.name.clone(),
@@ -57,6 +57,7 @@ pub async fn select_adapter(
 ) -> VideoResult<wgpu::Adapter> {
     let adapters: Vec<_> = instance
         .enumerate_adapters(wgpu::Backends::all())
+        .await
         .into_iter()
         .map(|adapter| {
             let info = adapter.get_info();

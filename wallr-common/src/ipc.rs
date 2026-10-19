@@ -199,14 +199,36 @@ pub fn validate_command(cmd: &IpcCommand) -> Result<(), String> {
 }
 
 fn effect_param_values(effect: &crate::effect::Effect) -> Vec<f32> {
-    use crate::effect::Effect;
-    match effect {
-        Effect::Fade(p) => vec![p.from, p.to],
-        Effect::Wipe(p) => vec![p.softness, p.angle.unwrap_or(0.0)],
-        Effect::Slide(_) => vec![],
-        Effect::Wave(p) => vec![p.frequency, p.amplitude, p.angle.unwrap_or(0.0)],
-        Effect::Grow(_) | Effect::Outer(_) => vec![],
+    use crate::effect::{Effect, Origin};
+
+    fn origin_values(origin: &Origin, values: &mut Vec<f32>) {
+        if let Origin::Custom(x, y) = origin {
+            values.push(*x);
+            values.push(*y);
+        }
     }
+
+    let mut values = Vec::new();
+    match effect {
+        Effect::Fade(p) => values.extend([p.from, p.to]),
+        Effect::Wipe(p) => {
+            values.push(p.softness);
+            if let Some(angle) = p.angle {
+                values.push(angle);
+            }
+        }
+        Effect::Slide(_) => {}
+        Effect::Wave(p) => {
+            values.extend([p.frequency, p.amplitude]);
+            if let Some(angle) = p.angle {
+                values.push(angle);
+            }
+            origin_values(&p.origin, &mut values);
+        }
+        Effect::Grow(p) => origin_values(&p.origin, &mut values),
+        Effect::Outer(p) => origin_values(&p.origin, &mut values),
+    }
+    values
 }
 
 #[cfg(test)]
@@ -307,6 +329,31 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn rejects_non_finite_effect_origins() {
+        for origin in [
+            crate::effect::Origin::Custom(f32::NAN, 0.5),
+            crate::effect::Origin::Custom(0.5, f32::INFINITY),
+        ] {
+            let effect = crate::effect::Effect::Grow(crate::effect::GrowParams {
+                origin,
+                easing: crate::effect::Easing::Linear,
+            });
+            assert!(
+                validate_command(&IpcCommand::Preview {
+                    path: "/tmp/w.jpg".to_string(),
+                    effect: Some(effect),
+                    duration_ms: None,
+                    no_theme: true,
+                    theme_override: None,
+                    monitor: None,
+                    scaling_mode: None,
+                })
+                .is_err()
+            );
+        }
     }
 
     #[test]

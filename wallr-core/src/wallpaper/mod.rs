@@ -117,6 +117,18 @@ impl WallpaperEngine {
         path: &Path,
         options: &SetOptions,
     ) -> Result<(), WallpaperError> {
+        self.set_wallpaper_blocking(path, options)
+    }
+
+    /// Synchronous implementation for callers that must run it on a blocking
+    /// worker. Theme providers and hooks spawn and wait for external
+    /// processes; running them directly on a Tokio worker stalls the IPC
+    /// loop and every other task on that runtime.
+    pub fn set_wallpaper_blocking(
+        &mut self,
+        path: &Path,
+        options: &SetOptions,
+    ) -> Result<(), WallpaperError> {
         info!("Setting wallpaper to: {:?}", path);
 
         let result = (|| {
@@ -156,6 +168,12 @@ impl WallpaperEngine {
     }
 
     pub fn reload(&self) -> Result<(), WallpaperError> {
+        self.reload_blocking()
+    }
+
+    /// Synchronous implementation for blocking workers; see
+    /// [`WallpaperEngine::set_wallpaper_blocking`].
+    pub fn reload_blocking(&self) -> Result<(), WallpaperError> {
         info!("Running reload commands...");
         theme::run_reload_list(&self.config.reload)?;
         Ok(())

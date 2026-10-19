@@ -28,6 +28,10 @@ impl ScheduledFrame {
 
 pub struct FrameScheduler {
     start_time: Instant,
+    /// Position at `start_time`. Storing an offset instead of subtracting
+    /// from `Instant::now()` avoids underflow panics when seeking beyond the
+    /// system uptime (a valid multi-hour video on a freshly booted host).
+    position_offset: Duration,
     duration: Duration,
     paused: bool,
     pause_duration: Duration,
@@ -40,6 +44,7 @@ impl FrameScheduler {
     pub fn new(duration: Duration) -> Self {
         Self {
             start_time: Instant::now(),
+            position_offset: Duration::ZERO,
             duration,
             paused: false,
             pause_duration: Duration::ZERO,
@@ -55,7 +60,10 @@ impl FrameScheduler {
         } else {
             Instant::now()
         };
-        let elapsed = base.duration_since(self.start_time) - self.pause_duration;
+        let elapsed = base
+            .saturating_duration_since(self.start_time)
+            .saturating_add(self.position_offset)
+            .saturating_sub(self.pause_duration);
         let total_ms = self.duration.as_millis().max(1);
         Duration::from_millis((elapsed.as_millis() % total_ms) as u64)
     }
@@ -89,8 +97,11 @@ impl FrameScheduler {
                 anyhow::anyhow!("Position exceeds video duration"),
             ));
         }
-        self.start_time = Instant::now() - position;
+        let now = Instant::now();
+        self.start_time = now;
+        self.position_offset = position;
         self.pause_duration = Duration::ZERO;
+        self.pause_start = self.paused.then_some(now);
         self.last_frame_pts = None;
         tracing::info!("Seeked to {:?}", position);
         Ok(())
@@ -98,6 +109,7 @@ impl FrameScheduler {
 
     pub fn reset(&mut self) {
         self.start_time = Instant::now();
+        self.position_offset = Duration::ZERO;
         self.pause_duration = Duration::ZERO;
         self.pause_start = None;
         self.paused = false;
@@ -222,7 +234,16 @@ mod tests {
         assert!(scheduler.should_upload(Duration::from_millis(900)));
         assert!(!scheduler.should_display(Duration::ZERO));
 
-        scheduler.start_time = Instant::now() - Duration::from_millis(10);
+        scheduler.position_offset = Duration::from_millis(10);
         assert!(scheduler.should_display(Duration::ZERO));
+    }
+    #[test]
+    fn seek_beyond_system_uptime_does_not_panic() {
+        let mut scheduler = FrameScheduler::new(Duration::from_secs(365 * 24 * 3600));
+        let target = Duration::from_secs(300 * 24 * 3600);
+        scheduler.seek(target).unwrap();
+        let position = scheduler.current_position();
+        assert!(position >= target - Duration::from_secs(1));
+        assert!(position <= target + Duration::from_secs(1));
     }
 }

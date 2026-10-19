@@ -1,15 +1,23 @@
 #![recursion_limit = "256"]
 
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;
 use tracing_subscriber::EnvFilter;
 use wallr_common::cli::{Commands, ConfigCommands, EffectArgs, IpcCommands, WallrCli};
-use wallr_common::config;
+use wallr_common::config::{self, WallrConfig};
 use wallr_common::effect::{Effect, FadeParams};
 use wallr_core::daemon::Daemon;
-use wallr_core::ipc::{IpcCommand, send_ipc_command};
+use wallr_core::ipc::{IpcCommand, IpcResponse, send_ipc_command};
 use wallr_core::wallpaper::{DiagnosticStatus, WallpaperEngine};
+
+/// Upper bound for `wallr set -` input. It is read before any format
+/// detection or staging, so an endless pipe must not grow memory without
+/// limit.
+const MAX_STDIN_BYTES: u64 = 256 * 1024 * 1024;
 
 fn config_value<'a>(value: &'a serde_yaml::Value, key: &str) -> Option<&'a serde_yaml::Value> {
     key.split('.')
@@ -31,8 +39,25 @@ fn set_config_value(
             .get_mut(*part)
             .ok_or_else(|| anyhow::anyhow!("unknown config key: {key}"))?;
     }
-    current[parts[parts.len() - 1]] = replacement;
+    let last = parts[parts.len() - 1];
+    if last.is_empty() || current.get(last).is_none() {
+        anyhow::bail!("unknown config key: {key}");
+    }
+    current[last] = replacement;
     Ok(())
+}
+
+fn ensure_response(response: IpcResponse) -> anyhow::Result<IpcResponse> {
+    if response.success {
+        Ok(response)
+    } else {
+        anyhow::bail!(
+            "{}",
+            response
+                .message
+                .unwrap_or_else(|| "daemon reported failure".to_string())
+        )
+    }
 }
 
 /// Combine CLI `--effect`/override flags into the transition effect.
@@ -48,8 +73,68 @@ fn pick_effect(effect_args: &EffectArgs) -> anyhow::Result<(Effect, Option<u32>)
         .as_deref()
         .map(wallr_common::config::parse_duration)
         .transpose()?
-        .map(|d| d.as_millis() as u32);
+        .map(|duration| {
+            u32::try_from(duration.as_millis()).map_err(|_| {
+                anyhow::anyhow!(
+                    "transition duration {}ms exceeds the supported maximum",
+                    duration.as_millis()
+                )
+            })
+        })
+        .transpose()?;
     Ok((effect, duration_ms))
+}
+
+fn detect_image_extension(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(b"GIF8") {
+        "gif"
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "png"
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        "jpg"
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "webp"
+    } else {
+        // Let the image decoder report the actual format. PNG is the common
+        // screenshot format and is also what grim emits.
+        "png"
+    }
+}
+
+fn stage_stdin(bytes: &[u8], extension: &str) -> anyhow::Result<std::path::PathBuf> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let directory = std::env::temp_dir();
+    let mut attempt = 0u32;
+    loop {
+        let path = directory.join(format!(
+            "wallr-stdin-{}-{}-{}.{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+            attempt,
+            extension
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(bytes)?;
+                file.flush()?;
+                return Ok(path);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                attempt = attempt.wrapping_add(1);
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
 }
 
 // All decoding, rendering, and filesystem work is dispatched through
@@ -78,8 +163,28 @@ async fn async_main() -> Result<()> {
         .with_env_filter(EnvFilter::new(filter))
         .try_init();
 
-    let config_path = cli.config.as_deref().map(std::path::Path::new);
-    let config = config::load_config(config_path)?;
+    let config_path_owned = cli.config.clone();
+    let config_path = config_path_owned.as_deref();
+    let config = match config::load_config(config_path) {
+        Ok(config) => config,
+        // `wallr config set -c new.yaml` is also how users create a fresh
+        // config file. Keep that one command lenient, but report a missing
+        // explicit file to every other command instead of silently using
+        // defaults with the wrong socket/paths.
+        Err(err)
+            if config_path.is_some()
+                && matches!(
+                    &cli.command,
+                    Commands::Config {
+                        subcommand: ConfigCommands::Set { .. }
+                    }
+                ) =>
+        {
+            let _ = err;
+            WallrConfig::default()
+        }
+        Err(err) => return Err(err.into()),
+    };
 
     match cli.command {
         Commands::Set {
@@ -90,14 +195,24 @@ async fn async_main() -> Result<()> {
             mode,
             effect_args,
         } => {
-            let socket_path = config::expand_path(&config.daemon.socket);
-            let daemon_running =
-                socket_path.exists() && tokio::net::UnixStream::connect(&socket_path).await.is_ok();
+            let socket_path = config::expand_path(&config.daemon.socket)?;
+            let daemon_running = tokio::net::UnixStream::connect(&socket_path).await.is_ok();
 
             if !daemon_running {
+                if !config.daemon.auto_start {
+                    anyhow::bail!(
+                        "daemon is not running and daemon.auto_start is false; \
+                         start it with `wallr daemon`"
+                    );
+                }
                 let exe = std::env::current_exe()?;
-                let _ = std::process::Command::new(&exe)
-                    .arg("daemon")
+                let mut daemon_command = std::process::Command::new(&exe);
+                if let Some(path) = &config_path_owned {
+                    daemon_command.arg("--config").arg(path);
+                }
+                daemon_command.arg("daemon");
+                let _ = daemon_command
+                    .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .spawn()?;
@@ -106,9 +221,7 @@ async fn async_main() -> Result<()> {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     waited += 100;
-                    if socket_path.exists()
-                        && tokio::net::UnixStream::connect(&socket_path).await.is_ok()
-                    {
+                    if tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
                         break;
                     }
                     if waited >= 3000 {
@@ -122,35 +235,28 @@ async fn async_main() -> Result<()> {
 
             let (effect, duration_ms) = pick_effect(&effect_args)?;
 
-            // A `-` path reads the image bytes from stdin (like `awww img -`),
-            // staging them in a temp file: downstream code paths key GIF
-            // animation and video detection off the file extension.
-            let path = if path.as_os_str() == "-" {
+            // A `-` path reads image bytes from stdin (like `awww img -`),
+            // staging them in a private temp file: downstream code paths key
+            // GIF/static decoding off the file extension.
+            let (path, staged) = if path.as_os_str() == "-" {
                 use std::io::Read;
                 let mut bytes = Vec::new();
-                std::io::stdin().read_to_end(&mut bytes)?;
+                std::io::stdin()
+                    .take(MAX_STDIN_BYTES + 1)
+                    .read_to_end(&mut bytes)?;
                 anyhow::ensure!(!bytes.is_empty(), "no image data on stdin");
-                let ext = if bytes.starts_with(b"GIF8") {
-                    "gif"
-                } else {
-                    "png"
-                };
-                let staged = std::env::temp_dir().join(format!(
-                    "wallr-stdin-{}-{}.{}",
-                    std::process::id(),
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis(),
-                    ext
-                ));
-                std::fs::write(&staged, &bytes)?;
-                staged
+                anyhow::ensure!(
+                    bytes.len() as u64 <= MAX_STDIN_BYTES,
+                    "stdin image exceeds the {} MiB limit",
+                    MAX_STDIN_BYTES / (1024 * 1024)
+                );
+                let ext = detect_image_extension(&bytes);
+                (stage_stdin(&bytes, ext)?, true)
             } else {
-                path
+                (path, false)
             };
             let canonical_path = path.canonicalize().unwrap_or_else(|_| path.clone());
-            let resp = send_ipc_command(
+            let response = send_ipc_command(
                 socket_path,
                 IpcCommand::Preview {
                     path: canonical_path.to_string_lossy().to_string(),
@@ -162,13 +268,11 @@ async fn async_main() -> Result<()> {
                     scaling_mode: mode.or(Some(config.wallpaper.mode.clone())),
                 },
             )
-            .await?;
-
-            if !resp.success
-                && let Some(msg) = resp.message
-            {
-                anyhow::bail!("{}", msg);
+            .await;
+            if staged {
+                let _ = std::fs::remove_file(&path);
             }
+            ensure_response(response?)?;
         }
 
         Commands::Doctor => {
@@ -223,43 +327,43 @@ async fn async_main() -> Result<()> {
         },
 
         Commands::Reload => {
-            let socket_path = config::expand_path(&config.daemon.socket);
-            if socket_path.exists() && tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
-                let resp = send_ipc_command(socket_path, IpcCommand::Reload).await?;
-                if let Some(msg) = resp.message {
+            let socket_path = config::expand_path(&config.daemon.socket)?;
+            if tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
+                let response =
+                    ensure_response(send_ipc_command(socket_path, IpcCommand::Reload).await?)?;
+                if let Some(msg) = response.message {
                     println!("{}", msg);
                 }
             } else {
                 let engine = WallpaperEngine::new(config)?;
-                engine.reload()?;
+                tokio::task::spawn_blocking(move || engine.reload_blocking()).await??;
                 println!("{} Reloaded configuration & hooks", "✓".green());
             }
         }
 
         Commands::Monitor { subcommand } => {
             use wallr_common::cli::MonitorCommands;
-            let socket_path = config::expand_path(&config.daemon.socket);
-            match subcommand {
+            let socket_path = config::expand_path(&config.daemon.socket)?;
+            let response = match subcommand {
                 MonitorCommands::List => {
-                    let resp = send_ipc_command(socket_path, IpcCommand::MonitorList).await?;
-                    if let Some(msg) = resp.message {
-                        println!("{}", msg.trim_end());
-                    }
+                    send_ipc_command(socket_path, IpcCommand::MonitorList).await?
                 }
                 MonitorCommands::Current => {
-                    let resp = send_ipc_command(socket_path, IpcCommand::MonitorCurrent).await?;
-                    if let Some(msg) = resp.message {
-                        println!("{}", msg.trim_end());
-                    }
+                    send_ipc_command(socket_path, IpcCommand::MonitorCurrent).await?
                 }
+            };
+            let response = ensure_response(response)?;
+            if let Some(msg) = response.message {
+                println!("{}", msg.trim_end());
             }
         }
 
         Commands::Quit => {
-            let socket_path = config::expand_path(&config.daemon.socket);
-            if socket_path.exists() && tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
-                let resp = send_ipc_command(socket_path, IpcCommand::Stop).await?;
-                if let Some(msg) = resp.message {
+            let socket_path = config::expand_path(&config.daemon.socket)?;
+            if tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
+                let response =
+                    ensure_response(send_ipc_command(socket_path, IpcCommand::Stop).await?)?;
+                if let Some(msg) = response.message {
                     println!("{}", msg);
                 }
             } else {
@@ -272,51 +376,24 @@ async fn async_main() -> Result<()> {
             if let Some(fps) = max_fps {
                 final_config.daemon.max_fps = Some(fps);
             }
-            let daemon = Daemon::new(final_config)?;
+            let daemon = Daemon::with_config_path(final_config, config_path_owned.clone())?;
             daemon.start().await?;
         }
 
         Commands::Ipc { subcommand } => {
-            let socket_path = config::expand_path(&config.daemon.socket);
+            let socket_path = config::expand_path(&config.daemon.socket)?;
             let cmd = match subcommand {
                 IpcCommands::Pause { monitor } => IpcCommand::Pause { monitor },
                 IpcCommands::Resume { monitor } => IpcCommand::Resume { monitor },
                 IpcCommands::Reload => IpcCommand::Reload,
-                IpcCommands::Preview => IpcCommand::Preview {
-                    path: "".to_string(),
-                    effect: None,
-                    duration_ms: None,
-                    no_theme: true,
-                    theme_override: None,
-                    monitor: None,
-                    scaling_mode: None,
-                },
                 IpcCommands::Stop => IpcCommand::Stop,
                 IpcCommands::Status => IpcCommand::Status,
                 IpcCommands::Info { monitor } => IpcCommand::Info { monitor },
                 IpcCommands::Seek { timestamp, monitor } => {
-                    let ms = if timestamp.contains(':') {
-                        let parts: Vec<&str> = timestamp.split(':').collect();
-                        match parts.len() {
-                            2 => {
-                                let min: u64 = parts[0].parse()?;
-                                let sec: u64 = parts[1].parse()?;
-                                (min * 60 + sec) * 1000
-                            }
-                            3 => {
-                                let hr: u64 = parts[0].parse()?;
-                                let min: u64 = parts[1].parse()?;
-                                let sec: u64 = parts[2].parse()?;
-                                (hr * 3600 + min * 60 + sec) * 1000
-                            }
-                            _ => anyhow::bail!("invalid timestamp format. Use HH:MM:SS or seconds"),
-                        }
-                    } else {
-                        let sec: f64 = timestamp.parse()?;
-                        (sec * 1000.0) as u64
-                    };
+                    let timestamp_ms = wallr_common::cli::parse_timestamp_ms(&timestamp)
+                        .map_err(|e| anyhow::anyhow!(e))?;
                     IpcCommand::Seek {
-                        timestamp_ms: ms,
+                        timestamp_ms,
                         monitor,
                     }
                 }
@@ -359,12 +436,33 @@ async fn async_main() -> Result<()> {
                     }
                 }
             };
-            let resp = send_ipc_command(socket_path, cmd).await?;
-            if let Some(msg) = resp.message {
+            let response = ensure_response(send_ipc_command(socket_path, cmd).await?)?;
+            if let Some(msg) = response.message {
                 println!("{}", msg);
             }
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{detect_image_extension, set_config_value};
+
+    #[test]
+    fn detects_stdin_formats_from_magic() {
+        assert_eq!(detect_image_extension(b"GIF89a...."), "gif");
+        assert_eq!(detect_image_extension(b"\x89PNG\r\n\x1a\n...."), "png");
+        assert_eq!(detect_image_extension(b"\xff\xd8\xff...."), "jpg");
+        assert_eq!(detect_image_extension(b"RIFF1234WEBP...."), "webp");
+        assert_eq!(detect_image_extension(b"unknown"), "png");
+    }
+
+    #[test]
+    fn config_set_rejects_unknown_final_keys() {
+        let mut value = serde_yaml::from_str("wallpaper:\n  mode: fill\n").unwrap();
+        assert!(set_config_value(&mut value, "wallpaper.nope", serde_yaml::Value::Null).is_err());
+        assert!(set_config_value(&mut value, "wallpaper.mode", serde_yaml::Value::Null).is_ok());
+    }
 }

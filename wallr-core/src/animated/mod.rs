@@ -21,6 +21,12 @@ use gif::DisposalMethod;
 // baseline after the wallpaper is replaced.
 const CACHE_BUDGET: usize = 32 * 1024 * 1024;
 const MAX_GIF_WORKING_SET: usize = 512 * 1024 * 1024;
+/// Maximum GIF file size accepted before any pixel work. A wallpaper
+/// animation larger than this is almost certainly malformed or hostile, and
+/// reading it whole would defeat the working-set limits below.
+pub const MAX_GIF_INPUT_BYTES: usize = 256 * 1024 * 1024;
+/// Bound the per-frame metadata vector as well as decoded pixels.
+pub const MAX_GIF_FRAMES: usize = 100_000;
 
 /// A cached frame: raw RGBA8 or zstd-compressed RGBA8. The whole animation
 /// uses one representation, chosen at decode time: raw when the full decoded
@@ -124,7 +130,28 @@ impl AnimatedImage {
         if !is_gif {
             return Ok(None);
         }
-        let bytes: std::sync::Arc<[u8]> = std::sync::Arc::from(std::fs::read(path)?);
+        let metadata = std::fs::metadata(path)?;
+        anyhow::ensure!(
+            metadata.len() <= MAX_GIF_INPUT_BYTES as u64,
+            "GIF file {} is {} bytes, exceeding the {} MiB input limit",
+            path.display(),
+            metadata.len(),
+            MAX_GIF_INPUT_BYTES / (1024 * 1024)
+        );
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        {
+            use std::io::Read;
+            let file = std::fs::File::open(path)?;
+            file.take((MAX_GIF_INPUT_BYTES + 1) as u64)
+                .read_to_end(&mut bytes)?;
+        }
+        anyhow::ensure!(
+            bytes.len() <= MAX_GIF_INPUT_BYTES,
+            "GIF file {} grew beyond the {} MiB input limit while reading",
+            path.display(),
+            MAX_GIF_INPUT_BYTES / (1024 * 1024)
+        );
+        let bytes: std::sync::Arc<[u8]> = std::sync::Arc::from(bytes);
         let Some(info) = scan_gif(&bytes)? else {
             return Ok(None);
         };
@@ -176,18 +203,39 @@ impl AnimatedImage {
         let Some(f) = reader.next_rgba() else {
             return false;
         };
-        let (w, _h) = (self.width as usize, self.height as usize);
+        let (w, h) = (self.width as usize, self.height as usize);
+        let fw = f.width as usize;
+        let fh = f.height as usize;
+        let left = f.left as usize;
+        let top = f.top as usize;
 
-        if self.opaque {
+        // The GIF crate decodes a frame's rectangle, but the compositor and
+        // canvas indexing below assume the rectangle is inside the logical
+        // screen. Validate before any slicing: a malformed file must fail
+        // safely instead of panicking the daemon.
+        let Some(right) = left.checked_add(fw) else {
+            return false;
+        };
+        let Some(bottom) = top.checked_add(fh) else {
+            return false;
+        };
+        if right > w || bottom > h || f.rgba.len() != fw.saturating_mul(fh).saturating_mul(4) {
+            return false;
+        }
+
+        let full_canvas =
+            left == 0 && top == 0 && fw == w && fh == h && f.rgba.len() == self.canvas.len();
+        if self.opaque && full_canvas {
             self.canvas.copy_from_slice(&f.rgba);
         } else {
+            if self.opaque {
+                // The scan advertised an opaque full-canvas stream, but the
+                // decoder produced something else. Fall back to compositing
+                // for the rest of this animation.
+                self.opaque = false;
+            }
             // Transparency compositing: the frame's rect is blended onto the
             // persistent canvas, then the disposal method is applied.
-            let fw = f.width as usize;
-            let fh = f.height as usize;
-            let left = f.left as usize;
-            let top = f.top as usize;
-
             if f.dispose == DisposalMethod::Previous {
                 let need = fw * fh * 4;
                 if self.prev_save.len() != need {
@@ -260,10 +308,11 @@ impl AnimatedImage {
         }
         let mut guard = 0;
         while self.next_index <= index {
-            if self.next_index < self.cache.len() && self.cache[self.next_index].is_some() {
-                self.next_index += 1;
-                continue;
-            }
+            // Do not skip cached frames without consuming the decoder: the
+            // decoded stream position and `next_index` must stay in lockstep.
+            // Otherwise a later uncached tail frame is stored under the wrong
+            // index after a loop wrap. Re-decoding a cached prefix still uses
+            // the same cache entry (decode_next only inserts when absent).
             let before = self.next_index;
             if !self.decode_next() {
                 // End of stream while seeking forward: restart from 0.
@@ -311,7 +360,7 @@ impl AnimatedImage {
         let index = index.min(self.delays.len().saturating_sub(1));
         self.ensure_upto(index);
         match self.cache.get(index) {
-            Some(Some(CachedFrame::Raw(raw))) => {
+            Some(Some(CachedFrame::Raw(raw))) if raw.len() == out.len() => {
                 out.copy_from_slice(raw);
                 true
             }
@@ -376,6 +425,11 @@ fn gif_allocation_sizes(
     height: u32,
     frame_count: usize,
 ) -> anyhow::Result<(usize, usize)> {
+    anyhow::ensure!(width > 0 && height > 0, "GIF logical screen is empty");
+    anyhow::ensure!(
+        frame_count <= MAX_GIF_FRAMES,
+        "GIF has {frame_count} frames, exceeding the {MAX_GIF_FRAMES} frame limit"
+    );
     let pixels = usize::try_from(u64::from(width) * u64::from(height))?;
     let frame_bytes = pixels
         .checked_mul(4)
@@ -400,6 +454,10 @@ fn scan_gif(bytes: &[u8]) -> anyhow::Result<Option<GifInfo>> {
     }
     let width = u16::from_le_bytes([bytes[6], bytes[7]]) as u32;
     let height = u16::from_le_bytes([bytes[8], bytes[9]]) as u32;
+    anyhow::ensure!(
+        width > 0 && height > 0,
+        "GIF logical screen dimensions are zero"
+    );
     let packed = bytes[10];
     let gct_size = 3 * (1 << ((packed & 0x07) + 1));
     let mut pos = 13 + gct_size;
@@ -410,6 +468,11 @@ fn scan_gif(bytes: &[u8]) -> anyhow::Result<Option<GifInfo>> {
     let mut delays = Vec::new();
     let mut opaque = true;
     let mut frame_count = 0usize;
+    // A Graphic Control Extension applies to the next image descriptor.
+    // Multiple GCEs can legally precede one image; the last one wins, and a
+    // trailing GCE without an image must not create a phantom frame.
+    let mut pending_delay: Option<Duration> = None;
+    let mut pending_transparency = false;
 
     while pos < bytes.len() {
         match bytes[pos] {
@@ -423,6 +486,12 @@ fn scan_gif(bytes: &[u8]) -> anyhow::Result<Option<GifInfo>> {
                 let top = u16::from_le_bytes([bytes[pos + 3], bytes[pos + 4]]) as u32;
                 let iw = u16::from_le_bytes([bytes[pos + 5], bytes[pos + 6]]) as u32;
                 let ih = u16::from_le_bytes([bytes[pos + 7], bytes[pos + 8]]) as u32;
+                anyhow::ensure!(iw > 0 && ih > 0, "GIF image descriptor has zero dimensions");
+                anyhow::ensure!(
+                    left.checked_add(iw).is_some_and(|right| right <= width)
+                        && top.checked_add(ih).is_some_and(|bottom| bottom <= height),
+                    "GIF image rectangle {left},{top} {iw}x{ih} exceeds logical screen {width}x{height}"
+                );
                 let ipacked = bytes[pos + 9];
                 pos += 10;
                 if ipacked & 0x80 != 0 {
@@ -436,26 +505,41 @@ fn scan_gif(bytes: &[u8]) -> anyhow::Result<Option<GifInfo>> {
                 if left != 0 || top != 0 || iw != width || ih != height {
                     opaque = false;
                 }
+                if pending_transparency {
+                    opaque = false;
+                }
                 frame_count += 1;
+                anyhow::ensure!(
+                    frame_count <= MAX_GIF_FRAMES,
+                    "GIF has more than {MAX_GIF_FRAMES} frames"
+                );
+                delays.push(pending_delay.take().unwrap_or(Duration::from_millis(20)));
+                pending_transparency = false;
             }
             0x21 => {
                 // Extension: 0xF9 = graphic control extension (delay).
-                if pos + 2 <= bytes.len() && bytes[pos + 1] == 0xF9 {
+                if pos + 2 > bytes.len() {
+                    break;
+                }
+                if bytes[pos + 1] == 0xF9 {
                     if pos + 8 > bytes.len() {
                         break;
                     }
+                    // GCE block size must be 4 and the block terminator must
+                    // be zero; otherwise the delay fields are not where the
+                    // spec says they are.
+                    anyhow::ensure!(
+                        bytes[pos + 2] == 4 && bytes[pos + 7] == 0,
+                        "malformed GIF graphic control extension"
+                    );
                     let gce_packed = bytes[pos + 3];
-                    if gce_packed & 0x01 != 0 {
-                        opaque = false; // transparency flag
-                    }
-                    // Delay in centiseconds; browsers treat 0 as 100ms, but
-                    // keep the prior 20ms clamp for zero delays.
                     let centis = u16::from_le_bytes([bytes[pos + 4], bytes[pos + 5]]);
                     let millis = if centis == 0 { 20 } else { centis as u64 * 10 };
-                    delays.push(
+                    pending_delay = Some(
                         Duration::from_millis(millis)
                             .clamp(Duration::from_millis(20), Duration::from_secs(5)),
                     );
+                    pending_transparency = gce_packed & 0x01 != 0;
                     pos += 8;
                     continue;
                 }
@@ -469,10 +553,10 @@ fn scan_gif(bytes: &[u8]) -> anyhow::Result<Option<GifInfo>> {
     if frame_count == 0 {
         return Ok(None);
     }
-    // If no GCE appeared at all, every frame gets the default delay.
-    if delays.is_empty() {
-        delays = vec![Duration::from_millis(20); frame_count];
-    }
+    anyhow::ensure!(
+        delays.len() == frame_count,
+        "GIF frame timing metadata is inconsistent"
+    );
     Ok(Some(GifInfo {
         width,
         height,
@@ -564,5 +648,111 @@ mod tests {
     fn rejects_gif_working_sets_before_allocating_canvases() {
         assert!(gif_allocation_sizes(7_680, 4_320, 2).is_ok());
         assert!(gif_allocation_sizes(16_384, 16_384, 1).is_err());
+    }
+    fn encoded_gif(frames: usize) -> Vec<u8> {
+        let colors: [[u8; 4]; 4] = [
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            [255, 255, 0, 255],
+        ];
+        let palette = [0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255];
+        let mut out = Vec::new();
+        {
+            let mut encoder = gif::Encoder::new(&mut out, 2, 2, &palette).unwrap();
+            encoder.set_repeat(gif::Repeat::Infinite).unwrap();
+            for index in 0..frames {
+                let color = colors[index % colors.len()];
+                let mut rgba = color.repeat(4);
+                let mut frame = gif::Frame::from_rgba_speed(2, 2, &mut rgba, 10);
+                frame.delay = 10;
+                encoder.write_frame(&frame).unwrap();
+            }
+        }
+        out
+    }
+
+    fn gif_with_extra_gce() -> Vec<u8> {
+        let mut bytes = b"GIF89a".to_vec();
+        bytes.extend([2, 0, 2, 0, 0x80, 0, 0]);
+        bytes.extend([0, 0, 0, 255, 255, 255]);
+        fn gce(bytes: &mut Vec<u8>, delay: u16) {
+            bytes.extend([
+                0x21,
+                0xF9,
+                4,
+                0,
+                (delay & 0xff) as u8,
+                (delay >> 8) as u8,
+                0,
+                0,
+            ]);
+        }
+        gce(&mut bytes, 10);
+        gce(&mut bytes, 20); // applies to the following image; the first is superseded
+        bytes.extend([0x2C, 0, 0, 0, 0, 2, 0, 2, 0, 0]);
+        bytes.extend([2, 1, 0, 0]);
+        gce(&mut bytes, 30);
+        bytes.extend([0x2C, 0, 0, 0, 0, 2, 0, 2, 0, 0]);
+        bytes.extend([2, 1, 0, 0]);
+        gce(&mut bytes, 40); // no image follows: must not become a phantom frame
+        bytes.push(0x3B);
+        bytes
+    }
+
+    #[test]
+    fn scan_aligns_gce_delays_with_image_frames() {
+        let info = scan_gif(&gif_with_extra_gce()).unwrap().unwrap();
+        assert_eq!(info.delays.len(), 2);
+        assert_eq!(info.delays[0], Duration::from_millis(200));
+        assert_eq!(info.delays[1], Duration::from_millis(300));
+    }
+
+    #[test]
+    fn scan_rejects_out_of_bounds_and_empty_screens() {
+        let mut bytes = gif_with_extra_gce();
+        // First image descriptor width lives at the offset after its GCE.
+        bytes[8] = 0; // logical width = 0
+        assert!(scan_gif(&bytes).is_err());
+
+        let mut bytes = gif_with_extra_gce();
+        // Widen the first image to 3 pixels inside a 2-pixel screen.
+        let descriptor = bytes
+            .windows(10)
+            .position(|window| window[0] == 0x2C)
+            .unwrap();
+        bytes[descriptor + 5] = 3;
+        bytes[descriptor + 6] = 0;
+        assert!(scan_gif(&bytes).is_err());
+    }
+
+    #[test]
+    fn input_and_metadata_limits_reject_before_huge_allocations() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("huge.gif");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len((MAX_GIF_INPUT_BYTES + 1) as u64).unwrap();
+        assert!(AnimatedImage::decode(&path).is_err());
+        assert!(gif_allocation_sizes(2, 2, MAX_GIF_FRAMES + 1).is_err());
+    }
+
+    #[test]
+    fn uncached_tail_after_loop_wrap_uses_the_right_frames() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("animation.gif");
+        std::fs::write(&path, encoded_gif(3)).unwrap();
+
+        let mut expected = AnimatedImage::decode(&path).unwrap().unwrap();
+        let expected_frame = expected.frame_at(2).to_vec();
+
+        let mut anim = AnimatedImage::decode(&path).unwrap().unwrap();
+        anim.raw_cache = false;
+        anim.frame_at(2); // cache the whole animation as zstd
+        for slot in anim.cache.iter_mut().skip(1) {
+            *slot = None;
+        }
+        anim.cache_bytes = 0;
+        anim.restart();
+        assert_eq!(anim.frame_at(2), expected_frame.as_slice());
     }
 }
