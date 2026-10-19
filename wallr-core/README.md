@@ -1,7 +1,31 @@
 # wallr-core
 
-Core library for `wallr` - a native, GPU-accelerated Wayland wallpaper engine.
+Core engine for `wallr`: daemon, renderer, animation, video, and theme integration.
 
-This crate exposes the daemon core, configuration schema parsing, GPU transition renderer (built on `wgpu`), Unix IPC mechanisms, and video/GIF playback.
+## modules
 
-For usage instructions and main documentation, see the main [README.md](../README.md).
+- `daemon`: wayland layer-shell surfaces, IPC server, render state
+- `renderer`: wgpu pipelines, textures, frame presentation
+- `animated`: GIF decoding and playback
+- `video`: FFmpeg decoding, hardware acceleration, scheduling
+- `animation`: transition effects and uniform computation
+- `theme`: provider dispatch and hooks
+- `ipc`: async Unix socket transport
+- `config`: configuration parsing and validation
+
+## usage
+
+```toml
+[dependencies]
+wallr-core = "0.7"
+```
+
+## features
+
+- `static-ffmpeg`: statically link FFmpeg
+
+## license
+
+MIT. See [LICENSE](../LICENSE).
+```
+filePath: /home/programmersd/Projects/github/wallr/wallr-core/README.md
