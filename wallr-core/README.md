@@ -28,4 +28,3 @@ wallr-core = "0.7"
 
 MIT. See [LICENSE](../LICENSE).
 ```
-filePath: /home/programmersd/Projects/github/wallr/wallr-core/README.md

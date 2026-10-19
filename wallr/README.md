@@ -22,4 +22,3 @@ See the root [README.md](../README.md) and [docs/cli-reference.md](../docs/cli-r
 
 MIT. See [LICENSE](../LICENSE).
 ```
-filePath: /home/programmersd/Projects/github/wallr/wallr/README.md

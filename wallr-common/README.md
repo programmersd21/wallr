@@ -22,4 +22,3 @@ wallr-common = "0.7"
 
 MIT. See [LICENSE](../LICENSE).
 ```
-filePath: /home/programmersd/Projects/github/wallr/wallr-common/README.md
