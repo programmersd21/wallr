@@ -90,4 +90,3 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 MIT. See [LICENSE](LICENSE).
 ```
-filePath: /home/programmersd/Projects/github/wallr/README.md
