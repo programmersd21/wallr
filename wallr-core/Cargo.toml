@@ -48,8 +48,8 @@ tracing.workspace = true
 # Image processing
 image.workspace = true
 fast_image_resize.workspace = true
-gif = "0.13"
-zstd = "0.13"
+gif = "0.14"
+zstd = "0.14"
 
 # Graphics
 wgpu.workspace = true

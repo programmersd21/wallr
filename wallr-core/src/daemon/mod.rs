@@ -1,5 +1,5 @@
 use crate::config::WallrConfig;
-use crate::ipc::{IpcCommand, IpcResponse, start_ipc_server};
+use crate::ipc::{IpcCommand, IpcResponse, IpcSocket, remove_socket_if_owned};
 use crate::renderer::Renderer;
 use crate::wallpaper::{SetOptions, WallpaperEngine};
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use raw_window_handle::{
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_shm,
+    delegate_registry,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
@@ -49,11 +49,22 @@ pub enum DaemonError {
     Wallpaper(#[from] crate::wallpaper::WallpaperError),
 }
 
+/// Borrowed raw Wayland handles for `wgpu::Instance::create_surface`.
+///
+/// The pointers reference the compositor display connection and the layer
+/// surface, both owned by the daemon for at least as long as the resulting
+/// render state. This type is only constructed on a blocking worker and never
+/// outlives the `create_surface` call.
 pub struct WaylandWindow {
     pub display: *mut std::ffi::c_void,
     pub surface: *mut std::ffi::c_void,
 }
 
+// SAFETY: `create_surface` requires Send + Sync on its window handle. The
+// raw pointers are immutable handles to objects whose lifetime is enforced by
+// `RenderState` (it holds a cloned `wl_surface` proxy and the daemon keeps the
+// display connection alive). No pointer is dereferenced outside the Wayland
+// client/backend while the owning connection exists.
 unsafe impl Send for WaylandWindow {}
 unsafe impl Sync for WaylandWindow {}
 
@@ -111,10 +122,17 @@ struct WaylandState {
     hotplug: Option<DaemonHotplug>,
 }
 
-/// Wrapper around `*mut c_void` that implements `Send`. The pointer is a
-/// Wayland display pointer that lives for the entire process lifetime.
+/// Wrapper around a raw display/surface pointer that must cross into a
+/// `spawn_blocking` task or an `Arc`-shared `RenderState`.
+///
+/// SAFETY: the daemon's `Connection` (display) is held for the process
+/// lifetime, and each raw surface pointer is paired with a cloned
+/// `wl_surface::WlSurface` proxy in `RenderState`, so the protocol object
+/// cannot be destroyed while the pointer is in use. Output teardown waits for
+/// the render lock and stops playback before dropping that proxy.
 struct SendDisplayPtr(*mut std::ffi::c_void);
 unsafe impl Send for SendDisplayPtr {}
+unsafe impl Sync for SendDisplayPtr {}
 
 /// Shared context for hotplug operations. Stored in `WaylandState` so the
 /// output callbacks can create/destroy render states without needing access
@@ -648,22 +666,23 @@ impl OutputHandler for WaylandState {
                             lock.width = new_width;
                             lock.height = new_height;
                             if let Some(gpu) = lock.gpu.as_ref() {
-                                if let Ok(shared) = lock.renderer.lock() {
-                                    if let Some(renderer) = shared.as_ref() {
-                                        gpu.surface.configure(
-                                            &renderer.device,
-                                            &wgpu::SurfaceConfiguration {
-                                                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                                                format: gpu.format,
-                                                width: new_width,
-                                                height: new_height,
-                                                present_mode: wgpu::PresentMode::Fifo,
-                                                alpha_mode: wgpu::CompositeAlphaMode::Opaque,
-                                                view_formats: vec![],
-                                                desired_maximum_frame_latency: 1,
-                                            },
-                                        );
-                                    }
+                                if let Ok(shared) = lock.renderer.lock()
+                                    && let Some(renderer) = shared.as_ref()
+                                {
+                                    gpu.surface.configure(
+                                        &renderer.device,
+                                        &wgpu::SurfaceConfiguration {
+                                            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                                            format: gpu.format,
+                                            width: new_width,
+                                            height: new_height,
+                                            present_mode: wgpu::PresentMode::Fifo,
+                                            alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+                                            view_formats: vec![],
+                                            color_space: wgpu::SurfaceColorSpace::default(),
+                                            desired_maximum_frame_latency: 1,
+                                        },
+                                    );
                                 }
                                 tracing::info!(
                                     "Hotplug: reconfigured {name} to {new_width}x{new_height}"
@@ -739,11 +758,9 @@ impl OutputHandler for WaylandState {
     }
 }
 
-delegate_compositor!(WaylandState);
-delegate_layer!(WaylandState);
-delegate_output!(WaylandState);
 delegate_registry!(WaylandState);
-delegate_shm!(WaylandState);
+
+smithay_client_toolkit::delegate_dispatch2!(WaylandState);
 
 /// Wakes paced live-playback loops when a new commit bumps the generation.
 struct LivePacer {
@@ -862,7 +879,9 @@ struct RenderState {
 
 struct GpuState {
     renderer: std::sync::Arc<Renderer>,
-    surface: &'static wgpu::Surface<'static>,
+    /// Owned, not leaked: output hotplug must release the swapchain when the
+    /// monitor disappears. Detached render tasks clone the `Arc`.
+    surface: std::sync::Arc<wgpu::Surface<'static>>,
     format: wgpu::TextureFormat,
     per_output_uniforms: std::sync::Arc<crate::renderer::PerOutputUniforms>,
 }
@@ -944,13 +963,25 @@ impl RenderState {
                 present_mode: wgpu::PresentMode::Fifo,
                 alpha_mode: wgpu::CompositeAlphaMode::Opaque,
                 view_formats: vec![],
+                color_space: wgpu::SurfaceColorSpace::default(),
                 desired_maximum_frame_latency: 1,
             },
         );
         // SAFETY: the Wayland display and layer surface are retained by the
-        // daemon for the lifetime of this render state.
+        // daemon for the lifetime of this render state. `RenderState` owns a
+        // cloned `wl_surface` proxy and output teardown waits for the render
+        // lock before dropping it, so extending the borrow to 'static is
+        // valid. Storing the surface by value (instead of leaking it) lets a
+        // disconnected output release the swapchain.
+        // SAFETY: `create_surface` borrows the Wayland display/surface for
+        // the call; the daemon retains both for the lifetime of this render
+        // state (the `Connection` lives until process exit and the cloned
+        // `wl_surface` proxy is stored in `RenderState`). Extending the
+        // borrow to `'static` is therefore sound. The `Surface` is later
+        // released by dropping the `Arc`, which hands the swapchain back to
+        // wgpu; it is not leaked.
         let wgpu_surface: wgpu::Surface<'static> = unsafe { std::mem::transmute(wgpu_surface) };
-        let surface: &'static wgpu::Surface<'static> = Box::leak(Box::new(wgpu_surface));
+        let surface = std::sync::Arc::new(wgpu_surface);
         self.gpu = Some(GpuState {
             renderer: renderer.clone(),
             surface,
@@ -1146,8 +1177,10 @@ impl RenderState {
             .ok_or_else(|| anyhow::anyhow!("shared-memory wallpaper buffer is still active"))?;
         for (src, dst) in rgba
             .as_raw()
-            .chunks_exact(4)
-            .zip(canvas.chunks_exact_mut(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(canvas.as_chunks_mut::<4>().0.iter_mut())
         {
             // XRGB8888 is stored as B,G,R,X on little-endian Wayland hosts.
             // Write channels directly so the hot conversion loop does not
@@ -1370,7 +1403,7 @@ impl RenderState {
             .as_ref()
             .expect("GPU state required for transitions");
         let renderer = gpu.renderer.clone();
-        let surface: &'static wgpu::Surface<'static> = gpu.surface;
+        let surface = std::sync::Arc::clone(&gpu.surface);
         let render_lock = self.render_lock.clone();
         let playback_gen = self.playback_gen.clone();
         let pacer = self.pacer.clone();
@@ -1598,7 +1631,7 @@ fn persist_wallpaper_at(
 #[allow(clippy::too_many_arguments)]
 fn render_transition(
     renderer: std::sync::Arc<Renderer>,
-    surface: &'static wgpu::Surface<'static>,
+    surface: std::sync::Arc<wgpu::Surface<'static>>,
     render_lock: std::sync::Arc<std::sync::Mutex<()>>,
     playback_gen: std::sync::Arc<std::sync::atomic::AtomicU64>,
     pacer: std::sync::Arc<LivePacer>,
@@ -1635,7 +1668,7 @@ fn render_transition(
         let uniforms = crate::animation::compute_effect_uniforms(&effect, progress.clamp(0.0, 1.0));
         let status = renderer.render_frame(
             crate::renderer::FrameRequest {
-                surface,
+                surface: &surface,
                 format: commit.format,
                 bg_bind: &commit.bg_bind,
                 new_bind: &commit.new_bind,
@@ -1682,6 +1715,7 @@ fn render_transition(
                         present_mode: wgpu::PresentMode::Fifo,
                         alpha_mode: wgpu::CompositeAlphaMode::Opaque,
                         view_formats: vec![],
+                        color_space: wgpu::SurfaceColorSpace::default(),
                         desired_maximum_frame_latency: 1,
                     },
                 );
@@ -1698,7 +1732,7 @@ fn render_transition(
     {
         play_live(
             &renderer,
-            surface,
+            &surface,
             &commit,
             animated,
             &playback_gen,
@@ -1709,7 +1743,7 @@ fn render_transition(
     } else if commit.is_video && playback_gen.load(Ordering::SeqCst) == commit.generation {
         play_video(
             &renderer,
-            surface,
+            &surface,
             &commit,
             &video_playback,
             &playback_gen,
@@ -1725,7 +1759,10 @@ fn render_transition(
 
 fn reclaim_commit_resources(renderer: &Renderer, commit: CommitData) {
     drop(commit);
-    renderer.device.poll(wgpu::Maintain::Wait);
+    renderer
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .ok();
 }
 
 /// GIF double-buffer slot advance.
@@ -1764,7 +1801,7 @@ fn advance_gif_slots(
 #[allow(clippy::too_many_arguments)]
 fn play_live(
     renderer: &Renderer,
-    surface: &'static wgpu::Surface<'static>,
+    surface: &wgpu::Surface<'static>,
     commit: &CommitData,
     animated: &mut crate::animated::AnimatedImage,
     playback_gen: &std::sync::atomic::AtomicU64,
@@ -1830,11 +1867,17 @@ fn play_live(
             let buffer = &staging[slot];
             let slice = buffer.slice(..);
             slice.map_async(wgpu::MapMode::Write, |_| {});
-            renderer.device.poll(wgpu::Maintain::Wait);
-            let ok = {
-                let mut mapped = slice.get_mapped_range_mut();
-                animated.decompress_into(index, &mut mapped)
-            };
+            renderer
+                .device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .ok();
+            let size = slice.size() as usize;
+            let mut tmp = vec![0u8; size];
+            let ok = animated.decompress_into(index, &mut tmp);
+            if ok {
+                let mut mapped = slice.get_mapped_range_mut().unwrap();
+                mapped.copy_from_slice(&tmp);
+            }
             buffer.unmap();
             if ok {
                 let mut encoder = renderer
@@ -1969,6 +2012,7 @@ fn play_live(
                         present_mode: wgpu::PresentMode::Fifo,
                         alpha_mode: wgpu::CompositeAlphaMode::Opaque,
                         view_formats: vec![],
+                        color_space: wgpu::SurfaceColorSpace::default(),
                         desired_maximum_frame_latency: 1,
                     },
                 );
@@ -2024,7 +2068,7 @@ fn video_present_action(status: crate::renderer::FrameStatus) -> VideoPresentAct
 /// Live video playback loop: continuously updates texture with decoded frames.
 fn play_video(
     renderer: &Renderer,
-    surface: &'static wgpu::Surface<'static>,
+    surface: &wgpu::Surface<'static>,
     commit: &CommitData,
     video_playback: &std::sync::Arc<crate::video::VideoPlayback>,
     playback_gen: &std::sync::atomic::AtomicU64,
@@ -2174,6 +2218,7 @@ fn play_video(
                             present_mode: wgpu::PresentMode::Fifo,
                             alpha_mode: wgpu::CompositeAlphaMode::Opaque,
                             view_formats: vec![],
+                            color_space: wgpu::SurfaceColorSpace::default(),
                             desired_maximum_frame_latency: 1,
                         },
                     );
@@ -2370,15 +2415,27 @@ fn tune_allocator() {
 
 pub struct Daemon {
     config: WallrConfig,
+    /// Explicit `--config` path, if any. Reload must re-read the same file
+    /// the daemon was started with instead of silently falling back to the
+    /// default location.
+    config_path: Option<std::path::PathBuf>,
     paused: Arc<AtomicBool>,
     engine: Arc<Mutex<WallpaperEngine>>,
 }
 
 impl Daemon {
     pub fn new(config: WallrConfig) -> Result<Self, DaemonError> {
+        Self::with_config_path(config, None)
+    }
+
+    pub fn with_config_path(
+        config: WallrConfig,
+        config_path: Option<std::path::PathBuf>,
+    ) -> Result<Self, DaemonError> {
         let engine = WallpaperEngine::new(config.clone())?;
         Ok(Self {
             config,
+            config_path,
             paused: Arc::new(AtomicBool::new(false)),
             engine: Arc::new(Mutex::new(engine)),
         })
@@ -2386,15 +2443,18 @@ impl Daemon {
 
     pub async fn start(self) -> Result<(), DaemonError> {
         tune_allocator();
-        let socket_path = crate::config::expand_path(&self.config.daemon.socket);
-        if socket_path.exists() {
-            if tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
-                return Err(DaemonError::AlreadyRunning(
-                    socket_path.to_string_lossy().to_string(),
-                ));
+        let socket_path = crate::config::expand_path(&self.config.daemon.socket)?;
+        // Reserve the socket before spending seconds on Wayland/GPU setup.
+        // The advisory lock plus inode-checked guard prevents concurrent
+        // startup from unlinking a live daemon's socket.
+        let socket = IpcSocket::acquire(&socket_path).await.map_err(|err| {
+            if matches!(err, crate::ipc::IpcError::AlreadyRunning(_)) {
+                DaemonError::AlreadyRunning(socket_path.to_string_lossy().to_string())
+            } else {
+                DaemonError::Ipc(err)
             }
-            let _ = std::fs::remove_file(&socket_path);
-        }
+        })?;
+        let socket_identity = socket.identity();
 
         let conn = Connection::connect_to_env()
             .map_err(|e| DaemonError::StartError(format!("Failed to connect to Wayland: {e:?}")))?;
@@ -2564,9 +2624,15 @@ impl Daemon {
             let socket_path = socket_path.clone();
             tokio::spawn(async move {
                 use tokio::signal::unix::{SignalKind, signal};
-                let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
-                let mut int = signal(SignalKind::interrupt()).expect("SIGINT handler");
-                let mut hup = signal(SignalKind::hangup()).expect("SIGHUP handler");
+                let Ok(mut term) = signal(SignalKind::terminate()) else {
+                    return;
+                };
+                let Ok(mut int) = signal(SignalKind::interrupt()) else {
+                    return;
+                };
+                let Ok(mut hup) = signal(SignalKind::hangup()) else {
+                    return;
+                };
                 tokio::select! {
                     _ = term.recv() => {}
                     _ = int.recv() => {}
@@ -2580,18 +2646,21 @@ impl Daemon {
                     }
                 }
                 drop(states);
-                let _ = std::fs::remove_file(&socket_path);
+                remove_socket_if_owned(&socket_path, socket_identity);
                 std::process::exit(0);
             });
         }
 
         let ipc_socket_path = socket_path.clone();
-        start_ipc_server(&socket_path, move |cmd| {
+        let reload_config_path = self.config_path.clone();
+        socket.spawn(move |cmd| {
             let paused = paused_clone.clone();
             let engine = engine_clone.clone();
             let render_states_map = render_states_clone.clone();
             let theme_gen = theme_gen_clone.clone();
             let stop_socket = ipc_socket_path.clone();
+            let stop_identity = socket_identity;
+            let reload_config_path = reload_config_path.clone();
             async move {
                 match cmd {
                     IpcCommand::Pause { monitor } => {
@@ -2643,18 +2712,28 @@ impl Daemon {
                         // Re-read config from disk, validate, and apply live
                         // values without rebuilding GPU state. Invalid configs
                         // keep the previous valid configuration.
-                        let fresh = crate::config::load_config(None)
-                            .map_err(|e| e.to_string())
-                            .and_then(|cfg| {
-                                validate_live_config(&cfg)?;
-                                Ok(cfg)
-                            });
+                        let reload_path = reload_config_path.clone();
+                        let fresh = tokio::task::spawn_blocking(move || {
+                            crate::config::load_config(reload_path.as_deref())
+                                .map_err(|e| e.to_string())
+                                .and_then(|cfg| {
+                                    validate_live_config(&cfg)?;
+                                    Ok(cfg)
+                                })
+                        })
+                        .await;
                         let fresh = match fresh {
-                            Ok(cfg) => cfg,
-                            Err(reason) => {
+                            Ok(Ok(cfg)) => cfg,
+                            Ok(Err(reason)) => {
                                 return IpcResponse {
                                     success: false,
                                     message: Some(format!("Reload rejected: {reason}")),
+                                };
+                            }
+                            Err(err) => {
+                                return IpcResponse {
+                                    success: false,
+                                    message: Some(format!("Reload task failed: {err}")),
                                 };
                             }
                         };
@@ -2665,10 +2744,24 @@ impl Daemon {
                         {
                             let mut eng = engine.lock().await;
                             eng.config = fresh.clone();
-                            if let Err(e) = eng.reload() {
+                        }
+                        let reload_config = fresh.clone();
+                        let reload_result = tokio::task::spawn_blocking(move || {
+                            WallpaperEngine::new(reload_config)?.reload_blocking()
+                        })
+                        .await;
+                        match reload_result {
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => {
                                 return IpcResponse {
                                     success: false,
                                     message: Some(e.to_string()),
+                                };
+                            }
+                            Err(e) => {
+                                return IpcResponse {
+                                    success: false,
+                                    message: Some(format!("reload task failed: {e}")),
                                 };
                             }
                         }
@@ -2785,19 +2878,31 @@ impl Daemon {
                                     theme_provider: theme_override,
                                     monitor,
                                 };
-                                let eng = engine.clone();
                                 let theme_gen_check = theme_gen.clone();
                                 let p_clone = p.clone();
-                                tokio::spawn(async move {
+                                // Never run hooks or theme providers on the
+                                // async runtime: they are synchronous
+                                // subprocess waits that previously froze the
+                                // current-thread daemon for their duration.
+                                let config = {
+                                    let eng = engine.lock().await;
+                                    eng.config.clone()
+                                };
+                                tokio::task::spawn_blocking(move || {
                                     if theme_gen_check.load(Ordering::SeqCst) != generation {
                                         return;
                                     }
-                                    let mut eng = eng.lock().await;
-                                    if theme_gen_check.load(Ordering::SeqCst) != generation {
-                                        return;
-                                    }
+                                    let mut eng = match WallpaperEngine::new(config) {
+                                        Ok(engine) => engine,
+                                        Err(err) => {
+                                            tracing::warn!(
+                                                "Post-render theme setup failed for {p_clone:?}: {err}"
+                                            );
+                                            return;
+                                        }
+                                    };
                                     if let Err(e) =
-                                        eng.set_wallpaper(&p_clone, &opts).await
+                                        eng.set_wallpaper_blocking(&p_clone, &opts)
                                     {
                                         tracing::warn!(
                                             "Post-render hooks/theme failed for {p_clone:?}: {e}"
@@ -2822,7 +2927,7 @@ impl Daemon {
                         let sp = stop_socket.clone();
                         tokio::spawn(async move {
                             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                            let _ = std::fs::remove_file(&sp);
+                            remove_socket_if_owned(&sp, stop_identity);
                             std::process::exit(0);
                         });
                         IpcResponse {
@@ -3212,8 +3317,7 @@ impl Daemon {
                     }
                 }
             }
-        })
-        .await?;
+        });
 
         tokio::task::spawn_blocking(move || {
             loop {

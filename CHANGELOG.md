@@ -5,6 +5,95 @@ All notable changes to Wallr are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-10-19
+
+### Added
+
+- `wallr-common` now reports missing environment variables while expanding
+  configured paths instead of silently dropping them.
+- IPC sockets are now created with mode `0600`, guarded by an advisory
+  startup lock, and removed only when the daemon still owns the original
+  inode.
+- IPC requests, responses, handler execution, and client connections now have
+  timeouts; malformed or flooding clients can no longer stall the daemon.
+- GIF frame timing now aligns each graphic control extension with the next
+  image descriptor, including repeated or trailing extensions.
+- `wallr ipc seek` accepts `HH:MM:SS`, `MM:SS`, seconds, and fractional
+  seconds with overflow checks.
+- Regression tests cover IPC ownership, theme cache identity, duration
+  overflow, GIF timing, and video metadata bounds.
+
+### Changed
+
+- Theme providers, hooks, reload commands, config reload, and post-render
+  theme work now run on blocking workers instead of the Tokio runtime.
+- External theme/hook/reload commands are killed after bounded timeouts.
+- GIF decoding validates input size, frame count, screen dimensions, and frame
+  rectangles before allocating canvases or compositing.
+- Video metadata conversion and frame copying now reject malformed dimensions
+  and truncated planes instead of panicking.
+- `FrameScheduler` uses an offset-based clock so seeking beyond system uptime
+  cannot underflow.
+- IPC socket defaults now use `$XDG_RUNTIME_DIR/wallr.sock` consistently.
+- `DaemonConfig.auto_start` and `ThemeConfig.provider` now have serde
+  defaults that match their programmatic defaults.
+- Static wallpaper state paths are read and written as raw bytes, preserving
+  non-UTF-8 paths.
+- `wallr set -` stages stdin with a bounded read and private temp files.
+
+### Fixed
+
+- Duration parsing no longer panics for extreme finite values and no longer
+  truncates milliseconds during narrowing conversions.
+- Theme cache keys now include sub-second mtime, file size, and raw path
+  bytes, preventing collisions within one timestamp granularity and
+  non-UTF-8 aliasing.
+- GIF graphic control delays are no longer misaligned with image frames.
+- `wallr set` no longer invokes the removed `IpcCommand::Preview` variant.
+- `wallr config set` rejects unknown final config keys.
+- `wallr reload`, `monitor`, and `quit` propagate daemon failures instead of
+  ignoring them.
+- Wayland surface handles are documented and retained by `Arc` instead of
+  being leaked.
+- `FrameScheduler::seek` no longer underflows when the requested position
+  exceeds elapsed runtime.
+
+### Security/Hardening
+
+- IPC sockets are mode `0600` and validated as owned sockets before reuse.
+- Theme/hook/reload subprocesses have bounded runtimes.
+- GIF and video input limits bound memory before expensive allocations.
+- IPC concurrency is capped at 64 connections.
+- Client and server IPC operations are bounded by timeouts.
+- `wallr set -` limits stdin to 256 MiB.
+
+### Dependencies
+
+- Updated patch-level workspace dependencies reported by `cargo update
+  --dry-run`; lockfile remains reproducible.
+
+### Breaking Changes
+
+- `expand_path` now returns `Result<PathBuf, ConfigError>`; callers must
+  handle missing environment variables.
+- `start_ipc_server` now requires an `IpcSocket` reservation through
+  `IpcSocket::acquire` for safe ownership.
+- `Daemon::new` accepts the same configuration; use `with_config_path` to
+  preserve an explicit config path.
+
+### Changed
+
+- MSRV bumped to 1.88; dependencies upgraded to latest compatible releases
+  (wgpu 30, smithay-client-toolkit 0.21, dirs 7, sha2 0.11, gif 0.14, zstd 0.14).
+- Release profile now uses fat LTO, `panic = "abort"`, disabled overflow checks,
+  and native CPU targeting via `.cargo/config.toml`.
+- `wallr` binary now uses `mimalloc` as its global allocator.
+
+### Performance
+
+- Hot paths continue to avoid redundant allocations and blocking the IPC loop;
+  release builds target maximum runtime performance.
+
 ## [0.6.4] - 2026-09-30
 
 ### Fixed

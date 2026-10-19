@@ -77,6 +77,11 @@ impl VideoPlayback {
             if let Some(frame) = decoder.next_frame() {
                 break Some(frame);
             }
+            if decoder.decoder_state() == crate::video::DecoderState::Failed {
+                return Err(crate::video::VideoError::DecodeFailed(anyhow::anyhow!(
+                    "decoder failed before producing a frame"
+                )));
+            }
             if Instant::now() >= deadline {
                 tracing::warn!("Timed out waiting for first video frame");
                 break None;

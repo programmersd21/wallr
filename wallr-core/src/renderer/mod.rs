@@ -180,9 +180,9 @@ impl Renderer {
             // fallback most systems never need.
             #[cfg(target_os = "linux")]
             {
-                let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                     backends: wgpu::Backends::VULKAN,
-                    ..Default::default()
+                    ..wgpu::InstanceDescriptor::new_without_display_handle()
                 });
                 if let Ok(adapter) = crate::video::select_adapter(&instance, preference).await {
                     break 'select (instance, adapter);
@@ -195,9 +195,9 @@ impl Renderer {
             let backends = wgpu::Backends::VULKAN | wgpu::Backends::GL;
             #[cfg(not(target_os = "linux"))]
             let backends = wgpu::Backends::all();
-            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                 backends,
-                ..Default::default()
+                ..wgpu::InstanceDescriptor::new_without_display_handle()
             });
             let adapter = crate::video::select_adapter(&instance, preference)
                 .await
@@ -212,19 +212,18 @@ impl Renderer {
         };
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    required_features: wgpu::Features::empty(),
-                    required_limits,
-                    // Wallr is a persistent background process, not a game:
-                    // prefer smaller allocations and lower residency over
-                    // speculative throughput. Frame pacing remains governed
-                    // by FIFO presentation and the compositor.
-                    memory_hints: wgpu::MemoryHints::MemoryUsage,
-                },
-                None,
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: None,
+                required_features: wgpu::Features::empty(),
+                required_limits,
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                // Wallr is a persistent background process, not a game:
+                // prefer smaller allocations and lower residency over
+                // speculative throughput. Frame pacing remains governed
+                // by FIFO presentation and the compositor.
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                trace: wgpu::Trace::default(),
+            })
             .await?;
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -318,11 +317,11 @@ impl Renderer {
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
             bind_group_layouts: &[
-                &bind_group_layout_tex,
-                &bind_group_layout_tex,
-                &bind_group_layout_uni,
+                Some(&bind_group_layout_tex),
+                Some(&bind_group_layout_tex),
+                Some(&bind_group_layout_uni),
             ],
-            push_constant_ranges: &[],
+            immediate_size: 0,
         });
 
         let nv12_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -333,8 +332,8 @@ impl Renderer {
         });
         let nv12_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("NV12 Conversion Pipeline Layout"),
-            bind_group_layouts: &[&nv12_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&nv12_bind_group_layout)],
+            immediate_size: 0,
         });
         let nv12_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("NV12 Conversion Pipeline"),
@@ -358,7 +357,7 @@ impl Renderer {
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -369,7 +368,7 @@ impl Renderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
         let video_plane_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -379,7 +378,7 @@ impl Renderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
         let video_output_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -389,7 +388,7 @@ impl Renderer {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
 
@@ -497,7 +496,7 @@ impl Renderer {
                     mask: !0,
                     alpha_to_coverage_enabled: false,
                 },
-                multiview: None,
+                multiview_mask: None,
                 cache: None,
             });
 
@@ -769,6 +768,7 @@ impl Renderer {
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                             view: &texture.output_view,
                             resolve_target: None,
+                            depth_slice: None,
                             ops: wgpu::Operations {
                                 load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                                 store: wgpu::StoreOp::Store,
@@ -777,6 +777,7 @@ impl Renderer {
                         depth_stencil_attachment: None,
                         occlusion_query_set: None,
                         timestamp_writes: None,
+                        multiview_mask: None,
                     });
                     pass.set_pipeline(&self.nv12_pipeline);
                     pass.set_bind_group(0, &texture.conversion_bind_group, &[]);
@@ -908,13 +909,15 @@ impl Renderer {
         // parks this call, which is safe because transition loops always run
         // on detached tasks that never block the daemon's IPC loop.
         let output = match surface.get_current_texture() {
-            Ok(texture) => texture,
-            Err(wgpu::SurfaceError::Timeout) => return Ok(FrameStatus::TimedOut),
-            Err(wgpu::SurfaceError::Outdated) => return Ok(FrameStatus::Outdated),
-            Err(wgpu::SurfaceError::Lost) => return Ok(FrameStatus::Lost),
-            Err(err) => {
+            wgpu::CurrentSurfaceTexture::Success(texture) => texture,
+            wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
+            wgpu::CurrentSurfaceTexture::Timeout => return Ok(FrameStatus::TimedOut),
+            wgpu::CurrentSurfaceTexture::Outdated => return Ok(FrameStatus::Outdated),
+            wgpu::CurrentSurfaceTexture::Lost => return Ok(FrameStatus::Lost),
+            wgpu::CurrentSurfaceTexture::Occluded => return Ok(FrameStatus::TimedOut),
+            wgpu::CurrentSurfaceTexture::Validation => {
                 return Err(anyhow::anyhow!(
-                    "failed to acquire swapchain texture: {err:?}"
+                    "failed to acquire swapchain texture: validation error"
                 ));
             }
         };
@@ -934,6 +937,7 @@ impl Renderer {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
@@ -942,6 +946,7 @@ impl Renderer {
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
                 timestamp_writes: None,
+                multiview_mask: None,
             });
 
             render_pass.set_pipeline(&pipeline);
@@ -953,7 +958,7 @@ impl Renderer {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
+        self.queue.present(output);
 
         Ok(FrameStatus::Presented)
     }
@@ -1140,6 +1145,7 @@ mod tests {
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &view,
                         resolve_target: None,
+                        depth_slice: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                             store: wgpu::StoreOp::Store,
@@ -1148,6 +1154,7 @@ mod tests {
                     depth_stencil_attachment: None,
                     occlusion_query_set: None,
                     timestamp_writes: None,
+                    multiview_mask: None,
                 });
                 pass.set_pipeline(&pipeline);
                 pass.set_bind_group(0, &bind_old, &[]);
@@ -1185,9 +1192,12 @@ mod tests {
             renderer.queue.submit([encoder.finish()]);
             let slice = readback.slice(..);
             slice.map_async(wgpu::MapMode::Read, |_| {});
-            renderer.device.poll(wgpu::Maintain::Wait);
+            renderer
+                .device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .ok();
             let pixels = {
-                let mapped = slice.get_mapped_range();
+                let mapped = slice.get_mapped_range().unwrap();
                 mapped.to_vec()
             };
             readback.unmap();

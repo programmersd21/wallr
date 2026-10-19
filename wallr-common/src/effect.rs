@@ -73,7 +73,7 @@ pub struct FadeParams {
     pub from: f32,
     #[serde(default = "default_one")]
     pub to: f32,
-    #[serde(default)]
+    #[serde(default = "default_easing")]
     pub easing: Easing,
 }
 
@@ -95,7 +95,7 @@ pub struct WipeParams {
     pub softness: f32,
     #[serde(default)]
     pub angle: Option<f32>,
-    #[serde(default)]
+    #[serde(default = "default_easing")]
     pub easing: Easing,
 }
 
@@ -124,7 +124,7 @@ pub enum WipeDirection {
 pub struct SlideParams {
     #[serde(default)]
     pub direction: SlideDirection,
-    #[serde(default)]
+    #[serde(default = "default_easing")]
     pub easing: Easing,
 }
 
@@ -168,7 +168,7 @@ pub struct WaveParams {
     /// an angle derives the center from the sweep direction.
     #[serde(default)]
     pub origin: Origin,
-    #[serde(default)]
+    #[serde(default = "default_easing")]
     pub easing: Easing,
 }
 
@@ -188,7 +188,7 @@ impl Default for WaveParams {
 pub struct GrowParams {
     #[serde(default)]
     pub origin: Origin,
-    #[serde(default)]
+    #[serde(default = "default_easing")]
     pub easing: Easing,
 }
 
@@ -205,7 +205,7 @@ impl Default for GrowParams {
 pub struct OuterParams {
     #[serde(default)]
     pub origin: Origin,
-    #[serde(default)]
+    #[serde(default = "default_easing")]
     pub easing: Easing,
 }
 
@@ -238,6 +238,10 @@ pub enum Easing {
 
 fn default_one() -> f32 {
     1.0
+}
+
+fn default_easing() -> Easing {
+    Easing::Bezier
 }
 
 fn default_wipe_softness() -> f32 {

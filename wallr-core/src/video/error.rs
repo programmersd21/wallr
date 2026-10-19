@@ -47,6 +47,9 @@ pub enum VideoError {
     #[error("invalid presentation timestamp")]
     InvalidPts,
 
+    #[error("invalid video duration: {0}")]
+    InvalidDuration(String),
+
     #[error("video duration could not be determined")]
     UnknownDuration,
 

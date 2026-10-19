@@ -117,6 +117,64 @@ fn parse_vec2(s: &str) -> Option<[f32; 2]> {
     Some([x, y])
 }
 
+/// Parse an IPC seek timestamp into milliseconds.
+///
+/// Accepts `SS`, `MM:SS`, or `HH:MM:SS` with optional fractional seconds for
+/// the bare-seconds form. Rejects non-finite, negative, and overflowing input
+/// instead of saturating or wrapping through a cast.
+pub fn parse_timestamp_ms(timestamp: &str) -> Result<u64, String> {
+    let timestamp = timestamp.trim();
+    if timestamp.is_empty() {
+        return Err("timestamp cannot be empty".to_string());
+    }
+    if timestamp.contains(':') {
+        let parts: Vec<&str> = timestamp.split(':').collect();
+        if !matches!(parts.len(), 2 | 3) {
+            return Err("invalid timestamp format. Use HH:MM:SS or seconds".to_string());
+        }
+        let mut values = Vec::with_capacity(parts.len());
+        for part in &parts {
+            let value: u64 = part
+                .parse()
+                .map_err(|_| format!("invalid timestamp component: {part}"))?;
+            values.push(value);
+        }
+        let seconds = if values.len() == 3 {
+            if values[1] >= 60 || values[2] >= 60 {
+                return Err("minutes and seconds must be below 60".to_string());
+            }
+            values[0]
+                .checked_mul(3600)
+                .and_then(|v| v.checked_add(values[1] * 60))
+                .and_then(|v| v.checked_add(values[2]))
+                .ok_or_else(|| "timestamp overflows".to_string())?
+        } else {
+            if values[1] >= 60 {
+                return Err("seconds must be below 60".to_string());
+            }
+            values[0]
+                .checked_mul(60)
+                .and_then(|v| v.checked_add(values[1]))
+                .ok_or_else(|| "timestamp overflows".to_string())?
+        };
+        seconds
+            .checked_mul(1000)
+            .ok_or_else(|| "timestamp overflows".to_string())
+    } else {
+        let seconds: f64 = timestamp
+            .parse()
+            .map_err(|_| format!("invalid timestamp: {timestamp}"))?;
+        if !seconds.is_finite() || seconds < 0.0 {
+            return Err("timestamp must be a finite non-negative number".to_string());
+        }
+        let millis = (seconds * 1000.0).round();
+        if millis > u64::MAX as f64 {
+            return Err("timestamp overflows".to_string());
+        }
+        Ok(millis as u64)
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "wallr",
@@ -238,8 +296,6 @@ pub enum IpcCommands {
     },
     /// Re-render current wallpaper
     Reload,
-    /// Trigger preview transition
-    Preview,
     /// Shut down the daemon
     Stop,
     /// Query daemon status
@@ -274,4 +330,25 @@ pub enum IpcCommands {
         #[command(flatten)]
         effect_args: EffectArgs,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_timestamp_ms;
+
+    #[test]
+    fn parses_seek_timestamps() {
+        assert_eq!(parse_timestamp_ms("0").unwrap(), 0);
+        assert_eq!(parse_timestamp_ms("90").unwrap(), 90_000);
+        assert_eq!(parse_timestamp_ms("1.5").unwrap(), 1_500);
+        assert_eq!(parse_timestamp_ms("01:30").unwrap(), 90_000);
+        assert_eq!(parse_timestamp_ms("01:02:03").unwrap(), 3_723_000);
+    }
+
+    #[test]
+    fn rejects_invalid_seek_timestamps() {
+        for value in ["", "-1", "NaN", "inf", "1e300", "1:60", "1:2:60", "1:2:3:4"] {
+            assert!(parse_timestamp_ms(value).is_err(), "{value} should fail");
+        }
+    }
 }

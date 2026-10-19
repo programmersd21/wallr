@@ -342,8 +342,13 @@ impl VideoDecoder {
             .unwrap_or_else(|| "unknown".to_string());
 
         let frame_rate = stream.avg_frame_rate();
-        let fps = if frame_rate.numerator() > 0 {
-            frame_rate.numerator() as f64 / frame_rate.denominator() as f64
+        let fps = if frame_rate.numerator() > 0 && frame_rate.denominator() > 0 {
+            let fps = frame_rate.numerator() as f64 / frame_rate.denominator() as f64;
+            if fps.is_finite() && fps > 0.0 {
+                fps
+            } else {
+                30.0
+            }
         } else {
             30.0
         };
@@ -351,22 +356,20 @@ impl VideoDecoder {
         let duration = {
             let duration_ts = stream.duration();
             let time_base = stream.time_base();
-            if duration_ts > 0 {
-                Duration::from_secs_f64(
-                    duration_ts as f64 * time_base.numerator() as f64
-                        / time_base.denominator() as f64,
-                )
+            let seconds = if duration_ts > 0 && time_base.denominator() > 0 {
+                duration_ts as f64 * time_base.numerator() as f64 / time_base.denominator() as f64
             } else {
-                let container_duration = ictx.duration() as f64 / ffmpeg::ffi::AV_TIME_BASE as f64;
-                Duration::from_secs_f64(container_duration)
-            }
+                ictx.duration() as f64 / ffmpeg::ffi::AV_TIME_BASE as f64
+            };
+            duration_from_seconds(seconds)?
         };
 
-        let total_frames = if fps > 0.0 {
-            (duration.as_secs_f64() * fps) as u64
-        } else {
-            0
-        };
+        if width == 0 || height == 0 {
+            return Err(VideoError::UnsupportedFormat(
+                "video has empty dimensions".to_string(),
+            ));
+        }
+        let total_frames = (duration.as_secs_f64() * fps).min(u64::MAX as f64) as u64;
 
         Ok(VideoMetadata {
             width,
@@ -494,7 +497,7 @@ impl VideoDecoder {
     fn build_decoder(
         stream: &ffmpeg::format::stream::Stream,
         hw_accel: HwAccel,
-    ) -> (ffmpeg::codec::decoder::Video, HwAccel, DecoderState) {
+    ) -> VideoResult<(ffmpeg::codec::decoder::Video, HwAccel, DecoderState)> {
         let mut hardware_attempted = false;
         match hw_accel {
             HwAccel::Auto => {
@@ -508,7 +511,7 @@ impl VideoDecoder {
                     tried += 1;
                     hardware_attempted = true;
                     if let Some(result) = Self::try_hw_decoder(stream, backend) {
-                        return (result.0, result.1, DecoderState::HardwareNegotiating);
+                        return Ok((result.0, result.1, DecoderState::HardwareNegotiating));
                     }
                 }
                 if tried == 0 {
@@ -525,7 +528,7 @@ impl VideoDecoder {
                 // Try the requested hardware backend first
                 hardware_attempted = true;
                 if let Some(result) = Self::try_hw_decoder(stream, specific) {
-                    return (result.0, result.1, DecoderState::HardwareNegotiating);
+                    return Ok((result.0, result.1, DecoderState::HardwareNegotiating));
                 }
                 // Fall back to software
                 tracing::info!(
@@ -535,12 +538,13 @@ impl VideoDecoder {
             }
         }
 
-        // Software fallback.
+        // Software fallback. An unavailable software decoder (unsupported
+        // codec) is a normal error, not a reason to panic the decode thread.
         let decoder = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
             .and_then(|ctx| ctx.decoder().video())
-            .expect("software decoder must be available");
+            .map_err(|e| VideoError::UnsupportedCodec(e.to_string()))?;
         let state = software_decoder_state(hardware_attempted);
-        (decoder, HwAccel::Software, state)
+        Ok((decoder, HwAccel::Software, state))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -571,7 +575,7 @@ impl VideoDecoder {
         let video_stream_index = stream.index();
         let time_base = stream.time_base();
 
-        let (mut decoder, used_hw, initial_state) = Self::build_decoder(&stream, hw_accel);
+        let (mut decoder, used_hw, initial_state) = Self::build_decoder(&stream, hw_accel)?;
         tracing::info!("Decoder in use: {}", used_hw.name());
         decoder_state.store(initial_state.code(), Ordering::Release);
         fallback_occurred.store(
@@ -974,6 +978,18 @@ fn ensure_ffmpeg_init() -> VideoResult<()> {
         .map(|_| ())
 }
 
+/// Converts untrusted container timing to a `Duration` without panicking on
+/// NaN, negative, infinite, or beyond-`Duration::MAX` values.
+fn duration_from_seconds(seconds: f64) -> VideoResult<Duration> {
+    if !seconds.is_finite() || seconds < 0.0 {
+        return Err(VideoError::InvalidDuration(format!(
+            "container reported {seconds} seconds"
+        )));
+    }
+    Duration::try_from_secs_f64(seconds)
+        .map_err(|_| VideoError::InvalidDuration(format!("{seconds} seconds is out of range")))
+}
+
 const fn software_decoder_state(hardware_attempted: bool) -> DecoderState {
     if hardware_attempted {
         DecoderState::SoftwareFallback
@@ -1059,12 +1075,38 @@ fn vaapi_device_candidates() -> Vec<CString> {
     candidates
 }
 
-fn copy_packed_rows(source: &[u8], stride: usize, row_bytes: usize, height: usize) -> Vec<u8> {
-    let mut packed = Vec::with_capacity(row_bytes * height);
+fn copy_packed_rows(
+    source: &[u8],
+    stride: usize,
+    row_bytes: usize,
+    height: usize,
+) -> VideoResult<Vec<u8>> {
+    let invalid = |message: String| VideoError::FormatConversionFailed(anyhow::anyhow!(message));
+    if height == 0 {
+        return Err(invalid("frame has zero height".to_string()));
+    }
+    if stride < row_bytes {
+        return Err(invalid(format!(
+            "frame stride {stride} is smaller than row width {row_bytes}"
+        )));
+    }
+    let needed = stride
+        .checked_mul(height)
+        .ok_or_else(|| invalid("frame stride overflow".to_string()))?;
+    if source.len() < needed {
+        return Err(invalid(format!(
+            "frame buffer {} is smaller than required {needed}",
+            source.len()
+        )));
+    }
+    let capacity = row_bytes
+        .checked_mul(height)
+        .ok_or_else(|| invalid("frame size overflow".to_string()))?;
+    let mut packed = Vec::with_capacity(capacity);
     for row in source.chunks(stride).take(height) {
         packed.extend_from_slice(&row[..row_bytes]);
     }
-    packed
+    Ok(packed)
 }
 
 /// Converts a decoded frame into `VideoFrameData`, keeping NV12 on the GPU
@@ -1091,7 +1133,7 @@ fn convert_frame(
             value => value,
         };
         let color = select_yuv_color(color_space, color_range, width, height);
-        let (y_plane, uv_plane) = copy_nv12_planes(src_frame);
+        let (y_plane, uv_plane) = copy_nv12_planes(src_frame)?;
         Ok(VideoFrameData::Nv12 {
             y_plane,
             uv_plane,
@@ -1123,13 +1165,15 @@ fn convert_frame(
         Ok(VideoFrameData::Rgba(copy_packed_rows(
             rgb_frame.data(0),
             rgb_frame.stride(0),
-            rgb_frame.width() as usize * 4,
+            (rgb_frame.width() as usize).checked_mul(4).ok_or_else(|| {
+                VideoError::FormatConversionFailed(anyhow::anyhow!("frame width overflow"))
+            })?,
             rgb_frame.height() as usize,
-        )))
+        )?))
     }
 }
 
-fn copy_nv12_planes(frame: &ffmpeg::frame::Video) -> (Vec<u8>, Vec<u8>) {
+fn copy_nv12_planes(frame: &ffmpeg::frame::Video) -> VideoResult<(Vec<u8>, Vec<u8>)> {
     copy_nv12_data(
         frame.data(0),
         frame.stride(0),
@@ -1147,13 +1191,21 @@ fn copy_nv12_data(
     uv_stride: usize,
     width: usize,
     height: usize,
-) -> (Vec<u8>, Vec<u8>) {
+) -> VideoResult<(Vec<u8>, Vec<u8>)> {
+    if width == 0 || height == 0 {
+        return Err(VideoError::FormatConversionFailed(anyhow::anyhow!(
+            "NV12 frame is empty"
+        )));
+    }
     let chroma_width = width.div_ceil(2);
     let chroma_height = height.div_ceil(2);
-    (
-        copy_packed_rows(y_source, y_stride, width, height),
-        copy_packed_rows(uv_source, uv_stride, chroma_width * 2, chroma_height),
-    )
+    let uv_row = chroma_width.checked_mul(2).ok_or_else(|| {
+        VideoError::FormatConversionFailed(anyhow::anyhow!("NV12 chroma row overflow"))
+    })?;
+    Ok((
+        copy_packed_rows(y_source, y_stride, width, height)?,
+        copy_packed_rows(uv_source, uv_stride, uv_row, chroma_height)?,
+    ))
 }
 
 fn select_yuv_color(
@@ -1322,7 +1374,7 @@ mod tests {
     fn packs_strided_rows() {
         let y = [1, 2, 3, 99, 99, 4, 5, 6, 99, 99, 7, 8, 9, 99, 99];
         let uv = [10, 11, 12, 13, 99, 99, 14, 15, 16, 17, 99, 99];
-        let (packed_y, packed_uv) = copy_nv12_data(&y, 5, &uv, 6, 3, 3);
+        let (packed_y, packed_uv) = copy_nv12_data(&y, 5, &uv, 6, 3, 3).unwrap();
         assert_eq!(packed_y, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
         assert_eq!(packed_uv, [10, 11, 12, 13, 14, 15, 16, 17]);
     }
@@ -1393,5 +1445,23 @@ mod tests {
             ),
             ffmpeg::ffi::AVPixelFormat::AV_PIX_FMT_NONE
         );
+    }
+    #[test]
+    fn rejects_truncated_or_inverted_frame_rows() {
+        assert!(copy_packed_rows(&[0; 10], 5, 6, 2).is_err());
+        assert!(copy_packed_rows(&[0; 10], 5, 5, 3).is_err());
+        assert!(copy_packed_rows(&[0; 10], 4, 5, 2).is_err());
+        assert!(copy_packed_rows(&[0; 15], 5, 3, 3).is_ok());
+    }
+    #[test]
+    fn untrusted_duration_values_never_panic() {
+        for value in [f64::NAN, f64::INFINITY, -1.0, f64::MAX] {
+            assert!(duration_from_seconds(value).is_err(), "{value}");
+        }
+        assert_eq!(
+            duration_from_seconds(1.5).unwrap(),
+            Duration::from_millis(1500)
+        );
+        assert_eq!(duration_from_seconds(0.0).unwrap(), Duration::ZERO);
     }
 }
