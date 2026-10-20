@@ -49,22 +49,22 @@ pub enum DaemonError {
     Wallpaper(#[from] crate::wallpaper::WallpaperError),
 }
 
-/// Borrowed raw Wayland handles for `wgpu::Instance::create_surface`.
+/// Raw handles borrowed by wgpu while it creates a surface.
 ///
-/// The pointers reference the compositor display connection and the layer
-/// surface, both owned by the daemon for at least as long as the resulting
-/// render state. This type is only constructed on a blocking worker and never
-/// outlives the `create_surface` call.
-pub struct WaylandWindow {
-    pub display: *mut std::ffi::c_void,
-    pub surface: *mut std::ffi::c_void,
+/// The connection and matching surface proxy stay owned by the daemon and
+/// render state respectively. The handle itself is temporary and is not
+/// retained after `create_surface` returns.
+struct WaylandWindow {
+    display: *mut std::ffi::c_void,
+    surface: *mut std::ffi::c_void,
 }
 
-// SAFETY: `create_surface` requires Send + Sync on its window handle. The
-// raw pointers are immutable handles to objects whose lifetime is enforced by
-// `RenderState` (it holds a cloned `wl_surface` proxy and the daemon keeps the
-// display connection alive). No pointer is dereferenced outside the Wayland
-// client/backend while the owning connection exists.
+// SAFETY: wgpu requires a Send + Sync handle for surface creation. These
+// pointers are only opaque identifiers passed to wgpu; Wallr never dereferences
+// them. The display connection remains owned by the daemon, and the surface's
+// cloned Wayland proxy remains in RenderState while the wgpu surface exists.
+// Output teardown cancels playback and waits for the render lock before
+// releasing that state. The handle is created and consumed synchronously.
 unsafe impl Send for WaylandWindow {}
 unsafe impl Sync for WaylandWindow {}
 
@@ -132,7 +132,6 @@ struct WaylandState {
 /// the render lock and stops playback before dropping that proxy.
 struct SendDisplayPtr(*mut std::ffi::c_void);
 unsafe impl Send for SendDisplayPtr {}
-unsafe impl Sync for SendDisplayPtr {}
 
 /// Shared context for hotplug operations. Stored in `WaylandState` so the
 /// output callbacks can create/destroy render states without needing access

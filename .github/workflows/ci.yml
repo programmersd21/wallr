@@ -32,6 +32,19 @@ jobs:
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
+      - name: Check architecture dependency versions
+        run: |
+          python3 - <<'PY'
+          import re
+          import tomllib
+          from pathlib import Path
+
+          manifest = tomllib.loads(Path("Cargo.toml").read_text())
+          version = manifest["workspace"]["dependencies"]["smithay-client-toolkit"]["version"]
+          architecture = Path("docs/architecture.md").read_text()
+          if not re.search(rf"SCTK {re.escape(version)}\b", architecture):
+              raise SystemExit(f"docs/architecture.md must identify SCTK {version}")
+          PY
       - run: cargo check --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
@@ -43,8 +56,8 @@ jobs:
             crate_version="$(cargo metadata --no-deps --format-version 1 | jq -re ".packages[] | select(.name==\"$crate\") | .version")"
             test "$crate_version" = "$VERSION"
           done
-          test "$VERSION" = "0.8.0"
-          grep -q "## \[0.8.0\]" CHANGELOG.md
+          test "$VERSION" = "0.8.1"
+          grep -q "## \[0.8.1\]" CHANGELOG.md
 
   msrv:
     name: MSRV (1.88)

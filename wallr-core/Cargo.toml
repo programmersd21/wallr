@@ -75,10 +75,9 @@ ffmpeg-next.workspace = true
 crossbeam-channel.workspace = true
 
 # Linux allocator tuning (mallopt); see `daemon::tune_allocator`.
-# Pinned to the version already in Cargo.lock: the registry index mirror
-# only advertises prereleases, so a caret requirement cannot resolve.
+# Keep the exact libc version synchronized with Cargo.lock for reproducible builds.
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = "=0.2.189"
+libc = "=0.2.191"
 
 # WGSL validation for bundled shaders (tests only, never linked into the binary).
 # Pinned to the Cargo.lock version like libc above: the index mirror cannot

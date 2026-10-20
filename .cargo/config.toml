@@ -1,5 +1,2 @@
-[build]
-rustflags = ["-C", "target-cpu=native"]
-
-[target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "target-cpu=native", "-C", "link-arg=-fuse-ld=lld"]
+# Keep shared and release builds portable. Set RUSTFLAGS locally when tuning
+# artifacts for a specific machine or linker.

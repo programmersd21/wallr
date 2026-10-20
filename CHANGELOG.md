@@ -5,6 +5,21 @@ All notable changes to Wallr are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] - 2026-10-20
+
+### Fixed
+
+- Release builds now check out and verify the exact tagged commit. Manual
+  releases require an existing tag and cannot create one from a branch.
+- Static FFmpeg verification checks `wallr-daemon`, the binary that uses
+  FFmpeg, and the release archive is checked for both expected binaries.
+- Portable builds no longer force machine-specific CPU features or the `lld`
+  linker; local tuning remains available through `RUSTFLAGS`.
+- Updated the architecture diagram to SCTK 0.21 and added a CI consistency
+  check against the workspace dependency version.
+- Narrowed the raw Wayland handle boundary and documented the connection,
+  surface-proxy, and output-teardown lifetime requirements.
+
 ## [0.8.0] - 2026-10-20
 
 ### Added
@@ -42,9 +57,6 @@ and versions follow [Semantic Versioning](https://semver.org/).
   framebuffer or growing without bound.
 - Removed the forced mimalloc global allocator so idle daemons do not reserve a
   large allocator arena before any wallpaper is displayed.
-- Portable builds: removed machine-specific `-C target-cpu=native` and forced
-  `lld` from `.cargo/config.toml`, fixing the CI `rustc` SIGILL caused by
-  cached proc-macro dylibs built for a different CPU.
 - Video PTS conversion now normalizes valid negative-start timelines and rejects
   NaN or out-of-range timestamps instead of panicking (release builds use
   `panic = abort`).

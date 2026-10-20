@@ -15,7 +15,7 @@ This crate has no GPU, wayland, or decoding dependencies. It is used by both the
 
 ```toml
 [dependencies]
-wallr-common = "0.8.0"
+wallr-common = "0.8.1"
 ```
 
 ## license

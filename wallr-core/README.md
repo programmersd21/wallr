@@ -17,7 +17,7 @@ Core engine for `wallr`: daemon, renderer, animation, video, and theme integrati
 
 ```toml
 [dependencies]
-wallr-core = "0.8.0"
+wallr-core = "0.8.1"
 ```
 
 ## features
