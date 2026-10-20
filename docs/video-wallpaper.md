@@ -78,6 +78,8 @@ position.
 - `loop_video` is honored: no hidden rewinding when disabled.
 - Pause and resume reset the pacing and stall-watchdog baseline, preventing a
   resume burst or a false stalled-video shutdown.
+- Pause/resume control is coalesced to the latest state, so rapid IPC toggles
+  cannot build an unbounded decoder command backlog.
 
 ## Requirements
 

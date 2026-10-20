@@ -38,6 +38,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Video playback speedup/stall after pause+resume.
+- Rapid pause/resume commands now coalesce to the latest requested state
+  instead of accumulating stale decoder commands.
 
 ## [0.7.0] - 2026-10-19
 

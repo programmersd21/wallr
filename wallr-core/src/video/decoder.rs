@@ -211,8 +211,6 @@ pub struct DecoderInfo {
 
 #[derive(Debug, Clone, Copy)]
 enum DecoderControl {
-    Pause,
-    Resume,
     Seek(Duration, u64),
 }
 
@@ -222,6 +220,7 @@ pub struct VideoDecoder {
     dropped_frames: Arc<AtomicU64>,
     control_tx: Sender<DecoderControl>,
     stop_flag: Arc<AtomicBool>,
+    pause_requested: Arc<AtomicBool>,
     seek_epoch: Arc<AtomicU64>,
     hw_in_use: Arc<AtomicU8>,
     decoder_state: Arc<AtomicU8>,
@@ -266,6 +265,8 @@ impl VideoDecoder {
 
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_flag_clone = stop_flag.clone();
+        let pause_requested = Arc::new(AtomicBool::new(false));
+        let pause_requested_clone = pause_requested.clone();
         let seek_epoch = Arc::new(AtomicU64::new(0));
         let seek_epoch_clone = seek_epoch.clone();
         let hw_in_use = Arc::new(AtomicU8::new(0));
@@ -288,6 +289,7 @@ impl VideoDecoder {
                     dropped_frames_clone,
                     control_rx,
                     stop_flag_clone,
+                    pause_requested_clone,
                     seek_epoch_clone,
                     hw_in_use_clone.clone(),
                     decoder_state_clone.clone(),
@@ -314,6 +316,7 @@ impl VideoDecoder {
             dropped_frames,
             control_tx,
             stop_flag,
+            pause_requested,
             seek_epoch,
             hw_in_use,
             decoder_state,
@@ -560,6 +563,7 @@ impl VideoDecoder {
         dropped_frames: Arc<AtomicU64>,
         control_rx: Receiver<DecoderControl>,
         stop_flag: Arc<AtomicBool>,
+        pause_requested: Arc<AtomicBool>,
         seek_epoch: Arc<AtomicU64>,
         hw_in_use: Arc<AtomicU8>,
         decoder_state: Arc<AtomicU8>,
@@ -590,7 +594,7 @@ impl VideoDecoder {
         let mut scaler: Option<ffmpeg::software::scaling::Context> = None;
         let mut scaler_src: Option<ffmpeg::format::Pixel> = None;
 
-        let mut paused = false;
+        let mut paused: bool;
         let mut pending_seek: Option<(Duration, u64)> = None;
         let mut applied_seek_epoch = 0;
         let mut frame_index = 0u64;
@@ -607,11 +611,10 @@ impl VideoDecoder {
 
             while let Ok(control) = control_rx.try_recv() {
                 match control {
-                    DecoderControl::Pause => paused = true,
-                    DecoderControl::Resume => paused = false,
                     DecoderControl::Seek(ts, epoch) => pending_seek = Some((ts, epoch)),
                 }
             }
+            paused = pause_requested.load(Ordering::Acquire);
 
             if let Some((ts, epoch)) = pending_seek.take() {
                 Self::apply_seek(&mut ictx, &mut decoder, time_base, ts);
@@ -630,11 +633,10 @@ impl VideoDecoder {
 
                 while let Ok(control) = control_rx.try_recv() {
                     match control {
-                        DecoderControl::Pause => paused = true,
-                        DecoderControl::Resume => paused = false,
                         DecoderControl::Seek(ts, epoch) => pending_seek = Some((ts, epoch)),
                     }
                 }
+                paused = pause_requested.load(Ordering::Acquire);
                 if paused || pending_seek.is_some() {
                     break;
                 }
@@ -669,13 +671,12 @@ impl VideoDecoder {
                         }
                         while let Ok(control) = control_rx.try_recv() {
                             match control {
-                                DecoderControl::Pause => paused = true,
-                                DecoderControl::Resume => paused = false,
                                 DecoderControl::Seek(ts, epoch) => {
                                     pending_seek = Some((ts, epoch));
                                 }
                             }
                         }
+                        paused = pause_requested.load(Ordering::Acquire);
                         if pending_seek.is_some()
                             || seek_epoch.load(Ordering::Acquire) != applied_seek_epoch
                         {
@@ -872,11 +873,11 @@ impl VideoDecoder {
     }
 
     pub fn pause(&self) {
-        let _ = self.control_tx.send(DecoderControl::Pause);
+        self.pause_requested.store(true, Ordering::Release);
     }
 
     pub fn resume(&self) {
-        let _ = self.control_tx.send(DecoderControl::Resume);
+        self.pause_requested.store(false, Ordering::Release);
     }
 
     pub fn seek(&self, timestamp: Duration) {
