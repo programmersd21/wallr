@@ -24,6 +24,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Static IPC commands no longer load the daemon's FFmpeg and renderer stack.
 - The benchmark harness measures the actual `wallr-daemon` process rather than
   the client wrapper.
+- Software video frames are converted to NV12 instead of full-resolution RGBA
+  before queueing and upload, reducing CPU conversion work and frame traffic.
+- Hardware decoding now selects an FFmpeg decoder that advertises support for
+  the requested device backend, avoiding software-only decoder selection.
+- The configured video FPS cap now skips unnecessary hardware-frame transfers
+  and CPU frame conversion, not only final presentation.
 
 ## [0.7.1] - 2026-10-20
 

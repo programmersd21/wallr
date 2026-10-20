@@ -5,7 +5,7 @@ use ffmpeg_next as ffmpeg;
 use std::collections::VecDeque;
 use std::ffi::{CString, c_char};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -225,6 +225,7 @@ pub struct VideoDecoder {
     hw_in_use: Arc<AtomicU8>,
     decoder_state: Arc<AtomicU8>,
     fallback_occurred: Arc<AtomicBool>,
+    max_output_fps: Arc<AtomicU32>,
     decode_thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -275,6 +276,8 @@ impl VideoDecoder {
         let decoder_state_clone = decoder_state.clone();
         let fallback_occurred = Arc::new(AtomicBool::new(false));
         let fallback_clone = fallback_occurred.clone();
+        let max_output_fps = Arc::new(AtomicU32::new(0));
+        let max_output_fps_clone = max_output_fps.clone();
         let frame_queue_clone = frame_queue.clone();
         let dropped_frames_clone = dropped_frames.clone();
 
@@ -294,6 +297,7 @@ impl VideoDecoder {
                     hw_in_use_clone.clone(),
                     decoder_state_clone.clone(),
                     fallback_clone,
+                    max_output_fps_clone,
                     loop_video,
                 );
                 let used = match used {
@@ -321,8 +325,14 @@ impl VideoDecoder {
             hw_in_use,
             decoder_state,
             fallback_occurred,
+            max_output_fps,
             decode_thread: Some(decode_thread),
         })
+    }
+
+    pub fn set_max_output_fps(&self, fps: Option<u32>) {
+        self.max_output_fps
+            .store(fps.filter(|fps| *fps > 0).unwrap_or(0), Ordering::Release);
     }
 
     fn extract_metadata(path: &Path) -> VideoResult<VideoMetadata> {
@@ -474,6 +484,8 @@ impl VideoDecoder {
         let mut context =
             ffmpeg::codec::context::Context::from_parameters(stream.parameters()).ok()?;
 
+        let codec = hardware_decoder(stream.parameters().id(), hw_accel)?;
+
         // SAFETY: device_ctx is a valid FFmpeg allocation; the codec context
         // unrefs it when dropped.
         unsafe {
@@ -481,11 +493,16 @@ impl VideoDecoder {
             (*context.as_mut_ptr()).get_format = Some(select_hw_pixel_format);
         }
 
-        match context.decoder().video() {
+        match context
+            .decoder()
+            .open_as(codec)
+            .and_then(|opened| opened.video())
+        {
             Ok(decoder) => {
                 tracing::info!(
-                    "Hardware decoder initialized: {}; awaiting negotiated hardware frame",
-                    hw_accel.name()
+                    "Hardware decoder initialized: {} using {}; awaiting negotiated hardware frame",
+                    hw_accel.name(),
+                    codec.name()
                 );
                 Some((decoder, hw_accel))
             }
@@ -568,6 +585,7 @@ impl VideoDecoder {
         hw_in_use: Arc<AtomicU8>,
         decoder_state: Arc<AtomicU8>,
         fallback_occurred: Arc<AtomicBool>,
+        max_output_fps: Arc<AtomicU32>,
         loop_video: bool,
     ) -> VideoResult<HwAccel> {
         let mut ictx = ffmpeg::format::input(&path).map_err(|e| VideoError::FileOpen {
@@ -599,10 +617,11 @@ impl VideoDecoder {
         let mut applied_seek_epoch = 0;
         let mut frame_index = 0u64;
         let mut pts_origin: Option<f64> = None;
+        let mut last_output_pts = None;
         let mut hardware_frame_seen = false;
         let mut decoded_frame = ffmpeg::frame::Video::empty();
         let mut sw_frame = ffmpeg::frame::Video::empty();
-        let mut rgb_frame = ffmpeg::frame::Video::empty();
+        let mut converted_frame = ffmpeg::frame::Video::empty();
 
         'outer: loop {
             if stop_flag.load(Ordering::Relaxed) {
@@ -619,6 +638,7 @@ impl VideoDecoder {
             if let Some((ts, epoch)) = pending_seek.take() {
                 Self::apply_seek(&mut ictx, &mut decoder, time_base, ts);
                 applied_seek_epoch = epoch;
+                last_output_pts = None;
             }
 
             if paused {
@@ -700,6 +720,28 @@ impl VideoDecoder {
                         break;
                     }
 
+                    let pts_duration = match pts_to_duration(
+                        decoded_frame.timestamp(),
+                        time_base,
+                        frame_index,
+                        &mut pts_origin,
+                    ) {
+                        Some(duration) => duration,
+                        None => {
+                            tracing::warn!("video frame dropped: invalid presentation timestamp");
+                            continue;
+                        }
+                    };
+                    if !frame_due_for_upload(
+                        pts_duration,
+                        max_output_fps.load(Ordering::Acquire),
+                        last_output_pts,
+                    ) {
+                        frame_index = frame_index.wrapping_add(1);
+                        dropped_frames.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+
                     let is_hw_frame = unsafe { !(*decoded_frame.as_ptr()).hw_frames_ctx.is_null() };
 
                     let src_frame = if is_hw_frame {
@@ -731,19 +773,6 @@ impl VideoDecoder {
                         &decoded_frame
                     };
 
-                    let pts_duration = match pts_to_duration(
-                        decoded_frame.timestamp(),
-                        time_base,
-                        frame_index,
-                        &mut pts_origin,
-                    ) {
-                        Some(duration) => duration,
-                        None => {
-                            tracing::warn!("video frame dropped: invalid presentation timestamp");
-                            continue;
-                        }
-                    };
-
                     let width = src_frame.width();
                     let height = src_frame.height();
                     // Conversion failures (unexpected pixel format, hardware
@@ -755,7 +784,7 @@ impl VideoDecoder {
                         &decoded_frame,
                         &mut scaler,
                         &mut scaler_src,
-                        &mut rgb_frame,
+                        &mut converted_frame,
                         width,
                         height,
                         &decoder,
@@ -774,6 +803,7 @@ impl VideoDecoder {
                         pts: pts_duration,
                         index: frame_index,
                     };
+                    last_output_pts = Some(pts_duration);
                     frame_index = frame_index.wrapping_add(1);
 
                     if let Ok(mut queue) = frame_queue.lock() {
@@ -799,6 +829,7 @@ impl VideoDecoder {
                 ictx.seek(0, ..)
                     .map_err(|e| VideoError::SeekFailed(Duration::ZERO, e.into()))?;
                 decoder.flush();
+                last_output_pts = None;
             } else if !paused {
                 // Reached the end without looping (single play-through).
                 // Stay parked so pause/seek/stop still work, and a later
@@ -914,6 +945,50 @@ impl VideoDecoder {
                     "mp4" | "webm" | "mkv" | "mov" | "avi" | "m4v"
                 )
             })
+    }
+}
+
+/// Find a decoder for this codec that advertises support for the requested
+/// hardware device context. FFmpeg's default decoder can be a software-only
+/// implementation (for example libdav1d), even when a hardware decoder for
+/// the same codec is available.
+fn hardware_decoder(id: ffmpeg::codec::Id, hw_accel: HwAccel) -> Option<ffmpeg::Codec> {
+    let device_type = match hw_accel {
+        HwAccel::Nvdec => ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
+        HwAccel::Vaapi => ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
+        HwAccel::VideoToolbox => ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+        HwAccel::Auto | HwAccel::Software => return None,
+    };
+
+    // SAFETY: FFmpeg owns the codec registry and returned codec/config pointers;
+    // they remain valid for the process lifetime. The iterator is local.
+    unsafe {
+        let mut iterator = std::ptr::null_mut();
+        loop {
+            let codec = ffmpeg::ffi::av_codec_iterate(&mut iterator);
+            if codec.is_null() {
+                return None;
+            }
+            if ffmpeg::ffi::av_codec_is_decoder(codec) == 0 || (*codec).id != id.into() {
+                continue;
+            }
+
+            let mut index = 0;
+            loop {
+                let config = ffmpeg::ffi::avcodec_get_hw_config(codec, index);
+                if config.is_null() {
+                    break;
+                }
+                if (*config).device_type == device_type
+                    && (*config).methods
+                        & ffmpeg::ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX as i32
+                        != 0
+                {
+                    return Some(ffmpeg::Codec::wrap(codec));
+                }
+                index += 1;
+            }
+        }
     }
 }
 
@@ -1069,6 +1144,14 @@ fn pts_to_duration(
         .filter(|duration| *duration <= deadline)
 }
 
+fn frame_due_for_upload(pts: Duration, max_fps: u32, last_pts: Option<Duration>) -> bool {
+    if max_fps == 0 {
+        return true;
+    }
+    let interval = Duration::from_secs_f64(1.0 / f64::from(max_fps));
+    last_pts.is_none_or(|last| pts.saturating_sub(last) >= interval)
+}
+
 const fn software_decoder_state(hardware_attempted: bool) -> DecoderState {
     if hardware_attempted {
         DecoderState::SoftwareFallback
@@ -1188,16 +1271,15 @@ fn copy_packed_rows(
     Ok(packed)
 }
 
-/// Converts a decoded frame into `VideoFrameData`, keeping NV12 on the GPU
-/// path when the decoder produced it natively and falling back to a software
-/// RGBA conversion for anything else.
+/// Converts decoded frames to NV12, avoiding a full-resolution CPU RGB
+/// conversion and reducing queued/uploaded frame bytes versus RGBA.
 #[allow(clippy::too_many_arguments)]
 fn convert_frame(
     src_frame: &ffmpeg::frame::Video,
     decoded_frame: &ffmpeg::frame::Video,
     scaler: &mut Option<ffmpeg::software::scaling::Context>,
     scaler_src: &mut Option<ffmpeg::format::Pixel>,
-    rgb_frame: &mut ffmpeg::frame::Video,
+    converted_frame: &mut ffmpeg::frame::Video,
     width: u32,
     height: u32,
     decoder: &ffmpeg::codec::decoder::Video,
@@ -1226,10 +1308,10 @@ fn convert_frame(
                     src_format,
                     width,
                     height,
-                    ffmpeg::format::Pixel::RGBA,
+                    ffmpeg::format::Pixel::NV12,
                     width,
                     height,
-                    ffmpeg::software::scaling::Flags::BILINEAR,
+                    ffmpeg::software::scaling::Flags::FAST_BILINEAR,
                 )
                 .map_err(|e| VideoError::FormatConversionFailed(e.into()))?,
             );
@@ -1239,16 +1321,23 @@ fn convert_frame(
         scaler
             .as_mut()
             .expect("scaler initialized above")
-            .run(src_frame, rgb_frame)
+            .run(src_frame, converted_frame)
             .map_err(|e| VideoError::FormatConversionFailed(e.into()))?;
-        Ok(VideoFrameData::Rgba(copy_packed_rows(
-            rgb_frame.data(0),
-            rgb_frame.stride(0),
-            (rgb_frame.width() as usize).checked_mul(4).ok_or_else(|| {
-                VideoError::FormatConversionFailed(anyhow::anyhow!("frame width overflow"))
-            })?,
-            rgb_frame.height() as usize,
-        )?))
+        let color_space = match decoded_frame.color_space() {
+            ffmpeg::color::Space::Unspecified => decoder.color_space(),
+            value => value,
+        };
+        let color_range = match decoded_frame.color_range() {
+            ffmpeg::color::Range::Unspecified => decoder.color_range(),
+            value => value,
+        };
+        let color = select_yuv_color(color_space, color_range, width, height);
+        let (y_plane, uv_plane) = copy_nv12_planes(converted_frame)?;
+        Ok(VideoFrameData::Nv12 {
+            y_plane,
+            uv_plane,
+            color,
+        })
     }
 }
 
@@ -1319,6 +1408,27 @@ impl Drop for VideoDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_fps_cap_skips_expensive_frame_preparation() {
+        let last = Duration::ZERO;
+        assert!(!frame_due_for_upload(
+            Duration::from_millis(16),
+            30,
+            Some(last)
+        ));
+        assert!(frame_due_for_upload(
+            Duration::from_millis(34),
+            30,
+            Some(last)
+        ));
+        assert!(frame_due_for_upload(
+            Duration::from_millis(16),
+            0,
+            Some(last)
+        ));
+        assert!(frame_due_for_upload(Duration::ZERO, 30, None));
+    }
 
     #[test]
     fn nvidia_probe_detects_vendor_via_sysfs_layout() {

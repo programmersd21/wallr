@@ -7,6 +7,7 @@ set -euo pipefail
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 input=${1:-"$root_dir/assets/demo.mkv"}
 report=${BENCHMARK_REPORT:-"$root_dir/benchmarks/video-$(date -u +%Y%m%d-%H%M%S).md"}
+wallr_version=$(awk '/^\[workspace.package\]/{in_workspace=1; next} /^\[/{in_workspace=0} in_workspace && /^version =/{gsub(/[" ]/, "", $3); print $3; exit}' "$root_dir/Cargo.toml")
 
 [[ -s "$input" ]] || { echo "error: missing video: $input" >&2; exit 2; }
 mkdir -p "$(dirname "$report")"
@@ -67,7 +68,7 @@ fi
     printf -- '- Date (UTC): %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S')"
     printf -- '- Host: %s\n' "$(uname -n)"
     printf -- '- Input: `%s`\n' "$input"
-    printf -- '- Wallr version: %s\n' "$(cargo run -q -p wallr -- --version 2>/dev/null)"
+    printf -- '- Wallr version: %s\n' "$wallr_version"
     echo
     echo "| Backend | Frames | Throughput (fps) | CPU time (s) | Decoder state | Dropped frames |"
     echo "|:--|--:|--:|--:|:--|--:|"

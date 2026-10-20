@@ -27,6 +27,10 @@ impl PreparedVideoPlayback {
     pub fn take_first_frame(&mut self) -> Option<VideoFrame> {
         self.first_frame.take()
     }
+
+    pub fn set_max_output_fps(&self, fps: Option<u32>) {
+        self.decoder.set_max_output_fps(fps);
+    }
 }
 
 impl VideoPlayback {

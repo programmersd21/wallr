@@ -18,10 +18,21 @@ MP4, WebM, MKV, MOV, and AVI. Anything FFmpeg can demux is a candidate; the FFmp
   - `software`: uses software-only decoding without attempting hardware backends
 - `video.preferred_gpu` controls adapter selection when both integrated and discrete GPUs are present.
 - Frames are decoded into a small bounded latest-frame queue and presented on PTS timing. Temporary queue pressure drops stale frames instead of terminating the decoder or allowing memory growth.
+- Frames that FFmpeg does not provide as NV12 are converted to NV12 with
+  FFmpeg's fast bilinear scaler. This keeps CPU color conversion out of the
+  full-resolution RGBA path and reduces queue and upload data before the
+  existing GPU YUV conversion.
+- Hardware requests select a decoder that advertises the requested FFmpeg
+  hardware device type. Wallr reports hardware as active only after receiving
+  and transferring a hardware frame; unsupported codecs or devices fall back
+  to software decoding.
 - `wallpaper.loop_video` (default `true`) restarts the stream when it ends, producing a continuous loop.
 - `wallr set <path> --fps <n>` caps presentation work for that wallpaper to `1` to
   `240` fps. Without it, Wallr uses the configured daemon cap and the video's
   timestamps. The cap is a ceiling, not a request to duplicate frames.
+- When the cap is below the source frame rate, FFmpeg still decodes reference
+  frames needed by the codec, but Wallr skips hardware-to-CPU transfer and frame
+  conversion for frames that cannot be presented at the requested rate.
 - `wallr ipc info` distinguishes hardware negotiation, active hardware frames, software decoding, software fallback, and decoder failure. A backend is not reported as active until a hardware frame has actually been received.
 - The stream timeline is normalized against its first valid PTS, so files with
   negative edit-list timestamps do not stall at startup. Invalid timestamps

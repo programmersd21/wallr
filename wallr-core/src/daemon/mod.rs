@@ -1303,6 +1303,7 @@ impl RenderState {
                         .map_err(crate::video::VideoError::GpuResourceCreation)
                 },
             )?;
+            prepared.set_max_output_fps(self.max_fps);
             let metadata = prepared.metadata().clone();
             let first_frame = prepared.take_first_frame();
 
