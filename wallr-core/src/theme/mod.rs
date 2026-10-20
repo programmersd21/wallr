@@ -510,6 +510,7 @@ fn reap_with_timeout(child: &mut Child, timeout: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::GenericImageView;
 
     #[test]
     fn test_check_provider_available_none() {
@@ -559,6 +560,26 @@ mod tests {
         std::fs::write(&path, b"two").unwrap();
         let third = theme_cache_key(&path).unwrap();
         assert_ne!(second, third, "size changes must invalidate");
+    }
+
+    #[test]
+    fn animated_wallpapers_resolve_to_cached_theme_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("animated.gif");
+        let mut bytes = Vec::new();
+        {
+            let palette = [0, 0, 0, 255, 0, 0];
+            let mut encoder = gif::Encoder::new(&mut bytes, 1, 1, &palette).unwrap();
+            encoder.set_repeat(gif::Repeat::Infinite).unwrap();
+            let mut frame = gif::Frame::from_indexed_pixels(1, 1, [1], None);
+            frame.delay = 5;
+            encoder.write_frame(&frame).unwrap();
+        }
+        std::fs::write(&path, bytes).unwrap();
+
+        let cached = resolve_theme_image(&path).expect("gif should produce a theme frame");
+        assert!(cached.is_file());
+        assert_eq!(image::open(cached).unwrap().dimensions(), (1, 1));
     }
 
     #[test]

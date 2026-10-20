@@ -183,7 +183,6 @@ pub fn parse_timestamp_ms(timestamp: &str) -> Result<u64, String> {
     version,
     override_usage = "wallr [options] <command>",
     disable_help_subcommand = true,
-    disable_help_flag = true,
     disable_version_flag = true,
     help_template = "{before-help}{name} {version}\n\n{about}\n\nusage:\n  {usage}\n\ncommands:\n{subcommands}\n\noptions:\n{options}{after-help}",
     styles = Styles::styled()
@@ -207,10 +206,6 @@ pub struct WallrCli {
     /// quiet mode (suppress non-error output)
     #[arg(global = true, short = 'q', long)]
     pub quiet: bool,
-
-    /// show this message
-    #[arg(short = 'h', long, action = ArgAction::Help)]
-    pub help: Option<bool>,
 
     /// show version
     #[arg(short = 'V', long, action = ArgAction::Version)]

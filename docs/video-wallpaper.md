@@ -27,6 +27,26 @@ MP4, WebM, MKV, MOV, and AVI. Anything FFmpeg can demux is a candidate; the FFmp
   loads the installed NVIDIA driver at runtime and falls back cleanly when it
   is unavailable.
 
+## Theme generation for animated media
+
+Matugen, Wallust, and Pywal can be used when the wallpaper is a GIF or video.
+Wallr extracts the first decodable frame, stores it in the bounded theme-frame
+cache, and passes that PNG to the selected provider. The live GIF or video
+continues through the normal playback pipeline; theme extraction does not
+replace or pause it. Cached frames are invalidated when the source path,
+modification time, or size changes.
+
+Use the same command as for a still image:
+
+```bash
+wallr set background.mp4 --theme matugen
+wallr set animation.gif --theme matugen
+```
+
+If extraction fails because the media is malformed, too large, or has no
+decodable frame, Wallr reports the provider failure and keeps the wallpaper
+switch itself independent from the theme process.
+
 ## Playback control
 
 Control runs through the IPC channel and works for both video and GIF wallpapers:

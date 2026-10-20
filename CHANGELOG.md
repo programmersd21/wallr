@@ -21,6 +21,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
   100 ms.
 - Theme frame extraction (GIF/video) now validates dimensions, input size,
   strides, and row counts before allocating.
+- Theme providers can consume GIF and video wallpapers through a cached first
+  frame, so Matugen, Wallust, and Pywal continue to work with animated media.
 - Subprocess timeouts now kill the whole process group, preventing orphaned
   descendants.
 - Video pause/resume no longer trips the stall watchdog or replays a burst
