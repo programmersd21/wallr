@@ -10,6 +10,8 @@ pub const MAX_IPC_PATH_LEN: usize = 8192;
 pub const MAX_MONITOR_LEN: usize = 256;
 /// Maximum transition duration accepted over IPC (60s).
 pub const MAX_DURATION_MS: u32 = 60_000;
+/// Maximum requested video presentation rate.
+pub const MAX_VIDEO_FPS: u32 = 240;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
@@ -32,6 +34,8 @@ pub enum IpcCommand {
         path: String,
         effect: Option<crate::effect::Effect>,
         duration_ms: Option<u32>,
+        #[serde(default)]
+        fps: Option<u32>,
         #[serde(default)]
         no_theme: bool,
         #[serde(default)]
@@ -170,6 +174,7 @@ pub fn validate_command(cmd: &IpcCommand) -> Result<(), String> {
             path,
             effect,
             duration_ms,
+            fps,
             monitor,
             ..
         } => {
@@ -177,6 +182,11 @@ pub fn validate_command(cmd: &IpcCommand) -> Result<(), String> {
             check_monitor(monitor)?;
             check_duration(duration_ms)?;
             check_effect(effect)?;
+            if let Some(fps) = fps
+                && (*fps == 0 || *fps > MAX_VIDEO_FPS)
+            {
+                return Err(format!("video fps must be between 1 and {MAX_VIDEO_FPS}"));
+            }
             Ok(())
         }
         IpcCommand::Info { monitor } => check_monitor(monitor),
@@ -240,6 +250,7 @@ mod tests {
             path: path.to_string(),
             effect: None,
             duration_ms: None,
+            fps: None,
             no_theme: true,
             theme_override: None,
             monitor: None,
@@ -269,6 +280,7 @@ mod tests {
                 path: "/tmp/w.jpg".to_string(),
                 effect: None,
                 duration_ms: Some(MAX_DURATION_MS + 1),
+                fps: None,
                 no_theme: true,
                 theme_override: None,
                 monitor: None,
@@ -322,6 +334,7 @@ mod tests {
                 path: "/tmp/w.jpg".to_string(),
                 effect: Some(effect),
                 duration_ms: None,
+                fps: None,
                 no_theme: true,
                 theme_override: None,
                 monitor: None,
@@ -346,6 +359,7 @@ mod tests {
                     path: "/tmp/w.jpg".to_string(),
                     effect: Some(effect),
                     duration_ms: None,
+                    fps: None,
                     no_theme: true,
                     theme_override: None,
                     monitor: None,

@@ -441,6 +441,7 @@ mod tests {
                 path: String::new(),
                 effect: None,
                 duration_ms: None,
+                fps: None,
                 no_theme: true,
                 theme_override: None,
                 monitor: None,

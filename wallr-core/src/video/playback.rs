@@ -241,6 +241,12 @@ impl VideoPlayback {
         self.lock_decoder().as_ref().map(|d| d.decoder_info())
     }
 
+    pub fn decoder_state(&self) -> Option<crate::video::DecoderState> {
+        self.lock_decoder()
+            .as_ref()
+            .map(VideoDecoder::decoder_state)
+    }
+
     pub fn hw_accel_in_use(&self) -> HwAccel {
         self.lock_decoder()
             .as_ref()

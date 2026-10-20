@@ -34,6 +34,7 @@ Arch: `yay -S wallr-bin` · Nix: `nix run github:programmersd21/wallr`
 wallr set wallpaper.jpg
 wallr set wallpaper.jpg -e grow -o center -d 850ms
 wallr set video.mp4 -e wave -d 900ms
+wallr set video.mp4 --fps 30
 wallr set wallpaper.jpg --duration 0 --no-theme
 ```
 

@@ -19,6 +19,9 @@ MP4, WebM, MKV, MOV, and AVI. Anything FFmpeg can demux is a candidate; the FFmp
 - `video.preferred_gpu` controls adapter selection when both integrated and discrete GPUs are present.
 - Frames are decoded into a small bounded latest-frame queue and presented on PTS timing. Temporary queue pressure drops stale frames instead of terminating the decoder or allowing memory growth.
 - `wallpaper.loop_video` (default `true`) restarts the stream when it ends, producing a continuous loop.
+- `wallr set <path> --fps <n>` caps presentation work for that wallpaper to `1` to
+  `240` fps. Without it, Wallr uses the configured daemon cap and the video's
+  timestamps. The cap is a ceiling, not a request to duplicate frames.
 - `wallr ipc info` distinguishes hardware negotiation, active hardware frames, software decoding, software fallback, and decoder failure. A backend is not reported as active until a hardware frame has actually been received.
 - The stream timeline is normalized against its first valid PTS, so files with
   negative edit-list timestamps do not stall at startup. Invalid timestamps
@@ -85,8 +88,9 @@ position.
   rejected cleanly instead of allowing an allocation or GPU-device crash.
 - Transient FFmpeg errors (corrupt packets, readback hiccups, conversion
   failures) skip the affected frame instead of killing the decoder.
-- A stalled or dead decoder stops playback after a grace period rather
-  than freezing the frame at a burning CPU loop.
+- A failed decoder stops playback, while temporary queue starvation or heavy
+  system load keeps the playback task alive and waits for recovery instead of
+  stopping a long video after a fixed timeout.
 - Hardware decoding uses FFmpeg pixel-format negotiation. Device creation
   alone is not treated as proof that hardware frames are being produced.
 - `wallr ipc info` reports dropped stale frames when the renderer cannot keep

@@ -233,6 +233,10 @@ pub enum Commands {
         #[arg(long)]
         no_theme: bool,
 
+        /// cap video presentation rate (1..=240 fps)
+        #[arg(long, value_name = "fps")]
+        fps: Option<u32>,
+
         /// override theme engine (matugen, wallust, pywal)
         #[arg(short = 't', long, value_enum)]
         theme: Option<ThemeProvider>,

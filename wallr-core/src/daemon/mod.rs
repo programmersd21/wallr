@@ -2095,10 +2095,6 @@ fn play_video(
         .map(|fps| std::time::Duration::from_secs_f64(1.0 / f64::from(fps)));
     let mut last_present: Option<std::time::Instant> = None;
     let mut paused_last_iteration = false;
-    // Watchdog: if the decoder dies or stalls, stop instead of presenting
-    // the same frozen frame forever at a millisecond cadence.
-    let mut last_frame_at = std::time::Instant::now();
-
     loop {
         // A newer commit superseded us. Do NOT touch the shared
         // `video_playback` here: the successor commit already replaced the
@@ -2154,7 +2150,6 @@ fn play_video(
                 // next frame instead.
                 tracing::warn!("Video frame upload failed: {err}");
             } else {
-                last_frame_at = std::time::Instant::now();
                 frame_uploaded = true;
             }
             // `frame` owns the only copy of the decoded planes; it drops here
@@ -2170,7 +2165,6 @@ fn play_video(
                 // Keep the watchdog and frame pacing state fresh so a resume
                 // does not trip the stall detector or replay a burst of stale
                 // frames at full speed.
-                last_frame_at = std::time::Instant::now();
                 last_present = None;
                 paused_last_iteration = true;
                 pacer.wait_until(std::time::Instant::now() + std::time::Duration::from_millis(100));
@@ -2183,8 +2177,8 @@ fn play_video(
                 last_present = None;
                 paused_last_iteration = false;
             }
-            if last_frame_at.elapsed() > std::time::Duration::from_secs(5) {
-                tracing::warn!("Video playback stalled, stopping");
+            if video_playback.decoder_state() == Some(crate::video::DecoderState::Failed) {
+                tracing::warn!("video decoder failed, stopping playback");
                 return;
             }
             let wait = video_playback
@@ -2219,7 +2213,6 @@ fn play_video(
         match status.map(video_present_action) {
             Ok(VideoPresentAction::Presented) => {
                 last_present = Some(std::time::Instant::now());
-                last_frame_at = std::time::Instant::now();
             }
             Ok(action) => {
                 if action == VideoPresentAction::Reconfigure {
@@ -2799,6 +2792,7 @@ impl Daemon {
                         path,
                         effect,
                         duration_ms,
+                        fps,
                         no_theme,
                         theme_override,
                         monitor,
@@ -2854,6 +2848,9 @@ impl Daemon {
 
                         let mut last_err = None;
                         for (name, rs) in &targets {
+                            if let Some(fps) = fps {
+                                rs.lock().await.max_fps = Some(clamp_max_fps(Some(fps)).unwrap());
+                            }
                             let result = set_wallpaper_with_retry(
                                 rs,
                                 &p,

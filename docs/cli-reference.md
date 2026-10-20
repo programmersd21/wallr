@@ -44,6 +44,9 @@ wallr set ~/Pictures/wallpaper.png -m DP-1 --mode fit
 # Force dynamic theming (Matugen, Wallust, Pywal) or disable
 wallr set ~/Pictures/wallpaper.png -t matugen
 wallr set ~/Pictures/wallpaper.png --no-theme
+
+# Cap video presentation work for this wallpaper
+wallr set ~/Videos/ambient.mkv --fps 30
 ```
 
 #### Flags
@@ -56,6 +59,7 @@ wallr set ~/Pictures/wallpaper.png --no-theme
 | `-m` | `--monitor <OUTPUT>` | Target output (e.g. `DP-1`, `HDMI-A-1`) |
 | `-t` | `--theme <PROVIDER>` | One-shot theme generator: `matugen`, `wallust`, `pywal`, `none` |
 | | `--mode <MODE>` | Scaling mode: `fill`, `fit`, `stretch`, `center`, `tile` (default: `fill`) |
+| | `--fps <FPS>` | Maximum video presentation rate for this wallpaper (`1` to `240`) |
 | | `--easing <CURVE>` | Easing curve: `linear`, `ease_in`, `ease_out`, `ease_in_out`, `bezier` |
 | | `--direction <X,Y>` | Direction vector for `wipe` and `slide` (e.g. `1,0`) |
 | | `--from <VAL>`, `--to <VAL>` | Fade opacity range (default `0` to `1`) |
