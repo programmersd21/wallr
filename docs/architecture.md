@@ -136,6 +136,11 @@ operation remains entirely on the compositor-owned `wl_shm` path. On demand,
 `GpuState` creates the wgpu surface for the affected output and retains the
 dynamic resources needed by transitions and live media. This keeps startup and
 idle RSS low while preserving the existing GPU path for workloads that need it.
+Static output uses two bounded ping-pong shared-memory buffers. A signature-
+checked decoded image may be retained in a small zstd-compressed per-output
+cache, capped at 4 MiB, while settled shared-memory pools are returned to the
+OS after 250 ms of inactivity. Large images are decoded again rather than
+becoming a resident-memory tax.
 - **Backend**: Vulkan / OpenGL / Metal (via `wgpu` abstraction)
 - **Shader Pipeline**: Single-pass WGSL shader (`effects.wgsl`)
 - **Uniform Buffer**: Tracks separate old/new image aspect ratios, screen resolution, animation progress (`0.0..1.0`), active effect type index (`0` fade, `1` wipe, `2` slide, `3` wave, `4` grow, `5` outer), effect parameters (`param_a` to `param_d`), effect origin (`origin`), travel direction (`direction`), easing mode, and scaling mode (`scaling_mode`: `0` fill, `1` fit, `2` stretch, `3` center, `4` tile). Struct is 80 bytes (`Vec2`-aligned, size padded for WGSL uniform layout).

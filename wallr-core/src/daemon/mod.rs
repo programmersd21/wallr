@@ -863,10 +863,9 @@ struct RenderState {
     shm_index: usize,
     shm_width: u32,
     shm_height: u32,
-    /// Reusable decoded pixels for the static wl_shm path. The cache is
-    /// source-signature based and holds one image per output, avoiding a
-    /// repeated filesystem decode for hot wallpaper rotation without growing
-    /// memory with every wallpaper ever seen.
+    /// Compressed decoded pixels for the static wl_shm path. Keeping the
+    /// cache compressed avoids retaining a second full-size framebuffer next
+    /// to the compositor-owned shared-memory buffers.
     cached_shm_image: Option<CachedShmImage>,
     /// A layer surface must not switch from wgpu explicit-sync commits to
     /// bufferless `wl_shm` commits. Some compositors reject that sequence
@@ -891,7 +890,8 @@ struct CachedShmImage {
     output_height: u32,
     width: u32,
     height: u32,
-    rgba: std::sync::Arc<[u8]>,
+    compressed: Vec<u8>,
+    raw_len: usize,
 }
 
 struct GpuState {
@@ -1100,8 +1100,13 @@ impl RenderState {
                 && cached.output_width == self.width
                 && cached.output_height == self.height
         });
-        let (rgba, width, height) = if let Some(cached) = cached {
-            (cached.rgba.clone(), cached.width, cached.height)
+        let cached_rgba = cached.and_then(|cached| {
+            zstd::bulk::decompress(&cached.compressed, cached.raw_len)
+                .ok()
+                .map(|rgba| (rgba, cached.width, cached.height))
+        });
+        let (rgba, width, height) = if let Some((rgba, width, height)) = cached_rgba {
+            (rgba, width, height)
         } else {
             let decoder = ImageReader::open(path)?.into_decoder()?;
             let (source_width, source_height) = decoder.dimensions();
@@ -1114,18 +1119,24 @@ impl RenderState {
                 scaling_mode,
                 wgpu::Limits::default().max_texture_dimension_2d,
             )?;
-            let rgba: std::sync::Arc<[u8]> = rgba.into_raw().into();
-            self.cached_shm_image = Some(CachedShmImage {
-                path: path.to_path_buf(),
-                modified,
-                size: source.len(),
-                scaling_mode,
-                output_width: self.width,
-                output_height: self.height,
-                width,
-                height,
-                rgba: rgba.clone(),
-            });
+            let rgba = rgba.into_raw();
+            let compressed = zstd::bulk::compress(&rgba, 1)?;
+            if compressed.len() <= STATIC_CACHE_LIMIT_BYTES {
+                self.cached_shm_image = Some(CachedShmImage {
+                    path: path.to_path_buf(),
+                    modified,
+                    size: source.len(),
+                    scaling_mode,
+                    output_width: self.width,
+                    output_height: self.height,
+                    width,
+                    height,
+                    raw_len: rgba.len(),
+                    compressed,
+                });
+            } else {
+                self.cached_shm_image = None;
+            }
             (rgba, width, height)
         };
         if width != self.width || height != self.height {
@@ -1513,6 +1524,10 @@ const WALLPAPER_RETRY_DELAY: std::time::Duration = std::time::Duration::from_mil
 /// startup cheap instead of reserving a full output-sized shm mapping before
 /// the first static wallpaper is requested.
 const INITIAL_SHM_POOL_BYTES: usize = 4096;
+/// Keep the static cache from competing with the compositor's framebuffer
+/// buffers. Large photographic frames are decoded again instead of becoming
+/// a hidden resident-memory tax.
+const STATIC_CACHE_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 
 async fn set_wallpaper_with_retry(
     render_state: &Arc<Mutex<RenderState>>,
@@ -2368,10 +2383,10 @@ async fn snapshot_all_named(map: &SharedRenderStates) -> Vec<(String, Arc<Mutex<
 /// hold the render lock for their whole run). One async task, no OS thread.
 async fn reap_idle_shm_pools(states: SharedRenderStates) {
     loop {
-        // One-second cadence: cheap (a few non-blocking try_locks when
-        // idle) and guarantees a quiescent pool is returned well before
-        // any multi-second idle sampling window observes it.
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        // Reclaim promptly after the last switch. A full 4K pair can be
+        // dozens of MiB, so waiting a whole second makes short-lived command
+        // bursts look like a leak to users and power monitors.
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         for (_, state) in snapshot_all_named(&states).await {
             let Ok(mut locked) = state.try_lock() else {
                 continue;
