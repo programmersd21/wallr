@@ -13,6 +13,7 @@ Reports are written to benchmarks/ as readable Markdown tables.
 
 Environment:
   WALLR_BIN                 Wallr release binary override
+  WALLR_DAEMON_BIN          Wallr daemon binary override
   BENCHMARK_REPORT          Explicit Markdown report path
   BENCHMARK_INCLUDE_ANIMATED=0  Skip GIF measurements
 USAGE
@@ -28,7 +29,9 @@ command -v awww >/dev/null || { echo "error: awww is required" >&2; exit 2; }
 
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 wallr_bin=${WALLR_BIN:-"$root_dir/target/release/wallr"}
+wallr_daemon_bin=${WALLR_DAEMON_BIN:-"$root_dir/target/release/wallr-daemon"}
 [[ -x "$wallr_bin" ]] || { echo "error: build Wallr release first: $wallr_bin" >&2; exit 2; }
+[[ -x "$wallr_daemon_bin" ]] || { echo "error: build Wallr daemon release first: $wallr_daemon_bin" >&2; exit 2; }
 
 mkdir -p "$root_dir/benchmarks"
 timestamp=$(date -u +%Y%m%d-%H%M%S)
@@ -91,12 +94,16 @@ fi
 for image in "${images[@]}"; do
     [[ -s "$image" ]] || { echo "error: missing image: $image" >&2; exit 2; }
 done
+initial_image="$root_dir/samples/image_01.png"
+if [[ ! -s "$initial_image" || "$initial_image" == "${images[0]}" ]]; then
+    initial_image="${images[0]}"
+fi
 
 wallr_pid=""
 if [[ -S "$WALLR_SOCKET" ]] && "$wallr_bin" ipc status >/dev/null 2>&1; then
-    for candidate in $(pgrep -x wallr || true); do
+    for candidate in $(pgrep -x wallr-daemon || true); do
         executable=$(readlink -f "/proc/$candidate/exe" 2>/dev/null || true)
-        if [[ "$executable" == "$wallr_bin" ]]; then
+        if [[ "$executable" == "$wallr_daemon_bin" ]]; then
             wallr_pid=$candidate
             break
         fi
@@ -105,7 +112,7 @@ fi
 
 if [[ -z "$wallr_pid" ]]; then
     local_log=$(mktemp)
-    "$wallr_bin" daemon >"$local_log" 2>&1 &
+    "$wallr_daemon_bin" daemon >"$local_log" 2>&1 &
     local_daemon_pid=$!
     for _ in {1..50}; do
         if "$wallr_bin" ipc status >/dev/null 2>&1; then
@@ -124,6 +131,7 @@ if [[ -z "$wallr_pid" ]]; then
 fi
 wallr_executable=$(readlink -f "/proc/$wallr_pid/exe")
 printf -- '- Wallr daemon binary: `%s`\n' "$wallr_executable"
+printf -- '- Wallr daemon target: `%s`\n' "$wallr_daemon_bin"
 awww_pid=$(pgrep -n -x awww-daemon || true)
 [[ -n "$wallr_pid" ]] || { echo "error: Wallr daemon is not running" >&2; exit 2; }
 [[ -n "$awww_pid" ]] || { echo "error: awww-daemon is not running" >&2; exit 2; }
@@ -132,8 +140,8 @@ awww_pid=$(pgrep -n -x awww-daemon || true)
 # restore a cached wallpaper during startup; awww is started with --no-cache,
 # so sampling before sending it the same image would compare an active
 # compositor buffer with an empty daemon rather than equivalent workloads.
-"$wallr_bin" set "${images[0]}" --duration 0 --no-theme >/dev/null 2>&1 || true
-awww img "${images[0]}" >/dev/null 2>&1 || true
+"$wallr_bin" set "$initial_image" --duration 0 --no-theme >/dev/null 2>&1 || true
+awww img "$initial_image" >/dev/null 2>&1 || true
 sleep 2
 
 sample_process() {
@@ -332,8 +340,8 @@ fi
 # End any live animated workload before taking the resident-state sample.
 # Otherwise the report measures the decoder, staging buffers, and live player
 # by design rather than settled daemon idle state.
-"$wallr_bin" set "${images[0]}" --duration 0 --no-theme >/dev/null 2>&1 || true
-awww img "${images[0]}" >/dev/null 2>&1 || true
+"$wallr_bin" set "$initial_image" --duration 0 --no-theme >/dev/null 2>&1 || true
+awww img "$initial_image" >/dev/null 2>&1 || true
 sleep 3
 echo
 echo "## 🧘 Post-workload resident state"

@@ -5,6 +5,26 @@ All notable changes to Wallr are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-10-20
+
+### Added
+
+- Split the command-line client from the rendering daemon. `wallr` is now a
+  lightweight IPC client, while `wallr-daemon` owns Wayland, wgpu, FFmpeg, and
+  live-media resources.
+
+### Changed
+
+- `wallr daemon` remains the public command and launches `wallr-daemon`, so
+  existing user commands and configuration remain compatible.
+- Release archives now contain both `wallr` and `wallr-daemon`.
+
+### Performance
+
+- Static IPC commands no longer load the daemon's FFmpeg and renderer stack.
+- The benchmark harness measures the actual `wallr-daemon` process rather than
+  the client wrapper.
+
 ## [0.7.1] - 2026-10-20
 
 ### Added

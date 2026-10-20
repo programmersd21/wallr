@@ -43,8 +43,8 @@ jobs:
             crate_version="$(cargo metadata --no-deps --format-version 1 | jq -re ".packages[] | select(.name==\"$crate\") | .version")"
             test "$crate_version" = "$VERSION"
           done
-          test "$VERSION" = "0.7.1"
-          grep -q "## \[0.7.1\]" CHANGELOG.md
+          test "$VERSION" = "0.8.0"
+          grep -q "## \[0.8.0\]" CHANGELOG.md
 
   msrv:
     name: MSRV (1.88)

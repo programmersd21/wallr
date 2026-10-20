@@ -1,0 +1,43 @@
+name: Publish crates
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Workspace version to publish'
+        required: true
+        default: '0.8.0'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify requested version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --no-deps --format-version 1 | jq -re '.packages[] | select(.name=="wallr") | .version')
+          test "$version" = "$REQUESTED_VERSION"
+      - name: Publish shared crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p wallr-common --locked
+      - name: Wait for crates.io index
+        run: sleep 30
+      - name: Publish core crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p wallr-core --locked
+      - name: Wait for crates.io index
+        run: sleep 30
+      - name: Publish client crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p wallr --locked

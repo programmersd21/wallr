@@ -2,6 +2,10 @@
 
 `wallr` is controlled via subcommands and ergonomic flags.
 
+Release builds contain a lightweight `wallr` IPC client and a separate
+`wallr-daemon` renderer. `wallr daemon` starts the matching daemon binary
+automatically.
+
 ```text
 wallr set <path> [-e <effect>] [-d <duration>] [-o <origin>] [-a <angle>] [-m <output>] [-t <theme>] [--mode <mode>]
 wallr daemon [--max-fps <fps>]

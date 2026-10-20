@@ -3,11 +3,11 @@
 > Production benchmark report for wallpaper switching performance.
 > Lower latency, RAM, and CPU values are better.
 
-- Date (UTC): 2026-10-20 08:41:09
+- Date (UTC): 2026-10-20 08:56:26
 - Host: nyx
 - Wallr client binary: `/home/programmersd/Projects/github/wallr/target/release/wallr`
-- Benchmark IPC socket: `/run/user/1000/wallr-benchmark-20261020-084109.sock`
-- Wallr version: wallr 0.7.1
+- Benchmark IPC socket: `/run/user/1000/wallr-benchmark-20261020-085626.sock`
+- Wallr version: wallr 0.8.0
 - awww version: awww 0.12.1
 - Wayland display: wayland-1
 
@@ -21,21 +21,22 @@
 - **Verdict:** a winner is reported only for the workload actually measured.
 - **Winner:** every step ends with a 🏆 winner line so you can skim the report.
 
-- Wallr daemon binary: `/home/programmersd/Projects/github/wallr/target/release/wallr`
+- Wallr daemon binary: `/home/programmersd/Projects/github/wallr/target/release/wallr-daemon`
+- Wallr daemon target: `/home/programmersd/Projects/github/wallr/target/release/wallr-daemon`
 ## 📊 Daemon baseline
 
 | Program | RAM (MiB) | CPU | Threads |
 |:--|--:|--:|--:|
-| Wallr | 29.7 | 1.3% | 3 |
-| awww | 2.4 | 0.3% | 1 |
+| Wallr | 29.1 | 5.1% | 3 |
+| awww | 2.4 | 0.4% | 1 |
 
 | Program | RSS (MiB) | PSS (MiB) | Anonymous (MiB) | Private (MiB) | Non-anonymous RSS (MiB) |
 |:--|--:|--:|--:|--:|--:|
-| Wallr | 29.7 | 20.5 | 5.4 | 18.2 | 24.3 |
-| awww | 2.4 | 0.4 | 0.1 | 0.3 | 2.4 |
+| Wallr | 29.1 | 23.9 | 5.4 | 23.5 | 23.7 |
+| awww | 2.4 | 0.4 | 0.1 | 0.3 | 2.3 |
 
-> 🏆 Winner (idle baseline RAM): awww: 12.23× leaner than Wallr (2.4 MiB vs 29.7 MiB).
-> ℹ️ CPU snapshot (idle baseline): Wallr 1.3% vs awww 0.3% (instant sample, noisy).
+> 🏆 Winner (idle baseline RAM): awww: 12.17× leaner than Wallr (2.4 MiB vs 29.1 MiB).
+> ℹ️ CPU snapshot (idle baseline): Wallr 4.4% vs awww 0.4% (instant sample, noisy).
 
 ## ⚡ Hot same-image static latency
 
@@ -44,10 +45,10 @@ This measures repeated static requests with transitions disabled.
 
 | Command | Mean Wall Time [ms] | Change | Factor |
 |:---|---:|---:|:---|
-| `wallr set '/home/programmersd/Projects/github/wallr/samples/image_04.png' --duration 0 --no-theme` | 20.5 ± 4.1 |  |  |
-| `awww img '/home/programmersd/Projects/github/wallr/samples/image_04.png'` | 19.3 ± 1.6 | -5.7% |  |
+| `wallr set '/home/programmersd/Projects/github/wallr/samples/image_04.png' --duration 0 --no-theme` | 72.2 ± 81.2 |  |  |
+| `awww img '/home/programmersd/Projects/github/wallr/samples/image_04.png'` | 132.2 ± 225.0 | +83.1% | (1.8x slower) |
 
-> 🏆 Winner: awww: 1.06× faster than Wallr (19.3 ms vs 20.5 ms).
+> 🏆 Winner: Wallr: 1.83× faster than awww (72.2 ms vs 132.2 ms).
 
 ## 🚀 Zero-duration static path
 
@@ -57,10 +58,10 @@ Wallr uses `wl_shm` when the output has not used the GPU presentation path; othe
 
 | Command | Mean Wall Time [ms] | Change | Factor |
 |:---|---:|---:|:---|
-| `wallr set '/home/programmersd/Projects/github/wallr/samples/image_04.png' --duration 0 --no-theme` | 20.4 ± 3.1 |  |  |
-| `awww img '/home/programmersd/Projects/github/wallr/samples/image_04.png'` | 17.8 ± 1.8 | -12.5% |  |
+| `wallr set '/home/programmersd/Projects/github/wallr/samples/image_04.png' --duration 0 --no-theme` | 1.4 ± 0.8 |  |  |
+| `awww img '/home/programmersd/Projects/github/wallr/samples/image_04.png'` | 26.1 ± 3.8 | +1705.3% | (18.1x slower) |
 
-> 🏆 Winner: awww: 1.15× faster than Wallr (17.8 ms vs 20.4 ms).
+> 🏆 Winner: Wallr: 18.64× faster than awww (1.4 ms vs 26.1 ms).
 
 ## 🔄 Distinct-image switch latency
 
@@ -70,24 +71,24 @@ This measures changing to several different images.
 ### 🖼️ image_04.png
 | Command | Mean Wall Time [ms] | Change | Factor |
 |:---|---:|---:|:---|
-| `wallr set '/home/programmersd/Projects/github/wallr/samples/image_04.png' --duration 0 --no-theme` | 22.2 ± 2.8 |  |  |
-| `awww img '/home/programmersd/Projects/github/wallr/samples/image_04.png'` | 21.4 ± 2.5 | -3.6% |  |
+| `wallr set '/home/programmersd/Projects/github/wallr/samples/image_04.png' --duration 0 --no-theme` | 2.1 ± 0.9 |  |  |
+| `awww img '/home/programmersd/Projects/github/wallr/samples/image_04.png'` | 26.2 ± 3.8 | +1148.8% | (12.5x slower) |
 
-> 🏆 Winner: awww: 1.04× faster than Wallr (21.4 ms vs 22.2 ms).
+> 🏆 Winner: Wallr: 12.48× faster than awww (2.1 ms vs 26.2 ms).
 ### 🖼️ image_05.png
 | Command | Mean Wall Time [ms] | Change | Factor |
 |:---|---:|---:|:---|
-| `wallr set '/home/programmersd/Projects/github/wallr/samples/image_05.png' --duration 0 --no-theme` | 23.4 ± 2.7 |  |  |
-| `awww img '/home/programmersd/Projects/github/wallr/samples/image_05.png'` | 21.8 ± 4.2 | -7.0% |  |
+| `wallr set '/home/programmersd/Projects/github/wallr/samples/image_05.png' --duration 0 --no-theme` | 1.6 ± 0.4 |  |  |
+| `awww img '/home/programmersd/Projects/github/wallr/samples/image_05.png'` | 22.7 ± 1.8 | +1312.1% | (14.1x slower) |
 
-> 🏆 Winner: awww: 1.07× faster than Wallr (21.8 ms vs 23.4 ms).
+> 🏆 Winner: Wallr: 14.19× faster than awww (1.6 ms vs 22.7 ms).
 ### 🖼️ image_06.png
 | Command | Mean Wall Time [ms] | Change | Factor |
 |:---|---:|---:|:---|
-| `wallr set '/home/programmersd/Projects/github/wallr/samples/image_06.png' --duration 0 --no-theme` | 22.8 ± 2.3 |  |  |
-| `awww img '/home/programmersd/Projects/github/wallr/samples/image_06.png'` | 17.2 ± 1.2 | -24.5% |  |
+| `wallr set '/home/programmersd/Projects/github/wallr/samples/image_06.png' --duration 0 --no-theme` | 4.1 ± 2.3 |  |  |
+| `awww img '/home/programmersd/Projects/github/wallr/samples/image_06.png'` | 31.7 ± 5.1 | +682.8% | (7.8x slower) |
 
-> 🏆 Winner: awww: 1.33× faster than Wallr (17.2 ms vs 22.8 ms).
+> 🏆 Winner: Wallr: 7.73× faster than awww (4.1 ms vs 31.7 ms).
 
 ## 🧘 Post-workload resident state
 
@@ -95,16 +96,16 @@ This shows memory and CPU after all wallpaper changes finish.
 
 | Program | RAM (MiB) | CPU | Threads |
 |:--|--:|--:|--:|
-| Wallr | 29.7 | 1.8% | 3 |
-| awww | 2.4 | 0.4% | 1 |
+| Wallr | 50.1 | 4.7% | 6 |
+| awww | 2.4 | 0.7% | 1 |
 
 | Program | RSS (MiB) | PSS (MiB) | Anonymous (MiB) | Private (MiB) | Non-anonymous RSS (MiB) |
 |:--|--:|--:|--:|--:|--:|
-| Wallr | 29.7 | 20.5 | 5.5 | 18.2 | 24.3 |
-| awww | 2.4 | 0.4 | 0.1 | 0.3 | 2.4 |
+| Wallr | 50.1 | 43.7 | 18.3 | 42.4 | 31.9 |
+| awww | 2.4 | 0.4 | 0.1 | 0.3 | 2.3 |
 
-> 🏆 Winner (post-workload RAM): awww: 12.24× leaner than Wallr (2.4 MiB vs 29.7 MiB).
-> ℹ️ CPU snapshot (post-workload): Wallr 1.8% vs awww 0.4% (instant sample, noisy).
+> 🏆 Winner (post-workload RAM): awww: 20.94× leaner than Wallr (2.4 MiB vs 50.1 MiB).
+> ℹ️ CPU snapshot (post-workload): Wallr 4.7% vs awww 0.7% (instant sample, noisy).
 
 ## 🩺 Daemon health
 
@@ -114,7 +115,7 @@ This shows memory and CPU after all wallpaper changes finish.
 
 ## 🏁 Production verdict
 
-> 🏆 Overall winner: awww: 7 round(s) won vs 0 for Wallr (0 tied).
+> 🏆 Overall winner: Wallr: 5 round(s) won vs 2 for awww (0 tied).
 
 Wallr and awww are optimized for different trade-offs. This run measures
 Wallr's switching latency against awww's switching latency. It does not
@@ -128,4 +129,4 @@ Measured scope: this run reports the measured winner for each workload.
 Static switching, idle resource use, and duplicate requests are not
 universal claims; repeat the benchmark on the target compositor and GPU.
 
-Report saved to: `/home/programmersd/Projects/github/wallr/benchmarks/wallr-vs-awww-20261020-084109.md`
+Report saved to: `/home/programmersd/Projects/github/wallr/benchmarks/wallr-vs-awww-0.8.0-final.md`

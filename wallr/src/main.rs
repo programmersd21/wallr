@@ -7,7 +7,6 @@ use tracing_subscriber::EnvFilter;
 use wallr_common::cli::{Commands, ConfigCommands, EffectArgs, IpcCommands, WallrCli};
 use wallr_common::config::{self, WallrConfig};
 use wallr_common::effect::{Effect, FadeParams};
-use wallr_core::daemon::Daemon;
 use wallr_core::ipc::{IpcCommand, IpcResponse, send_ipc_command};
 use wallr_core::wallpaper::{DiagnosticStatus, WallpaperEngine};
 
@@ -403,12 +402,19 @@ async fn async_main(cli: WallrCli) -> Result<()> {
         }
 
         Commands::Daemon { max_fps } => {
-            let mut final_config = config;
-            if let Some(fps) = max_fps {
-                final_config.daemon.max_fps = Some(fps);
+            let daemon = std::env::current_exe()?.with_file_name("wallr-daemon");
+            let mut command = std::process::Command::new(daemon);
+            if let Some(path) = config_path_owned {
+                command.arg("--config").arg(path);
             }
-            let daemon = Daemon::with_config_path(final_config, config_path_owned.clone())?;
-            daemon.start().await?;
+            command.arg("daemon");
+            if let Some(fps) = max_fps {
+                command.arg("--max-fps").arg(fps.to_string());
+            }
+            let status = command.status()?;
+            if !status.success() {
+                anyhow::bail!("wallr-daemon exited with {status}");
+            }
         }
 
         Commands::Ipc { subcommand } => {

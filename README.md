@@ -26,6 +26,9 @@ GPU-accelerated wallpaper engine for wayland, rendered natively with `wgpu` on `
 cargo install wallr
 ```
 
+Release archives include the lightweight `wallr` client and the
+`wallr-daemon` renderer. `wallr daemon` launches the daemon automatically.
+
 Arch: `yay -S wallr-bin` · Nix: `nix run github:programmersd21/wallr`
 
 ## usage

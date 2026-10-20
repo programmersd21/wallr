@@ -4,13 +4,13 @@
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                     wallr CLI                           │
+│                 wallr client                           │
 │     (Clap parsing, daemon auto-start, IPC client)       │
 └────────────────────────────┬────────────────────────────┘
                              │ Unix Domain Socket ($XDG_RUNTIME_DIR/wallr.sock)
                              ▼
 ┌─────────────────────────────────────────────────────────┐
-│                    wallr daemon                         │
+│                 wallr-daemon                            │
 │                                                         │
 │  ┌───────────────────┐        ┌──────────────────────┐  │
 │  │ Wayland Event     │        │ wgpu Renderer        │  │
@@ -55,7 +55,7 @@ initialization without changing image semantics. When resizing is required,
 the helper uses `fast_image_resize`'s CPU-accelerated Lanczos3 implementation;
 same-sized images avoid the resize entirely.
 
-The static path keeps one signature-checked decoded image per output. It is
+The static path keeps one signature-checked compressed image per output. It is
 invalidated by source size, modification time, output dimensions, or scaling
 mode, so repeated wallpaper rotation avoids reopening and decoding the same
 file while memory remains bounded instead of growing with the wallpaper list.
