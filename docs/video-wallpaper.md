@@ -59,6 +59,10 @@ position.
 
 ## Robustness
 
+- 2K, 4K, and 8K streams are accepted when the GPU and available memory can
+  support them. Video dimensions are checked before the decoder thread starts;
+  dimensions above 16,384 pixels per side or decoded frames above 128 MiB are
+  rejected cleanly instead of allowing an allocation or GPU-device crash.
 - Transient FFmpeg errors (corrupt packets, readback hiccups, conversion
   failures) skip the affected frame instead of killing the decoder.
 - A stalled or dead decoder stops playback after a grace period rather

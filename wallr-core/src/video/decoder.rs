@@ -10,6 +10,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+const MAX_VIDEO_DIMENSION: u32 = 16_384;
+const MAX_DECODED_FRAME_BYTES: u64 = 128 * 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HwAccel {
     /// Try all hardware backends in priority order, then software
@@ -369,6 +372,7 @@ impl VideoDecoder {
                 "video has empty dimensions".to_string(),
             ));
         }
+        validate_video_dimensions(width, height)?;
         let total_frames = (duration.as_secs_f64() * fps).min(u64::MAX as f64) as u64;
 
         Ok(VideoMetadata {
@@ -910,6 +914,28 @@ impl VideoDecoder {
                 )
             })
     }
+}
+
+fn validate_video_dimensions(width: u32, height: u32) -> VideoResult<()> {
+    if width > MAX_VIDEO_DIMENSION || height > MAX_VIDEO_DIMENSION {
+        return Err(VideoError::UnsupportedFormat(format!(
+            "video dimensions {width}x{height} exceed the {MAX_VIDEO_DIMENSION}x{MAX_VIDEO_DIMENSION} safety limit"
+        )));
+    }
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or_else(|| VideoError::UnsupportedFormat("video dimensions overflow".to_string()))?;
+    let estimated_bytes = pixels
+        .checked_mul(4)
+        .ok_or_else(|| VideoError::UnsupportedFormat("video frame size overflow".to_string()))?;
+    if estimated_bytes > MAX_DECODED_FRAME_BYTES {
+        return Err(VideoError::UnsupportedFormat(format!(
+            "decoded video frame {width}x{height} requires approximately {:.1} MiB, exceeding the {:.0} MiB safety limit",
+            estimated_bytes as f64 / (1024.0 * 1024.0),
+            MAX_DECODED_FRAME_BYTES as f64 / (1024.0 * 1024.0)
+        )));
+    }
+    Ok(())
 }
 
 /// Select the hardware pixel format advertised by FFmpeg for the attached
@@ -1529,4 +1555,11 @@ fn normalizes_negative_start_pts_without_dropping_frames() {
         pts_to_duration(Some(-64), time_base, 1, &mut origin),
         Some(Duration::from_millis(16))
     );
+}
+
+#[test]
+fn accepts_8k_frames_but_rejects_unbounded_allocations() {
+    assert!(validate_video_dimensions(7680, 4320).is_ok());
+    assert!(validate_video_dimensions(16_384, 16_384).is_err());
+    assert!(validate_video_dimensions(20_000, 1).is_err());
 }

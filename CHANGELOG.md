@@ -15,6 +15,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Video PTS conversion now normalizes valid negative-start timelines and rejects
   NaN or out-of-range timestamps instead of panicking (release builds use
   `panic = abort`).
+- High-resolution video dimensions and decoded-frame memory are validated before
+  playback starts, allowing 8K streams while rejecting unsafe allocations.
 - `FrameScheduler::should_display` no longer underflows on videos shorter than
   100 ms.
 - Theme frame extraction (GIF/video) now validates dimensions, input size,
