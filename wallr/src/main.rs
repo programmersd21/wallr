@@ -60,6 +60,26 @@ fn ensure_response(response: IpcResponse) -> anyhow::Result<IpcResponse> {
     }
 }
 
+fn print_cli_message(message: &str) {
+    for line in message.trim_end().lines() {
+        let trimmed = line.trim_start();
+        let indent = &line[..line.len() - trimmed.len()];
+        let lower = trimmed.to_ascii_lowercase();
+
+        if lower.starts_with("error")
+            || lower.starts_with("failed")
+            || lower.starts_with("no ")
+            || lower.starts_with("unknown ")
+        {
+            println!("{}{}", indent, trimmed.red());
+        } else if let Some((label, value)) = trimmed.split_once(':') {
+            println!("{}{}: {}", indent, label.cyan().bold(), value.trim_start());
+        } else {
+            println!("{}{}", indent, trimmed.green());
+        }
+    }
+}
+
 /// Combine CLI `--effect`/override flags into the transition effect.
 /// With no `--effect` flag the default is a plain linear crossfade,
 /// matching awww's default `simple` feel; explicit `-e fade` keeps polish.
@@ -140,12 +160,19 @@ fn stage_stdin(bytes: &[u8], extension: &str) -> anyhow::Result<std::path::PathB
 // All decoding, rendering, and filesystem work is dispatched through
 // `spawn_blocking`; a current-thread scheduler avoids keeping one idle async
 // worker per CPU in the long-lived daemon and keeps the IPC-only CLI light.
-fn main() -> Result<()> {
-    tokio::runtime::Builder::new_current_thread()
+fn main() {
+    let result = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(4)
-        .build()?
-        .block_on(async_main())
+        .build()
+    {
+        Ok(runtime) => runtime.block_on(async_main()),
+        Err(error) => Err(error.into()),
+    };
+    if let Err(error) = result {
+        eprintln!("{} {}", "error:".red().bold(), error);
+        std::process::exit(1);
+    }
 }
 
 async fn async_main() -> Result<()> {
@@ -226,8 +253,8 @@ async fn async_main() -> Result<()> {
                     }
                     if waited >= 3000 {
                         anyhow::bail!(
-                            "Daemon did not start within 3 seconds. \
-                             Run `wallr daemon` manually and check for errors."
+                            "daemon did not start within 3 seconds. \
+                             run `wallr daemon` manually and check for errors."
                         );
                     }
                 }
@@ -290,7 +317,7 @@ async fn async_main() -> Result<()> {
                 println!(
                     "  {} {:<22} {}",
                     icon,
-                    check.name.bold(),
+                    check.name.to_ascii_lowercase().bold(),
                     check.message.dimmed()
                 );
             }
@@ -299,7 +326,7 @@ async fn async_main() -> Result<()> {
 
         Commands::Config { subcommand } => match subcommand {
             ConfigCommands::Path => {
-                println!("{}", config::config_path().display());
+                println!("{}", config::config_path().display().to_string().cyan());
             }
             ConfigCommands::Get { key } => {
                 let yaml = serde_yaml::to_string(&config)?;
@@ -338,7 +365,7 @@ async fn async_main() -> Result<()> {
                     "configuration reloaded".green()
                 );
                 if let Some(msg) = response.message {
-                    println!("{}", msg);
+                    print_cli_message(&msg);
                 }
             } else {
                 let engine = WallpaperEngine::new(config)?;
@@ -360,7 +387,7 @@ async fn async_main() -> Result<()> {
             };
             let response = ensure_response(response)?;
             if let Some(msg) = response.message {
-                println!("{}", msg.trim_end());
+                print_cli_message(&msg);
             }
         }
 
@@ -370,7 +397,7 @@ async fn async_main() -> Result<()> {
                 let response =
                     ensure_response(send_ipc_command(socket_path, IpcCommand::Stop).await?)?;
                 if let Some(msg) = response.message {
-                    println!("{}", msg);
+                    print_cli_message(&msg);
                 }
             } else {
                 anyhow::bail!("daemon is not running");
@@ -444,7 +471,7 @@ async fn async_main() -> Result<()> {
             };
             let response = ensure_response(send_ipc_command(socket_path, cmd).await?)?;
             if let Some(msg) = response.message {
-                println!("{}", msg);
+                print_cli_message(&msg);
             }
         }
     }

@@ -29,6 +29,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Interactive CLI and IPC status output now uses lowercase labels and consistent
+  terminal colors while preserving exact config and path output for scripts.
 - MSRV documentation corrected to 1.88 (CONTRIBUTING.md).
 - CI now runs `cargo fmt`, `cargo check`, `clippy`, and `cargo test` with
   `--locked`, plus a dedicated MSRV (1.88) job.

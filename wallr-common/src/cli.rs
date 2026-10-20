@@ -1,30 +1,31 @@
 use crate::effect::{Effect, EffectOverrides, apply_effect_overrides, effect_from_name};
 use crate::types::{ScalingMode, ThemeProvider};
-use clap::{Args, Parser, Subcommand};
+use clap::builder::styling::{AnsiColor, Styles};
+use clap::{ArgAction, Args, Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Transition options for wallpaper changes.
+/// transition options for wallpaper changes.
 #[derive(Args, Debug, Clone, Default)]
 pub struct EffectArgs {
     /// Transition effect: fade, wipe, slide, wave, grow, outer (plus aliases:
     /// simple, left, right, top, bottom, center, any, random)
-    #[arg(short = 'e', long, value_name = "NAME", value_parser = parse_effect_name)]
+    #[arg(short = 'e', long, value_name = "name", value_parser = parse_effect_name)]
     pub effect: Option<String>,
 
     /// Transition duration (e.g. 700ms, 1s, 1.2s)
-    #[arg(short = 'd', long, value_name = "TIME")]
+    #[arg(short = 'd', long, value_name = "time")]
     pub duration: Option<String>,
 
     /// Effect origin: preset (top_left, top, top_right, left, center, right, bottom_left, bottom, bottom_right) or "x,y" (0..1)
-    #[arg(short = 'o', long, value_name = "PRESET|X,Y")]
+    #[arg(short = 'o', long, value_name = "preset|x,y")]
     pub origin: Option<String>,
 
     /// Angle for wipe/slide in degrees (0 = right-to-left, 90 = top-to-bottom, 270 = bottom-to-top)
-    #[arg(short = 'a', long, value_name = "DEG")]
+    #[arg(short = 'a', long, value_name = "deg")]
     pub angle: Option<f32>,
 
     /// Direction vector "x,y" (e.g. "1,0" or "-1,0")
-    #[arg(long, value_name = "X,Y")]
+    #[arg(long, value_name = "x,y")]
     pub direction: Option<String>,
 
     /// Easing curve: linear, ease_in, ease_out, ease_in_out, bezier
@@ -32,29 +33,29 @@ pub struct EffectArgs {
     pub easing: Option<crate::effect::Easing>,
 
     /// Initial parameter value (fade opacity)
-    #[arg(long, value_name = "VAL")]
+    #[arg(long, value_name = "val")]
     pub from: Option<f32>,
 
     /// Target parameter value (fade opacity)
-    #[arg(long, value_name = "VAL")]
+    #[arg(long, value_name = "val")]
     pub to: Option<f32>,
 
     /// Wave frequency in Hz
-    #[arg(long, value_name = "HZ")]
+    #[arg(long, value_name = "hz")]
     pub frequency: Option<f32>,
 
     /// Wave amplitude
-    #[arg(long, value_name = "VAL")]
+    #[arg(long, value_name = "val")]
     pub amplitude: Option<f32>,
 
     /// Wipe feather softness (0.01 - 0.5)
-    #[arg(long, value_name = "VAL")]
+    #[arg(long, value_name = "val")]
     pub softness: Option<f32>,
 }
 
 impl EffectArgs {
-    /// Build an `Effect` from `--effect <name>` + all override flags.
-    /// Falls back to `fallback` when no effect name is given.
+    /// build an `Effect` from `--effect <name>` + all override flags.
+    /// falls back to `fallback` when no effect name is given.
     pub fn to_effect(&self, fallback: Effect) -> Effect {
         let mut effect = self
             .effect
@@ -178,47 +179,66 @@ pub fn parse_timestamp_ms(timestamp: &str) -> Result<u64, String> {
 #[derive(Parser, Debug)]
 #[command(
     name = "wallr",
-    about = "Wayland wallpaper engine with GPU animations and theme pipelines",
-    version
+    about = "wayland wallpaper engine with gpu animations and theme pipelines",
+    version,
+    override_usage = "wallr [options] <command>",
+    disable_help_subcommand = true,
+    disable_help_flag = true,
+    disable_version_flag = true,
+    help_template = "{before-help}{name} {version}\n\n{about}\n\nusage:\n  {usage}\n\ncommands:\n{subcommands}\n\noptions:\n{options}{after-help}",
+    styles = Styles::styled()
+        .header(AnsiColor::Cyan.on_default().bold())
+        .usage(AnsiColor::Blue.on_default().bold())
+        .literal(AnsiColor::Green.on_default().bold())
+        .placeholder(AnsiColor::Yellow.on_default())
 )]
 pub struct WallrCli {
     #[command(subcommand)]
     pub command: Commands,
 
-    /// Custom config file path
-    #[arg(global = true, short = 'c', long)]
+    /// custom config file path
+    #[arg(global = true, short = 'c', long, value_name = "path")]
     pub config: Option<PathBuf>,
 
-    /// Verbose logging (-v, -vv)
+    /// verbose logging (-v, -vv)
     #[arg(global = true, short = 'v', long, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
-    /// Quiet mode (suppress non-error output)
+    /// quiet mode (suppress non-error output)
     #[arg(global = true, short = 'q', long)]
     pub quiet: bool,
+
+    /// show this message
+    #[arg(short = 'h', long, action = ArgAction::Help)]
+    pub help: Option<bool>,
+
+    /// show version
+    #[arg(short = 'V', long, action = ArgAction::Version)]
+    pub version: Option<bool>,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Set wallpaper image or video
+    /// set wallpaper image or video
     #[command(alias = "img")]
     Set {
-        /// Wallpaper file path (image, GIF, or video); `-` reads from stdin
+        /// wallpaper file path (image, gif, or video); `-` reads from stdin
+        #[arg(value_name = "path")]
         path: PathBuf,
 
-        /// Target output/monitor
-        #[arg(short = 'm', long, value_name = "OUTPUT")]
+        /// target output/monitor
+        #[arg(short = 'm', long, value_name = "output")]
         monitor: Option<String>,
 
-        /// Scaling mode: fill, fit, stretch, center, tile
+        /// scaling mode: fill, fit, stretch, center, tile
         #[arg(long, value_enum)]
         mode: Option<ScalingMode>,
 
-        /// Disable theme extraction
+        /// disable theme extraction
         #[arg(long)]
         no_theme: bool,
 
-        /// Override theme engine (matugen, wallust, pywal)
+        /// override theme engine (matugen, wallust, pywal)
         #[arg(short = 't', long, value_enum)]
         theme: Option<ThemeProvider>,
 
@@ -227,104 +247,113 @@ pub enum Commands {
         effect_args: EffectArgs,
     },
 
-    /// Run system and dependency diagnostics
+    /// run system and dependency diagnostics
     Doctor,
 
-    /// View and edit configuration
+    /// view and edit configuration
     Config {
         #[command(subcommand)]
         subcommand: ConfigCommands,
     },
 
-    /// Reload config and restart theme hooks
+    /// reload config and restart theme hooks
     Reload,
 
-    /// Query connected outputs
+    /// query connected outputs
     Monitor {
         #[command(subcommand)]
         subcommand: MonitorCommands,
     },
 
-    /// Run background daemon
+    /// run background daemon
     Daemon {
-        /// Max render FPS limit
-        #[arg(long)]
+        /// max render fps limit
+        #[arg(long, value_name = "fps")]
         max_fps: Option<u32>,
     },
 
-    /// Daemon IPC controls (playback, blanking, info)
+    /// daemon ipc controls (playback, blanking, info)
     Ipc {
         #[command(subcommand)]
         subcommand: IpcCommands,
     },
 
-    /// Stop running daemon
+    /// stop running daemon
     Quit,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum ConfigCommands {
-    /// Get config value by key
-    Get { key: String },
-    /// Set config value by key
-    Set { key: String, value: String },
-    /// Print path to active config file
+    /// get config value by key
+    Get {
+        #[arg(value_name = "key")]
+        key: String,
+    },
+    /// set config value by key
+    Set {
+        #[arg(value_name = "key")]
+        key: String,
+        #[arg(value_name = "value")]
+        value: String,
+    },
+    /// print path to active config file
     Path,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum MonitorCommands {
-    /// List all connected display outputs
+    /// list all connected display outputs
     List,
-    /// Display current focused output
+    /// display current focused output
     Current,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum IpcCommands {
-    /// Pause video/GIF playback
+    /// pause video/gif playback
     Pause {
-        /// Target specific monitor (default: all)
+        /// target specific monitor (default: all)
         #[arg(short = 'm', long)]
         monitor: Option<String>,
     },
-    /// Resume video/GIF playback
+    /// resume video/gif playback
     Resume {
-        /// Target specific monitor (default: all)
+        /// target specific monitor (default: all)
         #[arg(short = 'm', long)]
         monitor: Option<String>,
     },
-    /// Re-render current wallpaper
+    /// re-render current wallpaper
     Reload,
-    /// Shut down the daemon
+    /// shut down the daemon
     Stop,
-    /// Query daemon status
+    /// query daemon status
     Status,
-    /// Query GPU, video decoder, and display info
+    /// query gpu, video decoder, and display info
     Info {
-        /// Target specific monitor
+        /// target specific monitor
         #[arg(short = 'm', long)]
         monitor: Option<String>,
     },
-    /// Seek video to position (HH:MM:SS or seconds)
+    /// seek video to position (hh:mm:ss or seconds)
     Seek {
-        /// Position in HH:MM:SS or seconds
+        /// position in hh:mm:ss or seconds
+        #[arg(value_name = "timestamp")]
         timestamp: String,
-        /// Target specific monitor
+        /// target specific monitor
         #[arg(short = 'm', long)]
         monitor: Option<String>,
     },
-    /// Blank output to black with transition
+    /// blank output to black with transition
     Blank {
-        /// Target specific monitor (default: all)
+        /// target specific monitor (default: all)
         #[arg(short = 'm', long)]
         monitor: Option<String>,
         #[command(flatten)]
         effect_args: EffectArgs,
     },
-    /// Restore wallpaper on blanked output
+    /// restore wallpaper on blanked output
     Restore {
-        /// Target specific monitor (default: all)
+        /// target specific monitor (default: all)
         #[arg(short = 'm', long)]
         monitor: Option<String>,
         #[command(flatten)]

@@ -13,6 +13,9 @@ wallr monitor <list|current>
 wallr ipc <pause|resume|reload|status|info|stop|seek|blank|restore>
 ```
 
+Interactive status output uses lowercase labels and terminal colors. Configuration
+values, YAML, and paths remain unchanged so command output stays safe to script.
+
 ---
 
 ## Wallpaper Commands

@@ -2472,7 +2472,7 @@ impl Daemon {
         let socket_identity = socket.identity();
 
         let conn = Connection::connect_to_env()
-            .map_err(|e| DaemonError::StartError(format!("Failed to connect to Wayland: {e:?}")))?;
+            .map_err(|e| DaemonError::StartError(format!("failed to connect to wayland: {e:?}")))?;
         let backend = conn.backend();
         let display_ptr = backend.display_ptr() as *mut std::ffi::c_void;
 
@@ -2864,7 +2864,7 @@ impl Daemon {
                             .await;
 
                             match result {
-                                Err(e) => last_err = Some(format!("Render failed: {e}")),
+                                Err(e) => last_err = Some(format!("render failed: {e}")),
                                 Ok(()) => {
                                     if let Err(err) = persist_wallpaper(name, &p) {
                                         tracing::warn!(
@@ -3032,7 +3032,7 @@ impl Daemon {
                                 success: false,
                                 message: match &monitor {
                                     Some(name) => Some(format!("unknown monitor: {name}")),
-                                    None => Some("No outputs available".into()),
+                                    None => Some("no outputs available".into()),
                                 },
                             };
                         }
@@ -3040,7 +3040,7 @@ impl Daemon {
                         let mut lines = vec![
                             format!("wallr v{}", env!("CARGO_PKG_VERSION")),
                             String::new(),
-                            format!("Outputs: {}", targets.len()),
+                            format!("outputs: {}", targets.len()),
                         ];
                         for (name, _) in &targets {
                             lines.push(format!("  - {name}"));
@@ -3053,7 +3053,7 @@ impl Daemon {
                             // have initialized it. Report that instead of
                             // panicking the IPC handler task.
                             let gpu_info = rs_lock.gpu.as_ref().map_or_else(
-                                || "GPU: not initialized (static content)".to_string(),
+                                || "gpu: not initialized (static content)".to_string(),
                                 |gpu| {
                                     crate::video::gpu::adapter_diagnostics(&gpu.renderer.adapter)
                                 },
@@ -3078,30 +3078,30 @@ impl Daemon {
                                         .map(|p| format!("{:.2}s", p.as_secs_f64()))
                                         .unwrap_or_else(|| "?".to_string());
                                     lines.push(String::new());
-                                    lines.push("Video:".into());
+                                    lines.push("video:".into());
                                     lines.push(format!(
-                                        "  Resolution: {}x{}",
+                                        "  resolution: {}x{}",
                                         meta.width, meta.height
                                     ));
-                                    lines.push(format!("  FPS: {:.2}", meta.fps));
+                                    lines.push(format!("  fps: {:.2}", meta.fps));
                                     lines.push(format!(
-                                        "  Duration: {:.2}s",
+                                        "  duration: {:.2}s",
                                         meta.duration.as_secs_f64()
                                     ));
                                     lines.push(format!(
-                                        "  Codec: {}",
+                                        "  codec: {}",
                                         decoder_info
                                             .as_ref()
                                             .map(|d| d.codec_name.as_str())
                                             .unwrap_or("unknown")
                                     ));
-                                    lines.push(format!("  Container: {}", meta.format));
-                                    lines.push(format!("  Decoder: {}", hw.name()));
+                                    lines.push(format!("  container: {}", meta.format));
+                                    lines.push(format!("  decoder: {}", hw.name()));
                                     if let Some(info) = decoder_info.as_ref() {
-                                        lines.push(format!("  Decoder State: {}", info.state.name()));
+                                        lines.push(format!("  decoder state: {}", info.state.name()));
                                     }
                                     lines.push(format!(
-                                        "  GPU Decode: {}",
+                                        "  gpu decode: {}",
                                         if hw == crate::video::HwAccel::Software {
                                             "disabled"
                                         } else {
@@ -3112,16 +3112,16 @@ impl Daemon {
                                         && info.dropped_frames > 0
                                     {
                                         lines.push(format!(
-                                            "  Dropped Frames: {}",
+                                            "  dropped frames: {}",
                                             info.dropped_frames
                                         ));
                                     }
-                                    lines.push(format!("  State: {} @ {}", state, position));
+                                    lines.push(format!("  state: {} @ {}", state, position));
                                 }
                                 None => {
                                     lines.push(String::new());
-                                    lines.push("Video: none active".into());
-                                    lines.push("Decoder: idle".into());
+                                    lines.push("video: none active".into());
+                                    lines.push("decoder: idle".into());
                                 }
                             }
                         }
@@ -3177,8 +3177,8 @@ impl Daemon {
                             return IpcResponse {
                                 success: false,
                                 message: match &monitor {
-                                    Some(name) => Some(format!("Unknown monitor: {name}")),
-                                    None => Some("No outputs available".into()),
+                                    Some(name) => Some(format!("unknown monitor: {name}")),
+                                    None => Some("no outputs available".into()),
                                 },
                             };
                         }
@@ -3267,7 +3267,7 @@ impl Daemon {
                             return IpcResponse {
                                 success: false,
                                 message: match &monitor {
-                                    Some(name) => Some(format!("Unknown monitor: {name}")),
+                                    Some(name) => Some(format!("unknown monitor: {name}")),
                                     None => Some("no outputs available".into()),
                                 },
                             };

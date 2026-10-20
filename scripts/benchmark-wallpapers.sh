@@ -387,8 +387,8 @@ echo
 echo "Use the switching tables for latency decisions and the resident-state"
 echo "table for idle RAM/CPU decisions."
 echo
-echo "Measured target: Wallr is optimized to lead in static switching,"
-echo "zero-duration compositor commits, distinct-image replacement, and"
-echo "duplicate-request handling. Other cases remain evidence-driven."
+echo "Measured scope: this run reports the measured winner for each workload."
+echo "Static switching, idle resource use, and duplicate requests are not"
+echo "universal claims; repeat the benchmark on the target compositor and GPU."
 echo
 printf 'Report saved to: `%s`\n' "$report_file"
