@@ -18,6 +18,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            libclang-dev \
+            libwayland-dev \
+            wayland-protocols \
+            libxkbcommon-dev \
+            libegl-dev \
+            libgles-dev \
+            libavcodec-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libswresample-dev \
+            libswscale-dev \
+            pkg-config \
+            curl
       - name: Verify requested version
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
@@ -25,19 +43,27 @@ jobs:
           set -euo pipefail
           version=$(cargo metadata --no-deps --format-version 1 | jq -re '.packages[] | select(.name=="wallr") | .version')
           test "$version" = "$REQUESTED_VERSION"
-      - name: Publish shared crate
+      - name: Publish workspace crates
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p wallr-common --locked
-      - name: Wait for crates.io index
-        run: sleep 30
-      - name: Publish core crate
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p wallr-core --locked
-      - name: Wait for crates.io index
-        run: sleep 30
-      - name: Publish client crate
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish -p wallr --locked
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          test -n "$CARGO_REGISTRY_TOKEN" || { echo "CARGO_REGISTRY_TOKEN is empty" >&2; exit 1; }
+
+          publish_if_missing() {
+            local crate="$1"
+            local index_path="wa/ll/${crate}"
+            local index
+            index="$(curl --silent --show-error --fail "https://index.crates.io/${index_path}")"
+            if grep -Fq "\"vers\":\"${REQUESTED_VERSION}\"" <<<"$index"; then
+                echo "$crate ${REQUESTED_VERSION} is already published; skipping"
+            else
+                cargo publish -p "$crate" --locked
+                sleep 30
+            fi
+          }
+
+          publish_if_missing wallr-common
+          publish_if_missing wallr-core
+          publish_if_missing wallr
