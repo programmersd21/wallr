@@ -4,9 +4,11 @@
 
 GPU-accelerated wallpaper engine for wayland, rendered natively with `wgpu` on `wlr-layer-shell`.
 
-<a href="https://github.com/programmersd21/wallr">
-  <img src="https://raw.githubusercontent.com/programmersd21/wallr/main/assets/demo.gif" alt="wallr demo" width="800">
-</a>
+<p align="center">
+  <a href="https://github.com/programmersd21/wallr">
+    <img src="https://raw.githubusercontent.com/programmersd21/wallr/main/assets/demo.gif" alt="wallr demo" width="800">
+  </a>
+</p>
 
 <p align="center">
   <a href="https://github.com/programmersd21/wallr/stargazers"><img src="https://img.shields.io/github/stars/programmersd21/wallr?style=for-the-badge&logo=github&logoColor=f9e2af&labelColor=11111b&color=f9e2af" alt="GitHub stars"></a>
