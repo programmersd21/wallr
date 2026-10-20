@@ -1,25 +1,27 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
   <defs>
-    <linearGradient id="wash" x1="770" y1="42" x2="1210" y2="610" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#e9dff5"/>
-      <stop offset=".52" stop-color="#f1e4df"/>
-      <stop offset="1" stop-color="#e5edf0"/>
+    <linearGradient id="sky" x1="735" y1="40" x2="1270" y2="618" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#b9aec5"/>
+      <stop offset=".56" stop-color="#cbb8bf"/>
+      <stop offset="1" stop-color="#b9c9c9"/>
     </linearGradient>
-    <linearGradient id="wipe" x1="940" y1="0" x2="1220" y2="640" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#d9c8ec" stop-opacity=".7"/>
-      <stop offset="1" stop-color="#cfe0e4" stop-opacity=".58"/>
-    </linearGradient>
+    <clipPath id="landscape">
+      <path d="M760 0h520v640H647c31-83 12-163 33-246 22-88 2-153 23-239C716 93 739 42 760 0Z"/>
+    </clipPath>
   </defs>
 
-  <rect width="1280" height="640" fill="#f7f5f2"/>
-  <path d="M900 0h380v640H642L900 0Z" fill="url(#wash)"/>
-  <path d="M1100 0h180v640H842l258-640Z" fill="url(#wipe)"/>
+  <rect width="1280" height="640" fill="#c9c2c8"/>
+  <g clip-path="url(#landscape)">
+    <rect x="640" width="640" height="640" fill="url(#sky)"/>
+    <circle cx="1052" cy="211" r="76" fill="#e1d1c7"/>
+    <path d="M640 396c69-52 119-93 197-80 70 12 99 68 174 56 68-11 97-74 164-65 45 6 74 29 105 12v321H640V396Z" fill="#a2a0b0"/>
+    <path d="M640 464c77-54 122-44 189-26 76 20 111 7 172-33 62-40 93-37 151-11 52 24 84 19 128-8v254H640V464Z" fill="#87929e"/>
+    <path d="M640 539c83-45 142-40 204-12 77 35 131 23 201-17 66-38 115-34 178-5 19 9 39 16 57 18v117H640V539Z" fill="#72858b"/>
+    <path d="M640 592c83-31 146-17 204 4 67 25 134 20 202-10 81-35 149-32 234 2v35H640v-31Z" fill="#697e84" fill-opacity=".55"/>
+  </g>
 
-  <path d="M82 105h34" stroke="#a88cc8" stroke-width="4" stroke-linecap="square"/>
-  <text x="82" y="151" fill="#777184" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="500" letter-spacing="1.1">wayland wallpaper engine</text>
-  <text x="72" y="339" fill="#292633" font-family="Inter, Arial, sans-serif" font-size="170" font-weight="700" letter-spacing="-10">wallr</text>
-  <text x="84" y="403" fill="#5f5a68" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="400">images · gifs · video</text>
-
-  <path d="M84 535h446" stroke="#d8d3d5" stroke-width="1"/>
-  <text x="84" y="568" fill="#777184" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="500">github.com/programmersd21/wallr</text>
+  <path d="M82 107h32" stroke="#8b7c91" stroke-width="4" stroke-linecap="round"/>
+  <text x="82" y="150" fill="#5e5863" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="500" letter-spacing=".7">wallpaper engine for wayland</text>
+  <text x="72" y="337" fill="#37333c" font-family="Inter, Arial, sans-serif" font-size="174" font-weight="700" letter-spacing="-11">wallr</text>
+  <text x="84" y="397" fill="#5c5661" font-family="Inter, Arial, sans-serif" font-size="23" font-weight="400">images · gifs · video</text>
 </svg>
