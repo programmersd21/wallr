@@ -1040,11 +1040,21 @@ impl RenderState {
             && !is_animated_image
             && !crate::video::VideoDecoder::is_video_file(path)
             && !self.gpu_surface_used
-            && self.commit_static_shm(path, scaling_mode)?
         {
+            // Cancel an older transition before taking the shared-memory
+            // route. Otherwise a FIFO-presenting render task can retain the
+            // render lock and its GPU resources while this static request
+            // falls back or waits, inflating settled RSS after a switch.
             self.playback_gen.fetch_add(1, Ordering::SeqCst);
             self.pacer.notify();
             self.video_playback.stop();
+        }
+        if duration_ms == 0
+            && !is_animated_image
+            && !crate::video::VideoDecoder::is_video_file(path)
+            && !self.gpu_surface_used
+            && self.commit_static_shm(path, scaling_mode)?
+        {
             self.current_bind = None;
             self.current_tex = None;
             self.current_width = 0;
