@@ -863,6 +863,11 @@ struct RenderState {
     shm_index: usize,
     shm_width: u32,
     shm_height: u32,
+    /// Reusable decoded pixels for the static wl_shm path. The cache is
+    /// source-signature based and holds one image per output, avoiding a
+    /// repeated filesystem decode for hot wallpaper rotation without growing
+    /// memory with every wallpaper ever seen.
+    cached_shm_image: Option<CachedShmImage>,
     /// A layer surface must not switch from wgpu explicit-sync commits to
     /// bufferless `wl_shm` commits. Some compositors reject that sequence
     /// with a missing acquire timeline. Keep static requests on wgpu after
@@ -875,6 +880,18 @@ struct RenderState {
     cached_video_texture: Option<std::sync::Arc<crate::renderer::VideoTexture>>,
     /// Whether videos restart from the beginning at end of stream.
     loop_video: bool,
+}
+
+struct CachedShmImage {
+    path: std::path::PathBuf,
+    modified: std::time::SystemTime,
+    size: u64,
+    scaling_mode: u32,
+    output_width: u32,
+    output_height: u32,
+    width: u32,
+    height: u32,
+    rgba: std::sync::Arc<[u8]>,
 }
 
 struct GpuState {
@@ -1073,17 +1090,44 @@ impl RenderState {
             return Ok(false);
         };
 
-        let decoder = ImageReader::open(path)?.into_decoder()?;
-        let (source_width, source_height) = decoder.dimensions();
-        Renderer::validate_static_decode(source_width, source_height, decoder.total_bytes())?;
-        let image = image::DynamicImage::from_decoder(decoder)?;
-        let (rgba, width, height) = crate::renderer::prepare_image_rgba(
-            &image,
-            self.width,
-            self.height,
-            scaling_mode,
-            wgpu::Limits::default().max_texture_dimension_2d,
-        )?;
+        let source = std::fs::metadata(path)?;
+        let modified = source.modified().unwrap_or(std::time::UNIX_EPOCH);
+        let cached = self.cached_shm_image.as_ref().filter(|cached| {
+            cached.path == path
+                && cached.modified == modified
+                && cached.size == source.len()
+                && cached.scaling_mode == scaling_mode
+                && cached.output_width == self.width
+                && cached.output_height == self.height
+        });
+        let (rgba, width, height) = if let Some(cached) = cached {
+            (cached.rgba.clone(), cached.width, cached.height)
+        } else {
+            let decoder = ImageReader::open(path)?.into_decoder()?;
+            let (source_width, source_height) = decoder.dimensions();
+            Renderer::validate_static_decode(source_width, source_height, decoder.total_bytes())?;
+            let image = image::DynamicImage::from_decoder(decoder)?;
+            let (rgba, width, height) = crate::renderer::prepare_image_rgba(
+                &image,
+                self.width,
+                self.height,
+                scaling_mode,
+                wgpu::Limits::default().max_texture_dimension_2d,
+            )?;
+            let rgba: std::sync::Arc<[u8]> = rgba.into_raw().into();
+            self.cached_shm_image = Some(CachedShmImage {
+                path: path.to_path_buf(),
+                modified,
+                size: source.len(),
+                scaling_mode,
+                output_width: self.width,
+                output_height: self.height,
+                width,
+                height,
+                rgba: rgba.clone(),
+            });
+            (rgba, width, height)
+        };
         if width != self.width || height != self.height {
             // wl_shm buffers are displayed at their native size. The GPU path
             // remains responsible for center/tile and other non-fullscreen
@@ -1176,7 +1220,6 @@ impl RenderState {
             .canvas(&mut self.shm_pool)
             .ok_or_else(|| anyhow::anyhow!("shared-memory wallpaper buffer is still active"))?;
         for (src, dst) in rgba
-            .as_raw()
             .as_chunks::<4>()
             .0
             .iter()
@@ -3439,6 +3482,7 @@ impl Daemon {
             shm_index: 0,
             shm_width: 0,
             shm_height: 0,
+            cached_shm_image: None,
             gpu_surface_used: false,
             cached_video_texture: None,
             loop_video: config.wallpaper.loop_video,
@@ -3535,6 +3579,7 @@ fn create_render_state_for_output_sync(
         shm_index: 0,
         shm_width: 0,
         shm_height: 0,
+        cached_shm_image: None,
         gpu_surface_used: false,
         cached_video_texture: None,
         loop_video: config.wallpaper.loop_video,

@@ -11,6 +11,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 - `wallr set --fps <n>` caps per-wallpaper video presentation work from 1 to
   240 fps without duplicating frames or changing the source media.
+- Static `wl_shm` switches reuse one signature-checked decoded image per output,
+  avoiding repeated decode work without an unbounded cache.
 - Portable builds: removed machine-specific `-C target-cpu=native` and forced
   `lld` from `.cargo/config.toml`, fixing the CI `rustc` SIGILL caused by
   cached proc-macro dylibs built for a different CPU.
@@ -46,6 +48,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Video playback no longer stops solely because a decoder queue is temporarily
   empty under heavy load or during a long stream; it stops only after a decoder
   reports a permanent failure.
+- Static wallpaper switching avoids repeated source decoding when the same
+  image and output geometry are reused.
 - Video playback speedup/stall after pause+resume.
 - Rapid pause/resume commands now coalesce to the latest requested state
   instead of accumulating stale decoder commands.

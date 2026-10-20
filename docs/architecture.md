@@ -55,6 +55,11 @@ initialization without changing image semantics. When resizing is required,
 the helper uses `fast_image_resize`'s CPU-accelerated Lanczos3 implementation;
 same-sized images avoid the resize entirely.
 
+The static path keeps one signature-checked decoded image per output. It is
+invalidated by source size, modification time, output dimensions, or scaling
+mode, so repeated wallpaper rotation avoids reopening and decoding the same
+file while memory remains bounded instead of growing with the wallpaper list.
+
 Per-output dynamic resources are grouped in `GpuState`, separate from static
 Wayland and shared-memory state. The daemon creates layer surfaces and small
 shared-memory pools at startup, but leaves adapter/device discovery, pipelines,
