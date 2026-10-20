@@ -175,10 +175,13 @@ jobs:
           cd staging
           tar -czf ../wallr-linux-amd64.tar.gz *
           cd ..
-          tar -tzf wallr-linux-amd64.tar.gz | grep -Fxq wallr
-          tar -tzf wallr-linux-amd64.tar.gz | grep -Fxq wallr-daemon
-          tar -tzf wallr-linux-amd64.tar.gz | grep -Fxq README.md
-          tar -tzf wallr-linux-amd64.tar.gz | grep -Fxq docs/
+          archive_contents="$(tar -tzf wallr-linux-amd64.tar.gz)"
+          for required in wallr wallr-daemon README.md docs/; do
+            grep -Fxq "$required" <<<"$archive_contents" || {
+              echo "ERROR: release archive is missing $required" >&2
+              exit 1
+            }
+          done
           sha256sum wallr-linux-amd64.tar.gz > wallr-linux-amd64.tar.gz.sha256
 
       - name: Create GitHub Release
