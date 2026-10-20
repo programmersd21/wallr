@@ -158,12 +158,13 @@ fn stage_stdin(bytes: &[u8], extension: &str) -> anyhow::Result<std::path::PathB
 // `spawn_blocking`; a current-thread scheduler avoids keeping one idle async
 // worker per CPU in the long-lived daemon and keeps the IPC-only CLI light.
 fn main() {
+    let cli = WallrCli::parse();
     let result = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(4)
         .build()
     {
-        Ok(runtime) => runtime.block_on(async_main()),
+        Ok(runtime) => runtime.block_on(async_main(cli)),
         Err(error) => Err(error.into()),
     };
     if let Err(error) = result {
@@ -172,9 +173,7 @@ fn main() {
     }
 }
 
-async fn async_main() -> Result<()> {
-    let cli = WallrCli::parse();
-
+async fn async_main(cli: WallrCli) -> Result<()> {
     let filter = if cli.verbose > 0 {
         "wallr=debug"
     } else if cli.quiet {
