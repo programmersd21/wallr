@@ -14,6 +14,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Static `wl_shm` switches use one signature-checked compressed image cache per
   output, avoiding repeated decode work without retaining another full-size
   framebuffer or growing without bound.
+- Removed the forced mimalloc global allocator so idle daemons do not reserve a
+  large allocator arena before any wallpaper is displayed.
 - Portable builds: removed machine-specific `-C target-cpu=native` and forced
   `lld` from `.cargo/config.toml`, fixing the CI `rustc` SIGILL caused by
   cached proc-macro dylibs built for a different CPU.

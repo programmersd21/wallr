@@ -1,8 +1,5 @@
 #![recursion_limit = "256"]
 
-#[global_allocator]
-static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
 use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;

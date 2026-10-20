@@ -44,5 +44,3 @@ tracing-subscriber.workspace = true
 # Serialization
 serde_yaml.workspace = true
 
-# High-performance global allocator for bursty decode workloads.
-mimalloc = { version = "0.1", default-features = false }
