@@ -67,6 +67,7 @@ jobs:
             libavformat-dev \
             libavutil-dev \
             libswscale-dev \
+            lld \
             pkg-config
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
