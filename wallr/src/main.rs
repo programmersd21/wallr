@@ -273,7 +273,7 @@ async fn async_main() -> Result<()> {
                 let _ = std::fs::remove_file(&path);
             }
             ensure_response(response?)?;
-            println!("{} {}", "✓".green().bold(), "Wallpaper applied".green());
+            println!("{} {}", "✓".green().bold(), "wallpaper applied".green());
         }
 
         Commands::Doctor => {
@@ -323,7 +323,7 @@ async fn async_main() -> Result<()> {
                     std::fs::create_dir_all(parent)?;
                 }
                 std::fs::write(&path, serde_yaml::to_string(&yaml)?)?;
-                println!("{} {}", "Updated".green(), path.display());
+                println!("{} {}", "updated".green(), path.display());
             }
         },
 
@@ -335,7 +335,7 @@ async fn async_main() -> Result<()> {
                 println!(
                     "{} {}",
                     "✓".green().bold(),
-                    "Configuration reloaded".green()
+                    "configuration reloaded".green()
                 );
                 if let Some(msg) = response.message {
                     println!("{}", msg);
@@ -343,7 +343,7 @@ async fn async_main() -> Result<()> {
             } else {
                 let engine = WallpaperEngine::new(config)?;
                 tokio::task::spawn_blocking(move || engine.reload_blocking()).await??;
-                println!("{} Reloaded configuration & hooks", "✓".green());
+                println!("{} configuration and hooks reloaded", "✓".green());
             }
         }
 

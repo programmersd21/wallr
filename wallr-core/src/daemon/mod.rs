@@ -2684,7 +2684,7 @@ impl Daemon {
                         if targets.is_empty() {
                             return IpcResponse {
                                 success: false,
-                                message: Some("No matching outputs".into()),
+                                message: Some("no matching outputs".into()),
                             };
                         }
                         if monitor.is_none() {
@@ -2697,7 +2697,7 @@ impl Daemon {
                         }
                         IpcResponse {
                             success: true,
-                            message: Some("Paused".into()),
+                                message: Some("paused".into()),
                         }
                     }
                     IpcCommand::Resume { monitor } => {
@@ -2706,7 +2706,7 @@ impl Daemon {
                         if targets.is_empty() {
                             return IpcResponse {
                                 success: false,
-                                message: Some("No matching outputs".into()),
+                                message: Some("no matching outputs".into()),
                             };
                         }
                         if monitor.is_none() {
@@ -2720,7 +2720,7 @@ impl Daemon {
                         }
                         IpcResponse {
                             success: true,
-                            message: Some("Resumed".into()),
+                                message: Some("resumed".into()),
                         }
                     }
                     IpcCommand::Reload => {
@@ -2792,7 +2792,7 @@ impl Daemon {
                         let _ = theme_gen;
                         IpcResponse {
                             success: true,
-                            message: Some("Reloaded".into()),
+                            message: Some("reloaded".into()),
                         }
                     }
                     IpcCommand::Preview {
@@ -2807,7 +2807,7 @@ impl Daemon {
                         if paused.load(Ordering::SeqCst) {
                             return IpcResponse {
                                 success: false,
-                                message: Some("Daemon is paused".into()),
+                                message: Some("daemon is paused".into()),
                             };
                         }
                         let p = std::path::PathBuf::from(&path);
@@ -2947,7 +2947,7 @@ impl Daemon {
                         });
                         IpcResponse {
                             success: true,
-                            message: Some("Stopping".into()),
+                                message: Some("stopping".into()),
                         }
                     }
                     IpcCommand::Status => {
@@ -3141,7 +3141,7 @@ impl Daemon {
                         if lines.is_empty() {
                             IpcResponse {
                                 success: true,
-                                message: Some("No monitors connected".into()),
+                                message: Some("no monitors connected".into()),
                             }
                         } else {
                             IpcResponse {
@@ -3162,7 +3162,7 @@ impl Daemon {
                         } else {
                             IpcResponse {
                                 success: false,
-                                message: Some("No monitors connected".into()),
+                                message: Some("no monitors connected".into()),
                             }
                         }
                     }

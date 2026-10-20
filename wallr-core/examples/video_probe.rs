@@ -36,7 +36,7 @@ fn main() -> ExitCode {
         "file: {path}\nresolution: {}x{}\nfps: {:.2}\nduration: {:?}\ncodec: {}\ncontainer: {}",
         meta.width, meta.height, meta.fps, meta.duration, meta.codec, meta.format
     );
-    println!("requested backend: {}", backend.name());
+    println!("requested backend: {}", backend.name().to_ascii_lowercase());
 
     let mut count = 0u64;
     let mut dropped = 0u64;
@@ -73,13 +73,13 @@ fn main() -> ExitCode {
     let state = decoder.decoder_state();
     println!(
         "active backend: {} (state: {}, dropped frames: {})",
-        decoder.hw_accel_in_use().name(),
+        decoder.hw_accel_in_use().name().to_ascii_lowercase(),
         state.name(),
         decoder.dropped_frames()
     );
     println!("fallback occurred: {}", decoder.fallback_occurred());
     let passed = probe_succeeded(count, state);
-    println!("result: {}", if passed { "PASS" } else { "FAIL" });
+    println!("result: {}", if passed { "pass" } else { "fail" });
     if passed {
         ExitCode::SUCCESS
     } else {
