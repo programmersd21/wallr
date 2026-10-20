@@ -69,20 +69,31 @@ jobs:
             ninja-build \
             nasm
 
-      - name: Cache vcpkg binary archives (files provider)
+      - name: Restore vcpkg binary archives
         # x-gha was removed from vcpkg in April 2025 (microsoft/vcpkg-tool#1662).
         # The recommended replacement for GitHub Actions is a filesystem cache
         # via VCPKG_BINARY_SOURCES=clear;files,<path>,readwrite + actions/cache
         # on that path. We cache the archives (per-port zip files) in the
         # workspace, not inside /opt/vcpkg, so a fresh `git clone` of the
         # tool doesn't wipe the cache.
-        uses: actions/cache@v4
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-cache
-          key: wallr-vcpkg-archives-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('.github/vcpkg-triplets/**') }}
+          key: wallr-vcpkg-archives-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('.github/vcpkg-triplets/**', '.github/workflows/release.yml') }}
           restore-keys: |
             wallr-vcpkg-archives-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-
             wallr-vcpkg-archives-${{ runner.os }}-
+
+      - name: Report vcpkg cache status
+        env:
+          CACHE_HIT: ${{ steps.vcpkg-cache.outputs.cache-hit }}
+        run: |
+          if [ "$CACHE_HIT" = "true" ]; then
+            echo "vcpkg binary archive cache: exact hit"
+          else
+            echo "vcpkg binary archive cache: no exact hit (a fallback cache may have been restored)"
+          fi
 
       - name: Install vcpkg
         run: |
@@ -108,6 +119,13 @@ jobs:
             'ffmpeg[core,avcodec,avformat,swscale,swresample,nvcodec]:x64-linux-static' \
             --overlay-triplets="$GITHUB_WORKSPACE/.github/vcpkg-triplets"
 
+      - name: Save vcpkg binary archives
+        if: always() && !cancelled()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-cache
+          key: wallr-vcpkg-archives-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('.github/vcpkg-triplets/**', '.github/workflows/release.yml') }}
+
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -122,13 +140,15 @@ jobs:
           # rust-cache's default env-vars list ("CARGO CC CFLAGS CXX CMAKE
           # RUST") already matches PKG_CONFIG_ALL_STATIC's C-toolchain
           # neighbors but not the two FFmpeg linkage vars themselves, since
-          # matching is by *prefix*: MEDIA_PREFIX and PKG_CONFIG_PATH share
-          # no prefix with any default entry. Add both explicitly (alongside
-          # the defaults, since setting env-vars replaces rather than
-          # extends them) so a vcpkg triplet edit that changes either path
-          # can't silently reuse stale linked artifacts.
+          # matching is by *prefix*. Include the static-FFmpeg variables and
+          # set them on this step so their values are part of the cache key.
           env-vars: CARGO CC CFLAGS CXX CMAKE RUST MEDIA_PREFIX PKG_CONFIG
+          cache-on-failure: true
           shared-key: release-static-ffmpeg
+        env:
+          MEDIA_PREFIX: /opt/vcpkg/installed/x64-linux-static
+          PKG_CONFIG_PATH: /opt/vcpkg/installed/x64-linux-static/lib/pkgconfig
+          PKG_CONFIG_ALL_STATIC: "1"
 
       - name: Build release binary with static FFmpeg
         env:
@@ -173,7 +193,7 @@ jobs:
           cp README.md staging/
           cp -r docs staging/
           cd staging
-          tar -czf ../wallr-linux-amd64.tar.gz *
+          tar -czf ../wallr-linux-amd64.tar.gz -- *
           cd ..
           archive_contents="$(tar -tzf wallr-linux-amd64.tar.gz)"
           for required in wallr wallr-daemon README.md docs/; do
