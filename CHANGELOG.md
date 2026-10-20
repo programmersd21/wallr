@@ -5,6 +5,38 @@ All notable changes to Wallr are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] - 2026-10-20
+
+### Added
+
+- Portable builds: removed machine-specific `-C target-cpu=native` and forced
+  `lld` from `.cargo/config.toml`, fixing the CI `rustc` SIGILL caused by
+  cached proc-macro dylibs built for a different CPU.
+- Video PTS conversion now normalizes valid negative-start timelines and rejects
+  NaN or out-of-range timestamps instead of panicking (release builds use
+  `panic = abort`).
+- `FrameScheduler::should_display` no longer underflows on videos shorter than
+  100 ms.
+- Theme frame extraction (GIF/video) now validates dimensions, input size,
+  strides, and row counts before allocating.
+- Subprocess timeouts now kill the whole process group, preventing orphaned
+  descendants.
+- Video pause/resume no longer trips the stall watchdog or replays a burst
+  of stale frames.
+- MSRV verification job and locked builds in CI.
+
+### Changed
+
+- MSRV documentation corrected to 1.88 (CONTRIBUTING.md).
+- CI now runs `cargo fmt`, `cargo check`, `clippy`, and `cargo test` with
+  `--locked`, plus a dedicated MSRV (1.88) job.
+- Release workflow validates that the tag matches the workspace version and
+  changelog, and publishes SHA-256 checksums.
+
+### Fixed
+
+- Video playback speedup/stall after pause+resume.
+
 ## [0.7.0] - 2026-10-19
 
 ### Added

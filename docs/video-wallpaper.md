@@ -20,6 +20,9 @@ MP4, WebM, MKV, MOV, and AVI. Anything FFmpeg can demux is a candidate; the FFmp
 - Frames are decoded into a small bounded latest-frame queue and presented on PTS timing. Temporary queue pressure drops stale frames instead of terminating the decoder or allowing memory growth.
 - `wallpaper.loop_video` (default `true`) restarts the stream when it ends, producing a continuous loop.
 - `wallr ipc info` distinguishes hardware negotiation, active hardware frames, software decoding, software fallback, and decoder failure. A backend is not reported as active until a hardware frame has actually been received.
+- The stream timeline is normalized against its first valid PTS, so files with
+  negative edit-list timestamps do not stall at startup. Invalid timestamps
+  are dropped without terminating the decoder.
 - Official Linux release binaries include FFmpeg NVCodec support; NVDEC still
   loads the installed NVIDIA driver at runtime and falls back cleanly when it
   is unavailable.
@@ -69,6 +72,8 @@ position.
 - A slow software decoder gets up to five seconds to produce the first
   frame before the fallback black start.
 - `loop_video` is honored: no hidden rewinding when disabled.
+- Pause and resume reset the pacing and stall-watchdog baseline, preventing a
+  resume burst or a false stalled-video shutdown.
 
 ## Requirements
 

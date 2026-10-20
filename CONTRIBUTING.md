@@ -4,7 +4,7 @@ Wallr is a native, GPU-accelerated Wayland wallpaper engine written in Rust. Thi
 
 ## Setup
 
-Requires the Rust toolchain (edition 2024, MSRV 1.85+), Wayland development headers, and FFmpeg development libraries (used by `ffmpeg-next` for video support).
+Requires the Rust toolchain (edition 2024, MSRV 1.88+), Wayland development headers, and FFmpeg development libraries (used by `ffmpeg-next` for video support).
 
 ```bash
 # Arch
@@ -20,8 +20,8 @@ sudo apt install rustc cargo libwayland-dev wayland-protocols pkg-config libavco
 ```bash
 git clone https://github.com/programmersd21/wallr.git
 cd wallr
-cargo build
-cargo test
+cargo build --locked
+cargo test --locked
 ```
 
 ## Workspace layout
@@ -60,15 +60,15 @@ wallr/
 
 ```bash
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 ```
 
 For performance changes, build the release binary and run the live benchmark
 from a Wayland session:
 
 ```bash
-cargo build --workspace --release
+cargo build --workspace --release --locked
 scripts/benchmark-wallpapers.sh
 ```
 

@@ -23,8 +23,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
+      - name: Verify release tag matches workspace version
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag_name }}" ]; then
+            TAG="${{ inputs.tag_name }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG=""
+          fi
+          if [ -n "$TAG" ]; then
+            TAG_VERSION="${TAG#v}"
+            META_VERSION="$(cargo metadata --no-deps --format-version 1 | jq -re '.packages[] | select(.name=="wallr") | .version')"
+            test "$TAG_VERSION" = "$META_VERSION" || { echo "tag $TAG != workspace version $META_VERSION"; exit 1; }
+            grep -q "## \[$META_VERSION\]" CHANGELOG.md
+          fi
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -146,6 +162,7 @@ jobs:
           cd staging
           tar -czf ../wallr-linux-amd64.tar.gz *
           cd ..
+          sha256sum wallr-linux-amd64.tar.gz > wallr-linux-amd64.tar.gz.sha256
 
       - name: Determine Tag
         id: determine_tag
@@ -174,5 +191,6 @@ jobs:
           prerelease: false
           files: |
             wallr-linux-amd64.tar.gz
+            wallr-linux-amd64.tar.gz.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -2094,6 +2094,7 @@ fn play_video(
         .filter(|fps| *fps > 0)
         .map(|fps| std::time::Duration::from_secs_f64(1.0 / f64::from(fps)));
     let mut last_present: Option<std::time::Instant> = None;
+    let mut paused_last_iteration = false;
     // Watchdog: if the decoder dies or stalls, stop instead of presenting
     // the same frozen frame forever at a millisecond cadence.
     let mut last_frame_at = std::time::Instant::now();
@@ -2166,8 +2167,21 @@ fn play_video(
             }
             if video_playback.is_paused() {
                 // Deliberately paused: rest cheaply and wait for resume.
+                // Keep the watchdog and frame pacing state fresh so a resume
+                // does not trip the stall detector or replay a burst of stale
+                // frames at full speed.
+                last_frame_at = std::time::Instant::now();
+                last_present = None;
+                paused_last_iteration = true;
                 pacer.wait_until(std::time::Instant::now() + std::time::Duration::from_millis(100));
                 continue;
+            }
+            if paused_last_iteration {
+                // First iteration after resume: reset pacing baseline so the
+                // first post-pause frame is presented immediately instead of
+                // being dropped as "already due".
+                last_present = None;
+                paused_last_iteration = false;
             }
             if last_frame_at.elapsed() > std::time::Duration::from_secs(5) {
                 tracing::warn!("Video playback stalled, stopping");
@@ -2205,6 +2219,7 @@ fn play_video(
         match status.map(video_present_action) {
             Ok(VideoPresentAction::Presented) => {
                 last_present = Some(std::time::Instant::now());
+                last_frame_at = std::time::Instant::now();
             }
             Ok(action) => {
                 if action == VideoPresentAction::Reconfigure {

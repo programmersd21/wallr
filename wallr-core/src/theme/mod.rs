@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
+#[cfg(unix)]
+use libc;
+
 /// Upper bound for a theme provider run. A provider that hangs must not pin
 /// a daemon blocking thread forever.
 const THEME_TIMEOUT: Duration = Duration::from_secs(120);
@@ -143,20 +146,31 @@ fn theme_cache_key(path: &Path) -> Result<String, String> {
 }
 
 fn extract_gif_first_frame(path: &Path, dest: &Path) -> Result<(), String> {
+    const MAX_THEME_GIF_BYTES: u64 = 256 * 1024 * 1024;
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if meta.len() > MAX_THEME_GIF_BYTES {
+        return Err(format!(
+            "GIF {} exceeds the {} MiB input limit",
+            path.display(),
+            MAX_THEME_GIF_BYTES / (1024 * 1024)
+        ));
+    }
     let img = image::ImageReader::open(path)
         .map_err(|e| e.to_string())?
         .with_guessed_format()
         .map_err(|e| e.to_string())?
         .decode()
         .map_err(|e| e.to_string())?;
-
+    if u64::from(img.width()) * u64::from(img.height()) > 4096 * 4096 {
+        return Err(format!(
+            "GIF dimensions {}x{} exceed the theme frame safety limit",
+            img.width(),
+            img.height()
+        ));
+    }
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-
-    // Save to a unique temp file and atomically rename into the cache. A
-    // fixed `.tmp.png` name let two concurrent extractions corrupt each
-    // other's output.
     let parent = dest
         .parent()
         .ok_or_else(|| "cache path has no parent".to_string())?;
@@ -247,8 +261,18 @@ fn convert_frame_to_rgb24(
     scaler: &mut Option<ffmpeg_next::software::scaling::context::Context>,
 ) -> Result<(u32, u32, Vec<u8>), String> {
     use ffmpeg_next as ffmpeg;
+    const MAX_THEME_FRAME_PIXELS: u64 = 4096 * 4096;
     let w = frame.width();
     let h = frame.height();
+    if w == 0 || h == 0 {
+        return Err("empty video frame".to_string());
+    }
+    if u64::from(w) * u64::from(h) > MAX_THEME_FRAME_PIXELS {
+        return Err(format!(
+            "theme frame {w}x{h} exceeds the {}-pixel safety limit",
+            MAX_THEME_FRAME_PIXELS
+        ));
+    }
     let fmt = frame.format();
     if scaler.is_none()
         || scaler
@@ -276,11 +300,22 @@ fn convert_frame_to_rgb24(
         .map_err(|e| format!("scaler run: {e}"))?;
 
     let stride = rgb.stride(0);
-    let row_bytes = w as usize * 3;
+    let row_bytes = (w as usize)
+        .checked_mul(3)
+        .ok_or_else(|| "theme frame width overflow".to_string())?;
     let data = rgb.data(0);
-    let mut packed = Vec::with_capacity(row_bytes * h as usize);
+    let needed = row_bytes
+        .checked_mul(h as usize)
+        .ok_or_else(|| "theme frame size overflow".to_string())?;
+    let mut packed = Vec::with_capacity(needed);
     for row in data.chunks(stride).take(h as usize) {
+        if row.len() < row_bytes {
+            return Err("theme frame row truncated".to_string());
+        }
         packed.extend_from_slice(&row[..row_bytes]);
+    }
+    if packed.len() != needed {
+        return Err("theme frame row count mismatch".to_string());
     }
     Ok((w, h, packed))
 }
@@ -437,10 +472,27 @@ fn wait_with_timeout(
     label: &str,
 ) -> Result<ExitStatus, ThemeError> {
     let started = Instant::now();
+    // Put the child in its own process group so descendants (sh -c, matugen's
+    // subprocesses, etc.) are terminated alongside it on timeout instead of
+    // orphaning into the daemon's session.
+    #[cfg(unix)]
+    {
+        // put in own process group (best effort)
+        unsafe {
+            libc::setpgid(child.id() as i32, child.id() as i32);
+        }
+    }
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return Ok(status),
             Ok(None) if started.elapsed() >= timeout => {
+                #[cfg(unix)]
+                {
+                    // Kill the whole process group so descendants cannot survive.
+                    unsafe {
+                        libc::killpg(child.id() as i32, libc::SIGKILL);
+                    }
+                }
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(ThemeError::Timeout(timeout, label.to_string()));

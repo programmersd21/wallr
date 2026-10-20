@@ -1857,7 +1857,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "wallr"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1873,7 +1873,7 @@ dependencies = [
 
 [[package]]
 name = "wallr-common"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "bytemuck",
  "clap",
@@ -1884,7 +1884,7 @@ dependencies = [
 
 [[package]]
 name = "wallr-core"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "bytemuck",

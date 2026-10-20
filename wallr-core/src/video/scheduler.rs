@@ -123,7 +123,7 @@ impl FrameScheduler {
         }
         let current = self.current_position();
         if current < Duration::from_millis(100)
-            && frame_pts > self.duration - Duration::from_millis(100)
+            && frame_pts > self.duration.saturating_sub(Duration::from_millis(100))
         {
             return false;
         }
@@ -237,6 +237,21 @@ mod tests {
         scheduler.position_offset = Duration::from_millis(10);
         assert!(scheduler.should_display(Duration::ZERO));
     }
+
+    #[test]
+    fn should_display_does_not_underflow_for_short_videos() {
+        let scheduler = FrameScheduler::new(Duration::from_millis(50));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            scheduler.should_display(Duration::from_millis(25));
+            scheduler.should_display(Duration::from_millis(49));
+            scheduler.should_display(Duration::ZERO);
+        }));
+        assert!(
+            result.is_ok(),
+            "should_display must not panic on short videos"
+        );
+    }
+
     #[test]
     fn seek_beyond_system_uptime_does_not_panic() {
         let mut scheduler = FrameScheduler::new(Duration::from_secs(365 * 24 * 3600));

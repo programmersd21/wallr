@@ -273,6 +273,7 @@ async fn async_main() -> Result<()> {
                 let _ = std::fs::remove_file(&path);
             }
             ensure_response(response?)?;
+            println!("{} {}", "✓".green().bold(), "Wallpaper applied".green());
         }
 
         Commands::Doctor => {
@@ -331,6 +332,11 @@ async fn async_main() -> Result<()> {
             if tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
                 let response =
                     ensure_response(send_ipc_command(socket_path, IpcCommand::Reload).await?)?;
+                println!(
+                    "{} {}",
+                    "✓".green().bold(),
+                    "Configuration reloaded".green()
+                );
                 if let Some(msg) = response.message {
                     println!("{}", msg);
                 }

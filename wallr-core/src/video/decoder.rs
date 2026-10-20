@@ -590,6 +590,7 @@ impl VideoDecoder {
         let mut pending_seek: Option<(Duration, u64)> = None;
         let mut applied_seek_epoch = 0;
         let mut frame_index = 0u64;
+        let mut pts_origin: Option<f64> = None;
         let mut hardware_frame_seen = false;
         let mut decoded_frame = ffmpeg::frame::Video::empty();
         let mut sw_frame = ffmpeg::frame::Video::empty();
@@ -725,13 +726,17 @@ impl VideoDecoder {
                         &decoded_frame
                     };
 
-                    let pts_duration = if let Some(pts) = decoded_frame.timestamp() {
-                        Duration::from_secs_f64(
-                            pts as f64 * time_base.numerator() as f64
-                                / time_base.denominator() as f64,
-                        )
-                    } else {
-                        Duration::from_secs_f64(frame_index as f64 / 30.0)
+                    let pts_duration = match pts_to_duration(
+                        decoded_frame.timestamp(),
+                        time_base,
+                        frame_index,
+                        &mut pts_origin,
+                    ) {
+                        Some(duration) => duration,
+                        None => {
+                            tracing::warn!("video frame dropped: invalid presentation timestamp");
+                            continue;
+                        }
                     };
 
                     let width = src_frame.width();
@@ -988,6 +993,53 @@ fn duration_from_seconds(seconds: f64) -> VideoResult<Duration> {
     }
     Duration::try_from_secs_f64(seconds)
         .map_err(|_| VideoError::InvalidDuration(format!("{seconds} seconds is out of range")))
+}
+
+/// Converts an untrusted presentation timestamp to a `Duration`.
+///
+/// Container PTS values are arbitrary user-controlled data: streams with edit
+/// lists start before zero, and `AV_NOPTS_VALUE` can surface as an extreme
+/// negative value. `Duration::from_secs_f64` panics on negative, NaN, and
+/// out-of-range input - and the release profile builds with
+/// `panic = "abort"`, so a malformed PTS would abort the daemon. Returns
+/// `None` for every timestamp that cannot be represented; the decode loop
+/// drops the frame and keeps playing.
+fn pts_to_duration(
+    timestamp: Option<i64>,
+    time_base: ffmpeg::Rational,
+    frame_index: u64,
+    pts_origin: &mut Option<f64>,
+) -> Option<Duration> {
+    let pts = match timestamp {
+        Some(pts) => pts,
+        None => {
+            // Missing PTS: fall back to the nominal position of this frame in
+            // the stream. Bounds-checked against 30fps decode leftovers.
+            return Duration::try_from_secs_f64(frame_index as f64 / 30.0).ok();
+        }
+    };
+    if time_base.numerator() <= 0 || time_base.denominator() <= 0 {
+        return None;
+    }
+    let seconds = pts as f64 * time_base.numerator() as f64 / time_base.denominator() as f64;
+    if !seconds.is_finite() {
+        return None;
+    }
+    // Some valid containers use an edit list or codec delay that makes the
+    // first PTS negative. Normalize the stream against its first timestamp
+    // instead of dropping those frames and appearing frozen at startup.
+    let origin = *pts_origin.get_or_insert(seconds);
+    let normalized = seconds - origin;
+    if !normalized.is_finite() || normalized < 0.0 {
+        return None;
+    }
+    // Frames that decode but cannot schedule anywhere (u64::MAX ms and
+    // beyond) are dropped; every reasonable container publishes times far
+    // below this.
+    let deadline = Duration::from_secs(24 * 3600 * 3650);
+    Duration::try_from_secs_f64(normalized)
+        .ok()
+        .filter(|duration| *duration <= deadline)
 }
 
 const fn software_decoder_state(hardware_attempted: bool) -> DecoderState {
@@ -1464,4 +1516,17 @@ mod tests {
         );
         assert_eq!(duration_from_seconds(0.0).unwrap(), Duration::ZERO);
     }
+}
+#[test]
+fn normalizes_negative_start_pts_without_dropping_frames() {
+    let time_base = ffmpeg::Rational(1, 1000);
+    let mut origin = None;
+    assert_eq!(
+        pts_to_duration(Some(-80), time_base, 0, &mut origin),
+        Some(Duration::ZERO)
+    );
+    assert_eq!(
+        pts_to_duration(Some(-64), time_base, 1, &mut origin),
+        Some(Duration::from_millis(16))
+    );
 }
