@@ -2742,13 +2742,13 @@ impl Daemon {
                             Ok(Err(reason)) => {
                                 return IpcResponse {
                                     success: false,
-                                    message: Some(format!("Reload rejected: {reason}")),
+                                    message: Some(format!("reload rejected: {reason}")),
                                 };
                             }
                             Err(err) => {
                                 return IpcResponse {
                                     success: false,
-                                    message: Some(format!("Reload task failed: {err}")),
+                                    message: Some(format!("reload task failed: {err}")),
                                 };
                             }
                         };
@@ -2814,7 +2814,7 @@ impl Daemon {
                         if !is_usable_wallpaper_file(&p) {
                             return IpcResponse {
                                 success: false,
-                                message: Some(format!("File not found or unreadable: {}", path)),
+                                message: Some(format!("file not found or unreadable: {}", path)),
                             };
                         }
 
@@ -2827,8 +2827,8 @@ impl Daemon {
                             return IpcResponse {
                                 success: false,
                                 message: match &monitor {
-                                    Some(name) => Some(format!("Unknown monitor: {name}")),
-                                    None => Some("No outputs available".into()),
+                                    Some(name) => Some(format!("unknown monitor: {name}")),
+                                    None => Some("no outputs available".into()),
                                 },
                             };
                         }
@@ -2971,8 +2971,8 @@ impl Daemon {
                             return IpcResponse {
                                 success: false,
                                 message: match &monitor {
-                                    Some(name) => Some(format!("Unknown monitor: {name}")),
-                                    None => Some("No outputs available".into()),
+                                    Some(name) => Some(format!("unknown monitor: {name}")),
+                                    None => Some("no outputs available".into()),
                                 },
                             };
                         }
@@ -3031,7 +3031,7 @@ impl Daemon {
                             return IpcResponse {
                                 success: false,
                                 message: match &monitor {
-                                    Some(name) => Some(format!("Unknown monitor: {name}")),
+                                    Some(name) => Some(format!("unknown monitor: {name}")),
                                     None => Some("No outputs available".into()),
                                 },
                             };
@@ -3197,7 +3197,7 @@ impl Daemon {
                             Err(e) => {
                                 return IpcResponse {
                                     success: false,
-                                    message: Some(format!("Failed to create blank image: {e}")),
+                                    message: Some(format!("failed to create blank image: {e}")),
                                 };
                             }
                         };
@@ -3210,7 +3210,7 @@ impl Daemon {
                         {
                             return IpcResponse {
                                 success: false,
-                                message: Some(format!("Failed to write blank image: {e}")),
+                                message: Some(format!("failed to write blank image: {e}")),
                             };
                         }
 
@@ -3243,13 +3243,13 @@ impl Daemon {
                         if errors.is_empty() {
                             IpcResponse {
                                 success: true,
-                                message: Some(format!("Blanked {blanked_count} output(s)")),
+                                message: Some(format!("blanked {blanked_count} output(s)")),
                             }
                         } else {
                             IpcResponse {
                                 success: false,
                                 message: Some(format!(
-                                    "Blanked {blanked_count} output(s), {} error(s): {}",
+                                    "blanked {blanked_count} output(s), {} error(s): {}",
                                     errors.len(),
                                     errors.join("; ")
                                 )),
@@ -3268,7 +3268,7 @@ impl Daemon {
                                 success: false,
                                 message: match &monitor {
                                     Some(name) => Some(format!("Unknown monitor: {name}")),
-                                    None => Some("No outputs available".into()),
+                                    None => Some("no outputs available".into()),
                                 },
                             };
                         }
@@ -3317,7 +3317,7 @@ impl Daemon {
                             IpcResponse {
                                 success: restored_count > 0,
                                 message: Some(format!(
-                                    "Restored {} output(s), {} error(s): {}",
+                                    "restored {} output(s), {} error(s): {}",
                                     restored_count,
                                     errors.len(),
                                     errors.join("; ")
@@ -3326,7 +3326,7 @@ impl Daemon {
                         } else {
                             IpcResponse {
                                 success: true,
-                                message: Some(format!("Restored {restored_count} output(s)")),
+                                message: Some(format!("restored {restored_count} output(s)")),
                             }
                         }
                     }
