@@ -2,7 +2,27 @@ name: CI
 
 on:
   push:
+    branches:
+      - '**'
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - 'rust-toolchain'
+      - 'rust-toolchain.toml'
+      - 'wallr/**'
+      - 'wallr-core/**'
+      - 'wallr-common/**'
   pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - 'rust-toolchain'
+      - 'rust-toolchain.toml'
+      - 'wallr/**'
+      - 'wallr-core/**'
+      - 'wallr-common/**'
 
 permissions:
   contents: read
