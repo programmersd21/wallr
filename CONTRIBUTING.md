@@ -1,7 +1,9 @@
 # contributing
 
-wallr is a rust wayland wallpaper engine. Source builds require rust 1.90 or
-newer, wayland development headers, and ffmpeg development libraries.
+wallr is a rust wayland wallpaper engine. Builds require rust 1.90 or newer,
+wayland development headers, and FFmpeg development libraries. Static FFmpeg
+builds are optional; prepare their toolchain with
+`scripts/install-static-ffmpeg.sh`.
 
 ## build and test
 
@@ -14,6 +16,9 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 cargo build --workspace --release --locked
 ```
+
+For a static-FFmpeg release build, run the helper above and then use the
+export and cargo commands it prints.
 
 The workspace contains three crates:
 

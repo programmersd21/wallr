@@ -62,4 +62,5 @@ remove the need to transfer or render frames in all driver configurations.
 
 If video does not play, first test a still image and run `wallr ipc info`.
 For hardware issues, try `video.hw_decode: software`. Source builds need the
-FFmpeg development libraries; official release binaries include static FFmpeg.
+FFmpeg development libraries for dynamic builds. Static builds are optional;
+run `scripts/install-static-ffmpeg.sh` to prepare the pinned static toolchain.

@@ -21,10 +21,14 @@ not run a frame loop.
 
 ## images and transitions
 
-Static images without transitions use bounded `wl_shm` buffers. Image sizing
-and scaling are shared with the gpu renderer. A bounded compressed cache can
-avoid decoding a recently used image again. Shared-memory buffers are reused
-after the compositor releases them.
+Static images without transitions use bounded `wl_shm` buffers. Fill images
+are scaled and center-cropped to the output before the buffer is committed, so
+large wallpapers do not initialize wgpu just because their aspect ratio differs.
+Image sizing and scaling are shared with the gpu renderer. A bounded compressed
+cache can avoid decoding a recently used image again. Shared-memory buffers are
+reused after the compositor releases them. The pool is bounded and reclaimed
+after a quiet interval; cleanup is woken by commits rather than polling while
+the wallpaper is idle.
 
 Transitions use persistent wgpu resources and a fullscreen shader. Progress
 follows elapsed time rather than frame count. Replacing a wallpaper cancels

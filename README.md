@@ -65,7 +65,9 @@ see the [configuration reference](docs/config-reference.md) for all options.
 ## requirements
 
 - a wayland compositor with `wlr-layer-shell`
-- rust 1.90 or newer and ffmpeg development libraries when building from source
+- rust 1.90 or newer and FFmpeg development libraries for dynamic source builds;
+  static builds also need the Linux tools listed by
+  `scripts/install-static-ffmpeg.sh`
 - no ffmpeg runtime install for the official static release binaries
 
 ## build
@@ -75,6 +77,9 @@ git clone https://github.com/programmersd21/wallr.git
 cd wallr
 cargo build --workspace --release --locked
 ```
+
+For a static FFmpeg build, run `./scripts/install-static-ffmpeg.sh`, then export
+the variables and run the build command it prints.
 
 more setup and project conventions are in [contributing](CONTRIBUTING.md).
 

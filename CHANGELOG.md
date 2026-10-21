@@ -5,6 +5,28 @@ All notable changes to Wallr are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.8.3] - 2026-10-21
+
+### Added
+
+- Added a Linux helper to build the pinned static FFmpeg toolchain used by
+  release binaries.
+
+### Changed
+
+- Both benchmark scripts support dynamic FFmpeg by default or static FFmpeg via
+  `BENCHMARK_FFMPEG_LINKAGE=static`, and record the verified linkage. The
+  wallpaper benchmark resets both daemons before timed switches and reports
+  RSS change after the workload.
+- Fill-mode static images are center-cropped to output dimensions before
+  `wl_shm` presentation, avoiding GPU promotion for that case.
+
+### Performance
+
+- Shared-memory buffer cleanup now wakes only after a static commit and reaps
+  pools after a quiet interval instead of polling continuously.
+- Shared-memory buffers remain bounded while allowing short switch bursts.
+
 ## [0.8.2] - 2026-10-21
 
 ### Changed

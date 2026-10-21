@@ -13,6 +13,7 @@ on:
       - 'wallr/**'
       - 'wallr-core/**'
       - 'wallr-common/**'
+      - 'scripts/**'
   pull_request:
     paths:
       - 'Cargo.toml'
@@ -23,6 +24,7 @@ on:
       - 'wallr/**'
       - 'wallr-core/**'
       - 'wallr-common/**'
+      - 'scripts/**'
 
 permissions:
   contents: read
@@ -52,6 +54,8 @@ jobs:
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
+      - name: Check shell scripts
+        run: for script in scripts/*.sh; do bash -n "$script"; done
       - name: Check architecture dependency versions
         run: |
           python3 - <<'PY'
@@ -72,6 +76,11 @@ jobs:
               rf"rust {re.escape(msrv)} or\s+newer", contributing
           ):
               raise SystemExit(f"README.md and CONTRIBUTING.md must identify MSRV {msrv}")
+          release = Path(".github/workflows/release.yml").read_text()
+          installer = Path("scripts/install-static-ffmpeg.sh").read_text()
+          vcpkg = re.search(r"VCPKG_COMMIT: ([0-9a-f]+)", release).group(1)
+          if f"vcpkg_commit={vcpkg}" not in installer:
+              raise SystemExit("static FFmpeg installer must use the release vcpkg commit")
           PY
       - run: cargo check --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -84,8 +93,9 @@ jobs:
             crate_version="$(cargo metadata --no-deps --format-version 1 | jq -re ".packages[] | select(.name==\"$crate\") | .version")"
             test "$crate_version" = "$VERSION"
           done
-          test "$VERSION" = "0.8.2"
-          grep -q "## \[0.8.2\]" CHANGELOG.md
+          grep -Fq "version = \"$VERSION\"" flake.nix
+          test "$VERSION" = "0.8.3"
+          grep -q "## \[0.8.3\]" CHANGELOG.md
 
   msrv:
     name: MSRV (1.90)

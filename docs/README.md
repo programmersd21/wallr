@@ -15,4 +15,5 @@ wallr doctor
 - [theme providers](matugen-integration.md)
 - [video](video-wallpaper.md)
 - [benchmarks](benchmarks.md)
+- [static FFmpeg setup](../scripts/install-static-ffmpeg.sh)
 - [architecture](architecture.md)

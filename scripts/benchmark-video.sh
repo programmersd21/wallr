@@ -5,14 +5,47 @@ set -euo pipefail
 # compositor presentation or GPU render time.
 
 root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
+    printf 'usage: BENCHMARK_FFMPEG_LINKAGE=dynamic|static %s [video]\n' "$0"
+    printf 'dynamic FFmpeg is the default; static mode requires scripts/install-static-ffmpeg.sh.\n'
+    exit 0
+fi
 input=${1:-"$root_dir/assets/demo.mkv"}
 report=${BENCHMARK_REPORT:-"$root_dir/benchmarks/video-$(date -u +%Y%m%d-%H%M%S).md"}
+ffmpeg_linkage=${BENCHMARK_FFMPEG_LINKAGE:-dynamic}
 wallr_version=$(awk '/^\[workspace.package\]/{in_workspace=1; next} /^\[/{in_workspace=0} in_workspace && /^version =/{gsub(/[" ]/, "", $3); print $3; exit}' "$root_dir/Cargo.toml")
 
 [[ -s "$input" ]] || { echo "error: missing video: $input" >&2; exit 2; }
+case "$ffmpeg_linkage" in
+    dynamic) cargo_features=() ;;
+    static) cargo_features=(--features static-ffmpeg) ;;
+    *) echo "error: BENCHMARK_FFMPEG_LINKAGE must be dynamic or static" >&2; exit 2 ;;
+esac
 mkdir -p "$(dirname "$report")"
 probe="$root_dir/target/release/examples/video_probe"
-cargo build -q -p wallr-core --example video_probe --release
+cargo build -q -p wallr-core --example video_probe --release "${cargo_features[@]}"
+command -v readelf >/dev/null || { echo "error: readelf is required to verify FFmpeg linkage" >&2; exit 2; }
+dynamic_section=$(readelf -d "$probe" 2>/dev/null) || {
+    echo "error: could not inspect video probe dynamic dependencies" >&2
+    exit 2
+}
+ffmpeg_libraries=$(grep -oE 'libav[^]]*\.so[^]]*|libsw(scale|resample)[^]]*' <<<"$dynamic_section" \
+    | sort -u || true)
+if [[ -n "$ffmpeg_libraries" ]]; then
+    if [[ "$ffmpeg_linkage" == static ]]; then
+        echo "error: static FFmpeg requested, but the probe links: ${ffmpeg_libraries//$'\n'/, }" >&2
+        echo "run scripts/install-static-ffmpeg.sh and build with BENCHMARK_FFMPEG_LINKAGE=static" >&2
+        exit 2
+    fi
+    ffmpeg_linkage="dynamic (${ffmpeg_libraries//$'\n'/, })"
+else
+    if [[ "$ffmpeg_linkage" == dynamic ]]; then
+        echo "error: dynamic FFmpeg requested, but no dynamic FFmpeg libraries were found" >&2
+        echo "set BENCHMARK_FFMPEG_LINKAGE=static to benchmark this probe" >&2
+        exit 2
+    fi
+    ffmpeg_linkage=static
+fi
 
 run_probe() {
     local backend=$1
@@ -51,13 +84,13 @@ nvdec_cpu=$(awk -F'[ =]' '/^wall_seconds=/ {printf "%.3f", $4 + $6; exit}' <<<"$
 vaapi_reason=""
 if [[ $vaapi_backend != vaapi || $vaapi_state != 'hardware active' ]] || ! grep -qx 'result: pass' <<<"$vaapi" || ! grep -qx 'fallback occurred: false' <<<"$vaapi"; then
     vaapi_reason="probe failed, fell back, or did not remain hardware active (backend: ${vaapi_backend:-unavailable}, state: ${vaapi_state:-unavailable})"
-    vaapi_frames= vaapi_rate= vaapi_cpu= vaapi_drops=
+    vaapi_frames='' vaapi_rate='' vaapi_cpu='' vaapi_drops=''
 fi
 
 nvdec_reason=""
 if [[ $nvdec_backend != nvdec || $nvdec_state != 'hardware active' ]] || ! grep -qx 'result: pass' <<<"$nvdec" || ! grep -qx 'fallback occurred: false' <<<"$nvdec"; then
     nvdec_reason="probe failed, fell back, or did not remain hardware active (backend: ${nvdec_backend:-unavailable}, state: ${nvdec_state:-unavailable})"
-    nvdec_frames= nvdec_rate= nvdec_cpu= nvdec_drops=
+    nvdec_frames='' nvdec_rate='' nvdec_cpu='' nvdec_drops=''
 fi
 
 {
@@ -69,6 +102,7 @@ fi
     printf -- '- Host: %s\n' "$(uname -n)"
     printf -- '- Input: `%s`\n' "$input"
     printf -- '- Wallr version: %s\n' "$wallr_version"
+    printf -- '- FFmpeg linkage: %s\n' "$ffmpeg_linkage"
     echo
     echo "| Backend | Frames | Throughput (fps) | CPU time (s) | Decoder state | Dropped frames |"
     echo "|:--|--:|--:|--:|:--|--:|"

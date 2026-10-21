@@ -113,6 +113,7 @@ struct WaylandState {
     viewports: std::collections::HashMap<u32, WpViewport>,
     output_lifecycles: std::collections::HashMap<u32, OutputLifecycle>,
     pending_restores: std::collections::HashSet<u32>,
+    shm_reaper: std::sync::Arc<tokio::sync::Notify>,
     /// Layer shell protocol object for creating background surfaces.
     layer_shell: LayerShell,
     /// Compositor protocol object for creating input regions.
@@ -263,11 +264,31 @@ fn viewport_destination(configured: (u32, u32), physical: (u32, u32)) -> Option<
 mod viewport_tests {
     use super::{
         VideoPresentAction, advance_gif_slots, clamp_max_fps, clamp_preload_frames,
-        is_transient_wallpaper_error, is_usable_wallpaper_file, persist_wallpaper_at,
-        read_wallpaper_state, validate_live_config, video_present_action, viewport_destination,
-        write_wallpaper_state,
+        crop_fill_to_output, is_transient_wallpaper_error, is_usable_wallpaper_file,
+        persist_wallpaper_at, read_wallpaper_state, validate_live_config, video_present_action,
+        viewport_destination, write_wallpaper_state,
     };
     use crate::renderer::FrameStatus;
+
+    #[test]
+    fn crops_cover_scaled_static_image_to_output_dimensions() {
+        let mut source = image::RgbaImage::new(4, 2);
+        for (x, _, pixel) in source.enumerate_pixels_mut() {
+            *pixel = image::Rgba([x as u8, 0, 0, 255]);
+        }
+
+        let cropped = crop_fill_to_output(&source, 2, 2).expect("cover image can be cropped");
+        assert_eq!(cropped.dimensions(), (2, 2));
+        assert_eq!(cropped.get_pixel(0, 0).0, [1, 0, 0, 255]);
+        assert_eq!(cropped.get_pixel(1, 1).0, [2, 0, 0, 255]);
+    }
+
+    #[test]
+    fn refuses_fill_crop_when_scaled_image_does_not_cover_output() {
+        let source = image::RgbaImage::new(2, 2);
+        assert!(crop_fill_to_output(&source, 3, 2).is_none());
+        assert!(crop_fill_to_output(&source, 2, 0).is_none());
+    }
 
     #[test]
     fn gif_slots_never_flip_to_an_unuploaded_frame() {
@@ -854,11 +875,9 @@ struct RenderState {
     /// but the underlying proxy is; a fresh handle is minted on demand.
     shm_server: wayland_client::protocol::wl_shm::WlShm,
     shm_pool: SlotPool,
-    /// Ping-pong shm buffers. The parked buffer is usually the currently
-    /// displayed one (legitimately compositor-held), so single-buffer reuse
-    /// can never hit in steady use; alternating guarantees the idle buffer
-    /// was released when its sibling was presented, bounding the pool.
-    shm_buffers: [Option<ShmBuffer>; 2],
+    /// Two buffers cover normal presentation; surge buffers are allocated
+    /// only when rapid switching outruns compositor releases.
+    shm_buffers: [Option<ShmBuffer>; 4],
     shm_index: usize,
     shm_width: u32,
     shm_height: u32,
@@ -866,6 +885,7 @@ struct RenderState {
     /// cache compressed avoids retaining a second full-size framebuffer next
     /// to the compositor-owned shared-memory buffers.
     cached_shm_image: Option<CachedShmImage>,
+    shm_reaper: std::sync::Arc<tokio::sync::Notify>,
     /// A layer surface must not switch from wgpu explicit-sync commits to
     /// bufferless `wl_shm` commits. Some compositors reject that sequence
     /// with a missing acquire timeline. Keep static requests on wgpu after
@@ -1128,6 +1148,14 @@ impl RenderState {
                 scaling_mode,
                 wgpu::Limits::default().max_texture_dimension_2d,
             )?;
+            let (rgba, width, height) = if scaling_mode == 0
+                && (width != self.width || height != self.height)
+                && let Some(cropped) = crop_fill_to_output(&rgba, self.width, self.height)
+            {
+                (cropped, self.width, self.height)
+            } else {
+                (rgba, width, height)
+            };
             let rgba = rgba.into_raw();
             let compressed = zstd::bulk::compress(&rgba, 1)?;
             if compressed.len() <= STATIC_CACHE_LIMIT_BYTES {
@@ -1158,16 +1186,13 @@ impl RenderState {
         let stride = width
             .checked_mul(4)
             .ok_or_else(|| anyhow::anyhow!("static image stride overflow"))?;
-        // Ping-pong between two buffers. The parked buffer is usually the
-        // currently displayed one (legitimately compositor-held, so waiting
-        // on it is futile); alternating guarantees the idle sibling was
-        // released when its partner was presented, so steady-state switching
-        // never allocates and the pool never grows.
+        // Reuse released slots first. Bounded surge buffers cover short bursts
+        // while the compositor is still reading earlier commits.
         let mut used_slot = 0usize;
         let mut chosen: Option<ShmBuffer> = None;
         if self.shm_width == width && self.shm_height == height {
-            for _ in 0..2 {
-                let slot = self.shm_index % 2;
+            for _ in 0..self.shm_buffers.len() {
+                let slot = self.shm_index % self.shm_buffers.len();
                 self.shm_index = self.shm_index.wrapping_add(1);
                 if let Some(buffer) = self.shm_buffers[slot].take() {
                     if buffer.canvas(&mut self.shm_pool).is_some() {
@@ -1178,12 +1203,12 @@ impl RenderState {
                     self.shm_buffers[slot] = Some(buffer);
                 }
             }
-            if chosen.is_none() {
-                // Both slots busy under sustained flood. Wait briefly for a
+            if chosen.is_none() && self.shm_buffers.iter().all(Option::is_some) {
+                // All slots are busy under sustained flood. Wait briefly for a
                 // release on a detached task (never the Wayland event loop).
                 'wait: for _ in 0..10 {
                     std::thread::sleep(std::time::Duration::from_millis(5));
-                    for slot in 0..2 {
+                    for slot in 0..self.shm_buffers.len() {
                         if let Some(buffer) = self.shm_buffers[slot].take() {
                             if buffer.canvas(&mut self.shm_pool).is_some() {
                                 chosen = Some(buffer);
@@ -1196,19 +1221,19 @@ impl RenderState {
                 }
             }
         } else {
-            // Output size changed: drop both parked buffers (rare path).
-            self.shm_buffers = [None, None];
+            // Output size changed: drop buffers sized for the previous mode.
+            self.shm_buffers = [None, None, None, None];
         }
         let buffer = match chosen {
             Some(buffer) => buffer,
             None => {
-                // No free buffer. Never grow the pool beyond the pair:
+                // Never grow the pool beyond four slots:
                 // pool growth is process-lifetime high-water billed to
                 // post-workload RSS (measured ~390 MiB retained after 90
                 // rapid switches with unbounded growth).
                 if self.shm_width != width || self.shm_height != height {
-                    // Output size changed: reset the pair (rare path).
-                    self.shm_buffers = [None, None];
+                    // Output size changed: reset the bounded pool (rare path).
+                    self.shm_buffers = [None, None, None, None];
                     let (new_buffer, _) = self.shm_pool.create_buffer(
                         width as i32,
                         height as i32,
@@ -1218,7 +1243,7 @@ impl RenderState {
                     used_slot = 0;
                     new_buffer
                 } else if let Some(slot) = self.shm_buffers.iter().position(|slot| slot.is_none()) {
-                    // Priming the pair: still bounded at two buffers.
+                    // Allocate surge slots only when preceding buffers are busy.
                     let (new_buffer, _) = self.shm_pool.create_buffer(
                         width as i32,
                         height as i32,
@@ -1228,7 +1253,7 @@ impl RenderState {
                     used_slot = slot;
                     new_buffer
                 } else {
-                    // Both slots busy: the compositor is more than a frame
+                    // All slots busy: the compositor is more than a frame
                     // behind under flood. Fall back to the GPU path instead
                     // of growing the pool; it promotes its own texture and
                     // a later commit reuses a released slot.
@@ -1262,6 +1287,7 @@ impl RenderState {
         self.shm_buffers[used_slot] = Some(buffer);
         self.shm_width = width;
         self.shm_height = height;
+        self.shm_reaper.notify_one();
         Ok(true)
     }
 
@@ -1538,6 +1564,28 @@ const INITIAL_SHM_POOL_BYTES: usize = 4096;
 /// buffers. Large photographic frames are decoded again instead of becoming
 /// a hidden resident-memory tax.
 const STATIC_CACHE_LIMIT_BYTES: usize = 4 * 1024 * 1024;
+
+fn crop_fill_to_output(
+    image: &image::RgbaImage,
+    output_width: u32,
+    output_height: u32,
+) -> Option<image::RgbaImage> {
+    let (width, height) = image.dimensions();
+    if output_width == 0 || output_height == 0 || width < output_width || height < output_height {
+        return None;
+    }
+
+    Some(
+        image::imageops::crop_imm(
+            image,
+            (width - output_width) / 2,
+            (height - output_height) / 2,
+            output_width,
+            output_height,
+        )
+        .to_image(),
+    )
+}
 
 async fn set_wallpaper_with_retry(
     render_state: &Arc<Mutex<RenderState>>,
@@ -2387,25 +2435,33 @@ async fn snapshot_all_named(map: &SharedRenderStates) -> Vec<(String, Arc<Mutex<
 /// A committed shm buffer stays mapped as long as its pool lives, which
 /// otherwise pins a full output-sized mapping per output forever (plus any
 /// flood growth). Once nothing is drawing, the compositor already owns the
-/// displayed pixels, so the pool and both ping-pong buffers can go: the
+/// displayed pixels, so the pool and its bounded buffers can go: the
 /// next static set recreates a fresh minimal pool. Settled means no set in
 /// flight (state guard free) and no live transition, video, or GIF (those
 /// hold the render lock for their whole run). One async task, no OS thread.
-async fn reap_idle_shm_pools(states: SharedRenderStates) {
+async fn reap_idle_shm_pools(
+    states: SharedRenderStates,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+) {
     loop {
-        // Reclaim promptly after the last switch. A full 4K pair can be
-        // dozens of MiB, so waiting a whole second makes short-lived command
-        // bursts look like a leak to users and power monitors.
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        wake.notified().await;
+        while tokio::time::timeout(std::time::Duration::from_millis(250), wake.notified())
+            .await
+            .is_ok()
+        {}
+
+        let mut retry = false;
         for (_, state) in snapshot_all_named(&states).await {
             let Ok(mut locked) = state.try_lock() else {
+                retry = true;
                 continue;
             };
             if locked.render_lock.try_lock().is_err() {
+                retry = true;
                 continue;
             }
             if locked.shm_pool.len() > INITIAL_SHM_POOL_BYTES {
-                locked.shm_buffers = [None, None];
+                locked.shm_buffers = [None, None, None, None];
                 locked.shm_width = 0;
                 locked.shm_height = 0;
                 let fresh = SlotPool::new(
@@ -2413,18 +2469,20 @@ async fn reap_idle_shm_pools(states: SharedRenderStates) {
                     &smithay_client_toolkit::shm::Shm::from(locked.shm_server.clone()),
                 );
                 match fresh {
-                    Ok(pool) => locked.shm_pool = pool,
-                    Err(_) => continue,
+                    Ok(pool) => {
+                        locked.shm_pool = pool;
+                        // SAFETY: malloc_trim only releases unallocated pages
+                        // back to the OS; it cannot invalidate live pointers.
+                        unsafe {
+                            libc::malloc_trim(0);
+                        }
+                    }
+                    Err(_) => retry = true,
                 }
             }
-            // Quiescent heap: hand freed top pages back as well. Only free
-            // pages move, so live allocations are unaffected.
-            // SAFETY: malloc_trim only releases unallocated pages back to
-            // the OS; it cannot invalidate live pointers. The return value
-            // (whether anything was released) is intentionally ignored.
-            unsafe {
-                libc::malloc_trim(0);
-            }
+        }
+        if retry {
+            wake.notify_one();
         }
     }
 }
@@ -2576,6 +2634,7 @@ impl Daemon {
             viewports: std::collections::HashMap::new(),
             output_lifecycles: std::collections::HashMap::new(),
             pending_restores: std::collections::HashSet::new(),
+            shm_reaper: std::sync::Arc::new(tokio::sync::Notify::new()),
             layer_shell,
             compositor,
             hotplug: None,
@@ -2684,8 +2743,11 @@ impl Daemon {
         let paused_clone = self.paused.clone();
         let engine_clone = self.engine.clone();
         let render_states_clone = render_states.clone();
-        // Return settled outputs' shm pools to the OS (see reap_idle_shm_pools).
-        tokio::spawn(reap_idle_shm_pools(render_states.clone()));
+        // Reclaim settled output pools only after a shared-memory commit.
+        tokio::spawn(reap_idle_shm_pools(
+            render_states.clone(),
+            wayland_state.shm_reaper.clone(),
+        ));
         // Generation counter for theme/hook work. Rapid A→B→C switches bump
         // the counter; detached theme tasks with a stale generation exit
         // without invoking external processes for obsolete wallpapers.
@@ -3503,11 +3565,12 @@ impl Daemon {
             shm_pool: SlotPool::new(INITIAL_SHM_POOL_BYTES, &wayland_state.shm).map_err(|e| {
                 DaemonError::StartError(format!("shared-memory pool creation failed: {e}"))
             })?,
-            shm_buffers: [None, None],
+            shm_buffers: [None, None, None, None],
             shm_index: 0,
             shm_width: 0,
             shm_height: 0,
             cached_shm_image: None,
+            shm_reaper: wayland_state.shm_reaper.clone(),
             gpu_surface_used: false,
             cached_video_texture: None,
             loop_video: config.wallpaper.loop_video,
@@ -3600,11 +3663,12 @@ fn create_render_state_for_output_sync(
         shm_pool: SlotPool::new(INITIAL_SHM_POOL_BYTES, &wayland_state.shm).map_err(|e| {
             DaemonError::StartError(format!("shared-memory pool creation failed: {e}"))
         })?,
-        shm_buffers: [None, None],
+        shm_buffers: [None, None, None, None],
         shm_index: 0,
         shm_width: 0,
         shm_height: 0,
         cached_shm_image: None,
+        shm_reaper: wayland_state.shm_reaper.clone(),
         gpu_surface_used: false,
         cached_video_texture: None,
         loop_video: config.wallpaper.loop_video,
