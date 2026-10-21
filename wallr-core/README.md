@@ -27,4 +27,3 @@ wallr-core = "0.8.1"
 ## license
 
 MIT. See [LICENSE](../LICENSE).
-```
