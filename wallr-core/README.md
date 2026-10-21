@@ -1,26 +1,15 @@
 # wallr-core
 
-Core engine for `wallr`: daemon, renderer, animation, video, and theme integration.
-
-## modules
-
-- `daemon`: wayland layer-shell surfaces, IPC server, render state
-- `renderer`: wgpu pipelines, textures, frame presentation
-- `animated`: GIF decoding and playback
-- `video`: FFmpeg decoding, hardware acceleration, scheduling
-- `animation`: transition effects and uniform computation
-- `theme`: provider dispatch and hooks
-- `ipc`: async Unix socket transport
-- `config`: configuration parsing and validation
-
-## usage
+wallr's wayland daemon and rendering engine. It contains output management,
+wgpu rendering, animated image and video playback, theme providers, and ipc.
 
 ```toml
 [dependencies]
-wallr-core = "0.8.1"
+wallr-core = "0.8.2"
 ```
 
-## features
+The optional `static-ffmpeg` feature enables static ffmpeg linking when the
+required build libraries are available.
 
 - `static-ffmpeg`: statically link FFmpeg
 

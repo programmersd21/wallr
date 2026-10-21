@@ -1,38 +1,35 @@
-# Effects reference
+# transitions
 
-Wallr ships six built-in transitions. Pick one with `wallr set <path> -e <name>` and tune it with the flags below. With no `-e` flag you get a plain linear crossfade, matching awww's default `simple` feel.
+Choose a transition with `wallr set <path> --effect <name>`. Without an
+explicit effect, wallr uses a linear crossfade.
 
-| Name | Aliases | Look |
-|---|---|---|
-| `fade` | `simple` | Smooth crossfade between wallpapers. |
-| `wipe` | | Directional reveal sweep, optionally angled. |
-| `slide` | `left`, `right`, `top`, `bottom` | Directional reveal from an edge. |
-| `wave` | | Wipe with an oscillating edge. |
-| `grow` | `center`, `any` | Expanding circle from an origin. |
-| `outer` | | Shrinking circle onto an origin. |
+| effect | aliases | behavior |
+|:--|:--|:--|
+| `fade` | `simple` | crossfade |
+| `wipe` | | directional reveal |
+| `slide` | `left`, `right`, `top`, `bottom` | reveal from an edge |
+| `wave` | | reveal with a moving edge |
+| `grow` | `center`, `any` | expand from a point |
+| `outer` | | contract toward a point |
 
-`any` grows or shrinks from a random point. `random` picks one of the six at random.
+`any` chooses a random origin for a circular transition. `random` chooses a
+random transition.
 
-## Flags
+## options
 
-| Flag | Used by | Meaning |
-|---|---|---|
-| `-d, --duration <TIME>` | all | Wall-clock length, e.g. `700ms`, `1s`, `1.2s`. |
-| `-o, --origin <PRESET\|X,Y>` | `grow`, `outer`, `wave` | Circle origin: `center` (default), `top_left`, `top`, `top_right`, `left`, `right`, `bottom_left`, `bottom`, `bottom_right`, or normalized `x,y`. On `wave` an `--angle` derives the center from the sweep direction. |
-| `-a, --angle <DEG>` | `wipe` | Sweep angle in degrees: `0` = right-to-left, `90` = top-to-bottom, `270` = bottom-to-top. `slide` uses `--direction` instead. |
-| `--direction <X,Y>` | `wipe`, `slide` | Direction vector, e.g. `1,0`. |
-| `--easing <CURVE>` | all | `linear`, `ease_in`, `ease_out`, `ease_in_out`, `bezier`. Named effects default to `bezier` (awww-style cubic curve); with no `-e` flag the fade is plain linear. |
-| `--from, --to <VAL>` | `fade` | Opacity range, default `0` to `1`. |
-| `--frequency, --amplitude` | `wave` | Wave density and height. |
-| `--softness <VAL>` | `wipe` | Edge feather in screen fraction, `0.002` to `0.25` (default `0.01`: a sharp, pixel-scale edge). |
+- `-d, --duration <time>`: length, such as `800ms` or `1.2s`.
+- `-o, --origin <preset|x,y>`: origin such as `center`, `top_left`, or a
+  normalized coordinate pair.
+- `-a, --angle <degrees>`: sweep angle for `wipe`.
+- `--direction <x,y>`: direction for `wipe` or `slide`.
+- `--easing <curve>`: `linear`, `ease_in`, `ease_out`, `ease_in_out`, or
+  `bezier`.
+- `--from <value>` and `--to <value>`: fade endpoints.
+- `--frequency <hz>` and `--amplitude <value>`: wave parameters.
+- `--softness <value>`: softness of the wipe edge.
 
-## Examples
-
-```bash
+```sh
 wallr set ~/Pictures/wallpaper.png -e grow -o center -d 850ms
-wallr set ~/Pictures/wallpaper.png -e wipe -a 45 -d 800ms
-wallr set ~/Pictures/wallpaper.png -e wave -d 900ms
+wallr set ~/Pictures/wallpaper.png -e wipe -a 45
 wallr set ~/Pictures/wallpaper.png --duration 0 --no-theme
 ```
-
-`--duration 0` skips the transition and presents the wallpaper directly.

@@ -83,4 +83,4 @@ libc = "=0.2.191"
 # Pinned to the Cargo.lock version like libc above: the index mirror cannot
 # resolve caret requirements for this crate either.
 [dev-dependencies]
-naga = { version = "=24.0.0", features = ["wgsl-in"] }
+naga = { version = "=30.0.1", features = ["wgsl-in"] }

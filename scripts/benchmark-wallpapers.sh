@@ -112,7 +112,7 @@ fi
 
 if [[ -z "$wallr_pid" ]]; then
     local_log=$(mktemp)
-    "$wallr_daemon_bin" daemon >"$local_log" 2>&1 &
+    "$wallr_daemon_bin" >"$local_log" 2>&1 &
     local_daemon_pid=$!
     for _ in {1..50}; do
         if "$wallr_bin" ipc status >/dev/null 2>&1; then

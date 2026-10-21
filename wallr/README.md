@@ -1,19 +1,13 @@
 # wallr
 
-GPU-accelerated wallpaper engine for wayland. This is the command-line client and daemon entry point.
+The package provides two binaries:
 
-## install
+- `wallr`: command-line client for wallpaper changes and daemon ipc.
+- `wallr-daemon`: wayland service for rendering and live media.
 
-```bash
-cargo install wallr
-```
-
-## usage
-
-```bash
+```sh
 wallr set wallpaper.jpg
-wallr daemon
-wallr ipc status
+wallr-daemon --help
 ```
 
 See the root [README.md](../README.md) and [docs/cli-reference.md](../docs/cli-reference.md).

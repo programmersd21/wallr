@@ -1,45 +1,48 @@
-# Matugen integration
+# theme providers
 
-Wallr can call Matugen after a wallpaper change:
+The configured theme provider runs after a wallpaper change:
 
 ```yaml
-theme: {provider: matugen}
-matugen: {enabled: true, mode: dark, wait: true, args: []}
+theme:
+  provider: matugen
+
+matugen:
+  enabled: true
+  mode: dark
+  scheme: scheme-tonal-spot
+  contrast: 0
+  wait: true
+  args: []
+
+reload:
+  - waybar
 ```
 
-`matugen.mode` is passed to matugen's `--mode` flag, so it must be `light` or `dark` (the default is `dark`). `scheme` maps to `--type` and `contrast` to `--contrast`. Wallr runs `matugen image <wallpaper> --mode <mode> --type <scheme> --contrast <n> --source-color-index 0`, followed by any extra `args`. Matugen then runs its own template `post_hook` commands; Wallr additionally runs its `reload` list afterwards.
+wallr supports `matugen`, `wallust`, `pywal`, or `none`. Install the selected
+program separately. Use `wallr doctor` to check which providers are available.
 
-Video and GIF wallpapers now work for theming too: when the wallpaper is a video (`mp4`/`webm`/`mkv`/`mov`/`avi`/`m4v`) or GIF, Wallr extracts the first frame to `~/.cache/wallr/theme/<hash>.png` (FFmpeg for video, `image` crate for GIF) and passes that still to the theme provider. The extracted frame is cached by source path + mtime and reused until the source changes. All providers (`matugen`, `wallust`, `pywal`) benefit; no manual extraction is needed.
+Override the configured provider for one wallpaper:
 
-## Forcing matugen per invocation
-
-`wallr set` / `wallr img` accept `--theme <PROVIDER>` to override the configured provider for one call, without config edits:
-
-```bash
-wallr set ~/Pictures/wallpaper.jpg --theme matugen
-wallr set ~/Pictures/video.mp4 --theme matugen   # first frame → matugen
-wallr set ~/Pictures/anim.gif --theme wallust     # first frame → wallust
+```sh
+wallr set wallpaper.jpg --theme matugen
+wallr set video.mp4 --theme matugen
+wallr set wallpaper.jpg --no-theme
 ```
 
-This is what `scripts/demo.sh` uses so every rotated wallpaper also regenerates the scheme, even when the user's config has a different provider or none at all. `--theme none` and `--no-theme` both skip theme generation for that call.
+For gif and video, wallr extracts a still frame for theme generation while
+playback continues. The frame is cached and refreshed when the source file
+changes.
 
-## Loop prevention
+## prevent loops
 
-Matugen can also call Wallr through its `[config.wallpaper]` command. Always pass `--no-theme`:
+If Matugen calls wallr to set its input image, disable theme generation on
+that call:
 
 ```toml
 [config.wallpaper]
-command = "wallr img --no-theme {{ image }}"
+command = "wallr set --no-theme {{ image }}"
 set = true
 ```
 
-Without `--no-theme`, Matugen → Wallr → Matugen loops indefinitely. Wallr does not duplicate Matugen template `post_hook` behavior; use Wallr's `reload` list for independent reload commands.
-
-> **Migrating from deprecated Matugen config:** older Matugen configs split the wallpaper command into separate keys:
-> ```toml
-> [config.wallpaper]
-> command = "wallr"
-> arguments = ["img", "--no-theme"]
-> set = true
-> ```
-> Current Matugen emits `⚠ You should not define arguments inside of [config.wallpaper] anymore. Use the command instead and use the {{ image }} keyword`. Migrate to the single `command` string with `{{ image }}` as shown above, for example: `command = "wallr img --no-theme {{ image }}"`.
+Otherwise Matugen can invoke wallr, which invokes Matugen again. Matugen's
+template hooks are separate from wallr's `reload` commands.

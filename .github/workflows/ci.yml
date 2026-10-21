@@ -60,10 +60,18 @@ jobs:
           from pathlib import Path
 
           manifest = tomllib.loads(Path("Cargo.toml").read_text())
-          version = manifest["workspace"]["dependencies"]["smithay-client-toolkit"]["version"]
+          dependencies = manifest["workspace"]["dependencies"]
+          sctk = dependencies["smithay-client-toolkit"]["version"]
+          msrv = manifest["workspace"]["package"]["rust-version"]
           architecture = Path("docs/architecture.md").read_text()
-          if not re.search(rf"SCTK {re.escape(version)}\b", architecture):
-              raise SystemExit(f"docs/architecture.md must identify SCTK {version}")
+          readme = Path("README.md").read_text()
+          contributing = Path("CONTRIBUTING.md").read_text()
+          if not re.search(rf"SCTK {re.escape(sctk)}\b", architecture):
+              raise SystemExit(f"docs/architecture.md must identify SCTK {sctk}")
+          if f"msrv-{msrv}" not in readme or not re.search(
+              rf"rust {re.escape(msrv)} or\s+newer", contributing
+          ):
+              raise SystemExit(f"README.md and CONTRIBUTING.md must identify MSRV {msrv}")
           PY
       - run: cargo check --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -76,15 +84,15 @@ jobs:
             crate_version="$(cargo metadata --no-deps --format-version 1 | jq -re ".packages[] | select(.name==\"$crate\") | .version")"
             test "$crate_version" = "$VERSION"
           done
-          test "$VERSION" = "0.8.1"
-          grep -q "## \[0.8.1\]" CHANGELOG.md
+          test "$VERSION" = "0.8.2"
+          grep -q "## \[0.8.2\]" CHANGELOG.md
 
   msrv:
-    name: MSRV (1.88)
+    name: MSRV (1.90)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
+      - uses: dtolnay/rust-toolchain@1.90
         with:
           components: rustfmt, clippy
       - name: Install system dependencies

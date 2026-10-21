@@ -3,7 +3,7 @@ members = ["wallr", "wallr-common", "wallr-core"]
 resolver = "3"
 
 [workspace.package]
-version = "0.8.1"
+version = "0.8.2"
 edition = "2024"
 authors = ["Wallr Contributors"]
 license = "MIT"
@@ -11,7 +11,7 @@ repository = "https://github.com/programmersd21/wallr"
 description = "The wallpaper engine for Wayland - GPU transitions, video wallpapers, and theme pipeline integration."
 categories = ["command-line-utilities", "rendering"]
 keywords = ["wallpaper", "wayland", "wgpu", "daemon", "matugen"]
-rust-version = "1.88"
+rust-version = "1.90"
 
 # Optimized profile settings for faster compilation and better runtime performance
 [profile.dev]
@@ -38,8 +38,8 @@ strip = false
 opt-level = 2 # Optimize dependencies even in dev mode
 
 [workspace.dependencies]
-wallr-common = { path = "wallr-common", version = "0.8.1" }
-wallr-core = { path = "wallr-core", version = "0.8.1" }
+wallr-common = { path = "wallr-common", version = "0.8.2" }
+wallr-core = { path = "wallr-core", version = "0.8.2" }
 
 # Core utilities
 anyhow = "1"

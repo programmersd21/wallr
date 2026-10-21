@@ -1,19 +1,24 @@
-# Compositor support
+# compositor support
 
-Wallr requires `wlr-layer-shell`.
+wallr needs a wayland compositor that supports `wlr-layer-shell`.
 
-| Compositor | Support |
-|---|---|
-| Hyprland | Yes |
-| Sway | Yes |
-| i3 on Wayland/Sway-compatible compositor | Yes |
-| MangoWM | Yes |
-| niri | Yes, with the rule below |
-| KDE Plasma Wayland | Yes where layer-shell is enabled |
-| GNOME/Mutter | No |
+| compositor | notes |
+|:--|:--|
+| hyprland | supported |
+| sway | supported |
+| niri | supported; see the rule below |
+| mangowm | supported |
+| kde plasma wayland | supported when layer-shell is available |
+| gnome/mutter | unsupported; it does not provide the required protocol |
 
-The wallpaper layer namespace is `wallr`:
+On niri, place the wallpaper layer behind the desktop:
 
 ```kdl
-layer-rule { match namespace="^wallr$" place-within-backdrop true }
+layer-rule {
+    match namespace="^wallr$"
+    place-within-backdrop true
+}
 ```
+
+Compositor behavior can vary by version. Include the compositor version and
+`wallr doctor` output when reporting a problem.

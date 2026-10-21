@@ -1,7 +1,7 @@
 #![recursion_limit = "256"]
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use colored::Colorize;
 use tracing_subscriber::EnvFilter;
 use wallr_common::cli::{Commands, ConfigCommands, EffectArgs, IpcCommands, WallrCli};
@@ -153,18 +153,83 @@ fn stage_stdin(bytes: &[u8], extension: &str) -> anyhow::Result<std::path::PathB
     }
 }
 
+fn daemon_command(
+    config_path: Option<&std::path::Path>,
+    max_fps: Option<u32>,
+    verbose: u8,
+    quiet: bool,
+) -> anyhow::Result<std::process::Command> {
+    let daemon = std::env::current_exe()?.with_file_name("wallr-daemon");
+    let mut command = std::process::Command::new(daemon);
+    if let Some(path) = config_path {
+        command.arg("--config").arg(path);
+    }
+    if let Some(fps) = max_fps {
+        command.arg("--max-fps").arg(fps.to_string());
+    }
+    if verbose > 0 {
+        command.arg(format!("-{}", "v".repeat(usize::from(verbose))));
+    }
+    if quiet {
+        command.arg("--quiet");
+    }
+    Ok(command)
+}
+
+fn help_command(command: clap::Command) -> clap::Command {
+    command
+        .help_template(
+            "{before-help}{name}\n{about-with-newline}\nusage:\n  {usage}\n\narguments:\n{positionals}\noptions:\n{options}{after-help}",
+        )
+        .disable_help_flag(true)
+        .mut_args(|arg| {
+            if arg.get_id() == "help" {
+                arg.help("show help")
+            } else {
+                arg
+            }
+        })
+        .mut_subcommands(help_command)
+}
+
+fn parse_cli() -> WallrCli {
+    let matches = help_command(WallrCli::command()).get_matches();
+    WallrCli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+}
+
 // All decoding, rendering, and filesystem work is dispatched through
 // `spawn_blocking`; a current-thread scheduler avoids keeping one idle async
 // worker per CPU in the long-lived daemon and keeps the IPC-only CLI light.
 fn main() {
-    let cli = WallrCli::parse();
-    let result = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .max_blocking_threads(4)
-        .build()
-    {
-        Ok(runtime) => runtime.block_on(async_main(cli)),
-        Err(error) => Err(error.into()),
+    let cli = parse_cli();
+    let result = if matches!(
+        &cli.command,
+        Commands::Config {
+            subcommand: ConfigCommands::Path
+        }
+    ) {
+        let path = cli.config.clone().unwrap_or_else(config::config_path);
+        println!("{}", path.display().to_string().cyan());
+        return;
+    } else if let Commands::Daemon { max_fps } = &cli.command {
+        daemon_command(cli.config.as_deref(), *max_fps, cli.verbose, cli.quiet)
+            .and_then(|mut command| command.status().map_err(Into::into))
+            .and_then(|status| {
+                if status.success() {
+                    Ok(())
+                } else {
+                    anyhow::bail!("wallr-daemon exited with {status}")
+                }
+            })
+    } else {
+        match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(4)
+            .build()
+        {
+            Ok(runtime) => runtime.block_on(async_main(cli)),
+            Err(error) => Err(error.into()),
+        }
     };
     if let Err(error) = result {
         eprintln!("{} {}", "error:".red().bold(), error);
@@ -173,10 +238,12 @@ fn main() {
 }
 
 async fn async_main(cli: WallrCli) -> Result<()> {
-    let filter = if cli.verbose > 0 {
-        "wallr=debug"
-    } else if cli.quiet {
+    let filter = if cli.quiet {
         "wallr=error"
+    } else if cli.verbose > 1 {
+        "wallr=trace"
+    } else if cli.verbose == 1 {
+        "wallr=debug"
     } else {
         "wallr=off"
     };
@@ -228,13 +295,7 @@ async fn async_main(cli: WallrCli) -> Result<()> {
                          start it with `wallr daemon`"
                     );
                 }
-                let exe = std::env::current_exe()?;
-                let mut daemon_command = std::process::Command::new(&exe);
-                if let Some(path) = &config_path_owned {
-                    daemon_command.arg("--config").arg(path);
-                }
-                daemon_command.arg("daemon");
-                let _ = daemon_command
+                let _ = daemon_command(config_path_owned.as_deref(), None, 0, false)?
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
@@ -323,7 +384,8 @@ async fn async_main(cli: WallrCli) -> Result<()> {
 
         Commands::Config { subcommand } => match subcommand {
             ConfigCommands::Path => {
-                println!("{}", config::config_path().display().to_string().cyan());
+                let path = config_path_owned.unwrap_or_else(config::config_path);
+                println!("{}", path.display().to_string().cyan());
             }
             ConfigCommands::Get { key } => {
                 let yaml = serde_yaml::to_string(&config)?;
@@ -402,16 +464,13 @@ async fn async_main(cli: WallrCli) -> Result<()> {
         }
 
         Commands::Daemon { max_fps } => {
-            let daemon = std::env::current_exe()?.with_file_name("wallr-daemon");
-            let mut command = std::process::Command::new(daemon);
-            if let Some(path) = config_path_owned {
-                command.arg("--config").arg(path);
-            }
-            command.arg("daemon");
-            if let Some(fps) = max_fps {
-                command.arg("--max-fps").arg(fps.to_string());
-            }
-            let status = command.status()?;
+            let status = daemon_command(
+                config_path_owned.as_deref(),
+                max_fps,
+                cli.verbose,
+                cli.quiet,
+            )?
+            .status()?;
             if !status.success() {
                 anyhow::bail!("wallr-daemon exited with {status}");
             }

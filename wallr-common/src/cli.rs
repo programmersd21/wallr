@@ -7,48 +7,48 @@ use std::path::PathBuf;
 /// transition options for wallpaper changes.
 #[derive(Args, Debug, Clone, Default)]
 pub struct EffectArgs {
-    /// Transition effect: fade, wipe, slide, wave, grow, outer (plus aliases:
+    /// transition effect: fade, wipe, slide, wave, grow, outer (plus aliases:
     /// simple, left, right, top, bottom, center, any, random)
     #[arg(short = 'e', long, value_name = "name", value_parser = parse_effect_name)]
     pub effect: Option<String>,
 
-    /// Transition duration (e.g. 700ms, 1s, 1.2s)
+    /// transition duration (e.g. 700ms, 1s, 1.2s)
     #[arg(short = 'd', long, value_name = "time")]
     pub duration: Option<String>,
 
-    /// Effect origin: preset (top_left, top, top_right, left, center, right, bottom_left, bottom, bottom_right) or "x,y" (0..1)
+    /// effect origin: preset (top_left, top, top_right, left, center, right, bottom_left, bottom, bottom_right) or "x,y" (0..1)
     #[arg(short = 'o', long, value_name = "preset|x,y")]
     pub origin: Option<String>,
 
-    /// Angle for wipe/slide in degrees (0 = right-to-left, 90 = top-to-bottom, 270 = bottom-to-top)
+    /// angle for wipe/slide in degrees (0 = right-to-left, 90 = top-to-bottom, 270 = bottom-to-top)
     #[arg(short = 'a', long, value_name = "deg")]
     pub angle: Option<f32>,
 
-    /// Direction vector "x,y" (e.g. "1,0" or "-1,0")
+    /// direction vector "x,y" (e.g. "1,0" or "-1,0")
     #[arg(long, value_name = "x,y")]
     pub direction: Option<String>,
 
-    /// Easing curve: linear, ease_in, ease_out, ease_in_out, bezier
-    #[arg(long, value_enum)]
+    /// easing curve: linear, ease_in, ease_out, ease_in_out, bezier
+    #[arg(long, value_enum, value_name = "curve", hide_possible_values = true)]
     pub easing: Option<crate::effect::Easing>,
 
-    /// Initial parameter value (fade opacity)
+    /// initial parameter value (fade opacity)
     #[arg(long, value_name = "val")]
     pub from: Option<f32>,
 
-    /// Target parameter value (fade opacity)
+    /// target parameter value (fade opacity)
     #[arg(long, value_name = "val")]
     pub to: Option<f32>,
 
-    /// Wave frequency in Hz
+    /// wave frequency in hz
     #[arg(long, value_name = "hz")]
     pub frequency: Option<f32>,
 
-    /// Wave amplitude
+    /// wave amplitude
     #[arg(long, value_name = "val")]
     pub amplitude: Option<f32>,
 
-    /// Wipe feather softness (0.01 - 0.5)
+    /// wipe feather softness (0.01 - 0.5)
     #[arg(long, value_name = "val")]
     pub softness: Option<f32>,
 }
@@ -87,7 +87,7 @@ impl EffectArgs {
     }
 }
 
-/// Validate `--effect`. Aliases (left, right, top, bottom, center, any,
+/// validate `--effect`. Aliases (left, right, top, bottom, center, any,
 /// random, simple) resolve through the real parser; the error message shows
 /// only the six canonical transitions.
 fn parse_effect_name(s: &str) -> Result<String, String> {
@@ -102,7 +102,7 @@ fn parse_effect_name(s: &str) -> Result<String, String> {
     }
 }
 
-/// Parse "x,y" into a normalized origin, or None if it's not numeric.
+/// parse "x,y" into a normalized origin, or none if it's not numeric.
 fn parse_origin(s: &str) -> Option<(f32, f32)> {
     let mut parts = s.split(',');
     let x = parts.next()?.trim().parse::<f32>().ok()?;
@@ -110,7 +110,7 @@ fn parse_origin(s: &str) -> Option<(f32, f32)> {
     Some((x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)))
 }
 
-/// Parse "x,y" into a direction vector.
+/// parse "x,y" into a direction vector.
 fn parse_vec2(s: &str) -> Option<[f32; 2]> {
     let mut parts = s.split(',');
     let x = parts.next()?.trim().parse::<f32>().ok()?;
@@ -118,9 +118,9 @@ fn parse_vec2(s: &str) -> Option<[f32; 2]> {
     Some([x, y])
 }
 
-/// Parse an IPC seek timestamp into milliseconds.
+/// parse an ipc seek timestamp into milliseconds.
 ///
-/// Accepts `SS`, `MM:SS`, or `HH:MM:SS` with optional fractional seconds for
+/// accepts `SS`, `MM:SS`, or `HH:MM:SS` with optional fractional seconds for
 /// the bare-seconds form. Rejects non-finite, negative, and overflowing input
 /// instead of saturating or wrapping through a cast.
 pub fn parse_timestamp_ms(timestamp: &str) -> Result<u64, String> {
@@ -183,7 +183,9 @@ pub fn parse_timestamp_ms(timestamp: &str) -> Result<u64, String> {
     version,
     override_usage = "wallr [options] <command>",
     disable_help_subcommand = true,
+    disable_help_flag = true,
     disable_version_flag = true,
+    next_help_heading = "options",
     help_template = "{before-help}{name} {version}\n\n{about}\n\nusage:\n  {usage}\n\ncommands:\n{subcommands}\n\noptions:\n{options}{after-help}",
     styles = Styles::styled()
         .header(AnsiColor::Cyan.on_default().bold())
@@ -207,6 +209,51 @@ pub struct WallrCli {
     #[arg(global = true, short = 'q', long)]
     pub quiet: bool,
 
+    /// show help
+    #[arg(global = true, short = 'h', long, action = ArgAction::Help)]
+    pub help: Option<bool>,
+
+    /// show version
+    #[arg(short = 'V', long, action = ArgAction::Version)]
+    pub version: Option<bool>,
+}
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "wallr-daemon",
+    about = "wayland rendering service for wallr",
+    version,
+    disable_help_flag = true,
+    disable_version_flag = true,
+    next_help_heading = "options",
+    help_template = "{before-help}{name} {version}\n\n{about}\n\nusage:\n  {usage}\n\noptions:\n{options}{after-help}",
+    styles = Styles::styled()
+        .header(AnsiColor::Cyan.on_default().bold())
+        .usage(AnsiColor::Blue.on_default().bold())
+        .literal(AnsiColor::Green.on_default().bold())
+        .placeholder(AnsiColor::Yellow.on_default())
+)]
+pub struct WallrDaemonCli {
+    /// configuration file path
+    #[arg(short = 'c', long, value_name = "path")]
+    pub config: Option<PathBuf>,
+
+    /// cap animated wallpaper rendering (1..=240 fps)
+    #[arg(long, value_name = "fps", value_parser = clap::value_parser!(u32).range(1..=240))]
+    pub max_fps: Option<u32>,
+
+    /// show daemon diagnostics (-v, -vv)
+    #[arg(short = 'v', long, action = ArgAction::Count)]
+    pub verbose: u8,
+
+    /// show errors only
+    #[arg(short = 'q', long)]
+    pub quiet: bool,
+
+    /// show help
+    #[arg(global = true, short = 'h', long, action = ArgAction::Help)]
+    pub help: Option<bool>,
+
     /// show version
     #[arg(short = 'V', long, action = ArgAction::Version)]
     pub version: Option<bool>,
@@ -226,7 +273,7 @@ pub enum Commands {
         monitor: Option<String>,
 
         /// scaling mode: fill, fit, stretch, center, tile
-        #[arg(long, value_enum)]
+        #[arg(long, value_enum, value_name = "mode", hide_possible_values = true)]
         mode: Option<ScalingMode>,
 
         /// disable theme extraction
@@ -234,14 +281,20 @@ pub enum Commands {
         no_theme: bool,
 
         /// cap video presentation rate (1..=240 fps)
-        #[arg(long, value_name = "fps")]
+        #[arg(long, value_name = "fps", value_parser = clap::value_parser!(u32).range(1..=240))]
         fps: Option<u32>,
 
         /// override theme engine (matugen, wallust, pywal)
-        #[arg(short = 't', long, value_enum)]
+        #[arg(
+            short = 't',
+            long,
+            value_enum,
+            value_name = "provider",
+            hide_possible_values = true
+        )]
         theme: Option<ThemeProvider>,
 
-        /// Transition overrides
+        /// transition overrides
         #[command(flatten)]
         effect_args: EffectArgs,
     },
@@ -267,7 +320,7 @@ pub enum Commands {
     /// run background daemon
     Daemon {
         /// max render fps limit
-        #[arg(long, value_name = "fps")]
+        #[arg(long, value_name = "fps", value_parser = clap::value_parser!(u32).range(1..=240))]
         max_fps: Option<u32>,
     },
 
@@ -362,7 +415,44 @@ pub enum IpcCommands {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_timestamp_ms;
+    use super::{WallrCli, WallrDaemonCli, parse_timestamp_ms};
+    use clap::Parser;
+
+    #[test]
+    fn daemon_cli_has_a_direct_service_interface() {
+        let cli = WallrDaemonCli::try_parse_from([
+            "wallr-daemon",
+            "--config",
+            "wallr.yaml",
+            "--max-fps",
+            "60",
+            "-vv",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.config.as_deref().unwrap(),
+            std::path::Path::new("wallr.yaml")
+        );
+        assert_eq!(cli.max_fps, Some(60));
+        assert_eq!(cli.verbose, 2);
+        assert!(WallrDaemonCli::try_parse_from(["wallr-daemon", "daemon"]).is_err());
+    }
+
+    #[test]
+    fn daemon_cli_rejects_invalid_fps_limits() {
+        for fps in ["0", "241"] {
+            assert!(WallrDaemonCli::try_parse_from(["wallr-daemon", "--max-fps", fps]).is_err());
+        }
+    }
+
+    #[test]
+    fn wallpaper_cli_rejects_invalid_fps_limits() {
+        for fps in ["0", "241"] {
+            assert!(
+                WallrCli::try_parse_from(["wallr", "set", "wallpaper.png", "--fps", fps]).is_err()
+            );
+        }
+    }
 
     #[test]
     fn parses_seek_timestamps() {

@@ -1,17 +1,55 @@
-# Configuration reference
+# configuration
 
-Configuration is YAML, read from `~/.config/wallr/config.yaml` with command-line overrides on top.
+wallr reads `~/.config/wallr/config.yaml` by default. Pass `--config <path>`
+to use another file. Missing fields use these defaults:
 
 ```yaml
-wallpaper: {default: ~/Pictures/Wallpapers, mode: fill, monitors: [], loop_video: true, mute: true}
-theme: {provider: matugen}
-matugen: {enabled: true, mode: dark, scheme: scheme-tonal-spot, contrast: 0, wait: true, args: []}
-video: {hw_decode: auto, preferred_gpu: auto, preload_frames: 2}
-hooks: {before: [], after: [], error: []}
+wallpaper:
+  default: null
+  mode: fill
+  monitors: []
+  loop_video: true
+  mute: true
+
+theme:
+  provider: matugen
+
+matugen:
+  enabled: true
+  mode: dark
+  scheme: scheme-tonal-spot
+  contrast: 0
+  wait: true
+  args: []
+
+hooks:
+  before: []
+  after: []
+  error: []
+
 reload: []
-daemon: {auto_start: true, socket: "$XDG_RUNTIME_DIR/wallr.sock", max_fps: 60}
+
+daemon:
+  auto_start: true
+  socket: "$XDG_RUNTIME_DIR/wallr.sock"
+  max_fps: 60
+
+video:
+  hw_decode: auto
+  preferred_gpu: auto
+  preload_frames: 2
 ```
 
-`wallpaper.mode` accepts: `fill` (cover, default), `fit` (contain with letterbox), `stretch`, `center` (1:1), or `tile` (repeat).
+`wallpaper.mode` accepts `fill`, `fit`, `stretch`, `center`, or `tile`.
+`wallpaper.monitors` contains entries with a required `name` and optional
+`file`. Theme providers are `none`, `matugen`, `wallust`, and `pywal`.
 
-`video.preload_frames` is clamped to 1..=3 live (values above 64 are rejected on reload); `daemon.max_fps` accepts 1..=240 (`null`/`0` disables the cap). `wallr reload` re-reads the config from disk, validates it, and live-applies `hw_decode`/`preload_frames`/`max_fps` without rebuilding GPU state; an invalid config is rejected and the previous valid configuration is kept.
+`daemon.max_fps` accepts 1 through 240; `null` or `0` disables the cap.
+`video.hw_decode` accepts `auto`, `nvdec`, `vaapi`, or `software`.
+`video.preferred_gpu` accepts `auto`, `integrated`, `discrete`, or an adapter
+name. `video.preload_frames` is limited to 1 through 3 during playback.
+
+Use `wallr config get <key>` and `wallr config set <key> <value>` to inspect
+or change a setting. `wallr reload` validates the file before applying
+supported live settings; invalid changes leave the current configuration in
+place.

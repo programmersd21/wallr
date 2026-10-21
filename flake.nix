@@ -22,7 +22,7 @@
         packages = {
           wallr = pkgs.rustPlatform.buildRustPackage {
             pname = "wallr";
-            version = "0.3.4";
+            version = "0.8.2";
             src = self;
 
             cargoLock.lockFile = ./Cargo.lock;

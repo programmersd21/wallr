@@ -5,6 +5,35 @@ All notable changes to Wallr are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.8.2] - 2026-10-21
+
+### Changed
+
+- raised the minimum supported rust version to 1.90 and updated shader
+  validation to naga 30, matching wgpu.
+- `wallr-daemon` now has direct options and its own help screen. `wallr daemon`
+  remains available and starts it as a foreground service.
+- wallpaper auto-start launches `wallr-daemon` directly.
+- cli, configuration, video, benchmark, and architecture documentation has
+  been shortened and updated to match the current commands and behavior.
+
+### Performance
+
+- `wallr config path` prints the selected path without loading configuration or
+  creating an async runtime.
+- daemon help and version requests are parsed before the runtime is created.
+- the daemon blocking worker pool is capped at four threads to bound transient
+  work under command bursts.
+
+### Fixed
+
+- `--max-fps` now rejects values outside the supported 1 to 240 range in both
+  daemon command forms.
+- `wallr set --fps` now validates the same 1 to 240 range before sending a
+  wallpaper request.
+- the release FFmpeg cache key no longer changes with unrelated workflow edits.
+- the wallpaper benchmark now starts the daemon with its current cli.
+
 ## [0.8.1] - 2026-10-20
 
 ### Fixed

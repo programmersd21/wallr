@@ -1,9 +1,23 @@
-# Cookbook
+# examples
 
-1. Soft crossfade: `wallr set ~/Pictures/wallpaper.png -e fade -d 800ms`.
-2. Circular wipe from a corner: `wallr set ~/Pictures/wallpaper.png -e grow -o bottom_right -d 850ms`.
-3. Angled wipe: `wallr set ~/Pictures/wallpaper.png -e wipe -a 45 -d 800ms`.
-4. Bezier pacing on any effect: add `--easing bezier`.
-5. Instant switch for scripts: `wallr set ~/Pictures/wallpaper.png --duration 0 --no-theme`.
-6. Per-output wallpapers: add `-m DP-1` / `-m HDMI-A-1`.
-7. Pause all motion: `wallr ipc pause`; resume with `wallr ipc resume`.
+```sh
+# switch immediately
+wallr set ~/Pictures/wallpaper.png --duration 0 --no-theme
+
+# transition from a corner
+wallr set ~/Pictures/wallpaper.png -e grow -o bottom_right -d 850ms
+
+# angled wipe
+wallr set ~/Pictures/wallpaper.png -e wipe -a 45 -d 800ms
+
+# target one output
+wallr set ~/Pictures/wallpaper.png --monitor DP-1
+
+# control live playback
+wallr ipc pause
+wallr ipc resume
+wallr ipc seek 1:30
+wallr ipc info
+```
+
+See the [cli reference](cli-reference.md) for all commands and options.

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Tag name for release (e.g. v0.8.1)'
+        description: 'Tag name for release (e.g. v0.8.2)'
         required: true
         type: string
 
@@ -16,6 +16,7 @@ permissions:
 
 env:
   VCPKG_COMMIT: 45f9f39362a4c52e2b1fbe57b7e649db7f3d96d4
+  VCPKG_CACHE_REVISION: ffmpeg-nvcodec-static-v1
 
 jobs:
   build-release:
@@ -80,7 +81,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-cache
-          key: wallr-vcpkg-archives-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('.github/vcpkg-triplets/**', '.github/workflows/release.yml') }}
+          key: wallr-vcpkg-archives-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ env.VCPKG_CACHE_REVISION }}-${{ hashFiles('.github/vcpkg-triplets/**') }}
           restore-keys: |
             wallr-vcpkg-archives-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-
             wallr-vcpkg-archives-${{ runner.os }}-
@@ -124,7 +125,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/.vcpkg-cache
-          key: wallr-vcpkg-archives-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('.github/vcpkg-triplets/**', '.github/workflows/release.yml') }}
+          key: wallr-vcpkg-archives-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ env.VCPKG_CACHE_REVISION }}-${{ hashFiles('.github/vcpkg-triplets/**') }}
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
@@ -155,7 +156,7 @@ jobs:
           MEDIA_PREFIX: /opt/vcpkg/installed/x64-linux-static
           PKG_CONFIG_PATH: /opt/vcpkg/installed/x64-linux-static/lib/pkgconfig
           PKG_CONFIG_ALL_STATIC: "1"
-        run: cargo build --release --bins --features static-ffmpeg
+        run: cargo build --release --bins --locked --features static-ffmpeg
 
       - name: Verify static FFmpeg hardware support
         env:

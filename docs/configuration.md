@@ -1,5 +1,8 @@
-# Configuration
+# configuration
 
-See [config-reference.md](config-reference.md). Matugen's default integration waits for `matugen image` before reload commands; use `--no-theme` when Matugen calls Wallr.
+See the [configuration reference](config-reference.md) for settings and
+defaults. Use `wallr config path` to print the active file path or
+`wallr config get <key>` to inspect a value.
 
-Invocation overrides include `--theme <matugen|wallust|pywal|none>`, which replaces `theme.provider` for a single `wallr set` / `wallr img` call (see [matugen-integration.md](matugen-integration.md#forcing-matugen-per-invocation)).
+Choose a theme provider for one wallpaper with
+`wallr set <path> --theme <provider>`. Use `--no-theme` to skip theme work.

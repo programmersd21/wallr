@@ -1,117 +1,95 @@
-# CLI Reference
+# cli reference
 
-`wallr` is controlled via subcommands and ergonomic flags.
+`wallr` is the client. `wallr-daemon` is the wayland service. Both binaries
+are installed by `cargo install wallr` and included in release archives.
 
-Release builds contain a lightweight `wallr` IPC client and a separate
-`wallr-daemon` renderer. `wallr daemon` starts the matching daemon binary
-automatically.
-
-```text
-wallr set <path> [-e <effect>] [-d <duration>] [-o <origin>] [-a <angle>] [-m <output>] [-t <theme>] [--mode <mode>]
-wallr daemon [--max-fps <fps>]
-wallr reload
-wallr quit
-wallr doctor
-wallr config <get|set|path>
-wallr monitor <list|current>
-wallr ipc <pause|resume|reload|status|info|stop|seek|blank|restore>
+```sh
+wallr --help
+wallr set --help
+wallr-daemon --help
 ```
 
-Interactive status output uses lowercase labels and terminal colors. Configuration
-values, YAML, and paths remain unchanged so command output stays safe to script.
+Help is colored in interactive terminals. Command descriptions and status
+labels use lowercase text; paths and configuration values keep their spelling.
 
----
+## client commands
 
-## Wallpaper Commands
+| command | purpose |
+|:--|:--|
+| `wallr set <path>` | set an image, gif, or video wallpaper |
+| `wallr doctor` | check the session and available providers |
+| `wallr config get <key>` | read a configuration value |
+| `wallr config set <key> <value>` | update a configuration value |
+| `wallr config path` | print the active configuration path |
+| `wallr reload` | reload configuration and run reload commands |
+| `wallr monitor list` | list connected outputs |
+| `wallr monitor current` | show the focused output |
+| `wallr ipc <command>` | control playback or query daemon state |
+| `wallr quit` | stop the daemon |
+| `wallr daemon` | start the daemon in the foreground |
 
-### `wallr set <path>` (alias: `wallr img`)
-Sets the wallpaper for your desktop. Automatically launches the background daemon if not already running.
+Client options:
 
-```bash
-# Basic wallpaper set (2s linear crossfade, like awww `simple`)
-wallr set ~/Pictures/wallpaper.png
+| option | purpose |
+|:--|:--|
+| `-c, --config <path>` | use a configuration file |
+| `-v`, `-vv` | show debug or trace logging |
+| `-q, --quiet` | suppress non-error output |
+| `-h, --help` | show help |
+| `-V, --version` | show the version |
 
-# Transition effects with short flags
-wallr set ~/Pictures/wallpaper.png -e grow -o center -d 850ms
-wallr set ~/Pictures/wallpaper.png -e wipe -a 45 -d 800ms
-wallr set ~/Pictures/wallpaper.png -e wave -d 900ms
+## setting a wallpaper
 
-# Instant switch, no transition or theming (fastest path)
-wallr set ~/Pictures/wallpaper.png --duration 0 --no-theme
-
-# Pipe image bytes from stdin (staged to a temp file automatically)
-grim - | wallr set - --duration 0 --no-theme
-
-# Target specific output and scaling mode
-wallr set ~/Pictures/wallpaper.png -m DP-1 --mode fit
-
-# Force dynamic theming (Matugen, Wallust, Pywal) or disable
-wallr set ~/Pictures/wallpaper.png -t matugen
-wallr set ~/Pictures/wallpaper.png --no-theme
-
-# Cap video presentation work for this wallpaper
-wallr set ~/Videos/ambient.mkv --fps 30
+```sh
+wallr set <path> [options]
 ```
 
-#### Flags
-| Flag | Long | Description |
-|---|---|---|
-| `-e` | `--effect <NAME>` | Transition: `fade`, `wipe`, `slide`, `wave`, `grow`, `outer` (plus aliases `simple`, `left`, `right`, `top`, `bottom`, `center`, `any`, `random`; see [effects](effects-reference.md)) |
-| `-d` | `--duration <TIME>` | Wall-clock duration (`700ms`, `1s`, `1.2s`) |
-| `-o` | `--origin <PRESET\|X,Y>` | Origin: `top_left`, `top`, `top_right`, `left`, `center`, `right`, `bottom_left`, `bottom`, `bottom_right`, or normalized `x,y` |
-| `-a` | `--angle <DEG>` | Wipe sweep angle: `0` = right-to-left, `90` = top-to-bottom, `270` = bottom-to-top (slide uses `--direction`) |
-| `-m` | `--monitor <OUTPUT>` | Target output (e.g. `DP-1`, `HDMI-A-1`) |
-| `-t` | `--theme <PROVIDER>` | One-shot theme generator: `matugen`, `wallust`, `pywal`, `none` |
-| | `--mode <MODE>` | Scaling mode: `fill`, `fit`, `stretch`, `center`, `tile` (default: `fill`) |
-| | `--fps <FPS>` | Maximum video presentation rate for this wallpaper (`1` to `240`) |
-| | `--easing <CURVE>` | Easing curve: `linear`, `ease_in`, `ease_out`, `ease_in_out`, `bezier` |
-| | `--direction <X,Y>` | Direction vector for `wipe` and `slide` (e.g. `1,0`) |
-| | `--from <VAL>`, `--to <VAL>` | Fade opacity range (default `0` to `1`) |
-| | `--frequency <HZ>`, `--amplitude <VAL>` | Wave density and height |
-| | `--softness <VAL>` | Wipe edge feather (`0.01` to `0.5`) |
+| option | purpose |
+|:--|:--|
+| `-m, --monitor <output>` | target one output |
+| `--mode <mode>` | choose `fill`, `fit`, `stretch`, `center`, or `tile` |
+| `--fps <fps>` | cap video presentation at 1 to 240 fps |
+| `-t, --theme <provider>` | choose `matugen`, `wallust`, `pywal`, or `none` |
+| `--no-theme` | skip theme generation |
+| `-e, --effect <name>` | choose a transition |
+| `-d, --duration <time>` | set its duration, such as `700ms` or `1.2s` |
+| `-o, --origin <point>` | choose a preset or normalized `x,y` point |
+| `-a, --angle <degrees>` | set the wipe angle |
+| `--direction <x,y>` | set a wipe or slide direction |
+| `--easing <curve>` | choose the transition curve |
+| `--from`, `--to` | set fade endpoints |
+| `--frequency`, `--amplitude` | set wave parameters |
+| `--softness <value>` | set wipe-edge softness |
 
----
+Use `-` as the path to read an image from standard input. Input is limited to
+256 MiB. See the [transition reference](effects-reference.md) for effect names
+and behavior.
 
-## Daemon
+## daemon
 
-### `wallr daemon`
-Starts the persistent Wayland layer-shell daemon.
-```bash
-wallr daemon
-wallr daemon --max-fps 120
+`wallr daemon` starts `wallr-daemon` and waits for it to exit. For direct use:
+
+```sh
+wallr-daemon [-c <path>] [--max-fps <fps>] [-v | -vv] [-q]
 ```
 
-### `wallr reload`
-Re-reads configuration from disk and live-applies settings (`max_fps`, `hw_decode`, etc.) without restarting the daemon.
+`--max-fps` accepts 1 to 240. `-v` enables debug logs; `-vv` enables trace
+logs. Without verbosity, the daemon is quiet. `--quiet` limits output to
+errors. `-c, --config` selects a configuration file; `-h, --help` and
+`-V, --version` show daemon help and version. `wallr set` starts it when
+`daemon.auto_start` is enabled.
 
-### `wallr quit`
-Gracefully shuts down the running daemon and removes the Unix socket.
+## ipc
 
----
+| command | purpose |
+|:--|:--|
+| `pause` / `resume` | pause or resume gif and video playback |
+| `seek <time>` | seek to seconds, `mm:ss`, or `hh:mm:ss` |
+| `status` | show daemon state |
+| `info` | show gpu, decoder, and output details |
+| `reload` | reload the running daemon |
+| `blank` / `restore` | blank an output or restore its wallpaper |
+| `stop` | stop the daemon |
 
-## Utilities
-
-### `wallr doctor`
-Runs environment checks (Wayland socket, layer-shell support, theme binary availability, and loop risks).
-
-### `wallr monitor <list|current>`
-Queries connected Wayland outputs and current display dimensions.
-
-### `wallr config <get|set|path>`
-Reads or edits the YAML config file.
-
----
-
-## IPC controls
-
-`wallr ipc <subcommand>` talks to the running daemon directly:
-
-| Subcommand | Purpose |
-|---|---|
-| `pause` / `resume` | Pause or resume video/GIF playback (`-m` for one output) |
-| `reload` | Same as `wallr reload` |
-| `status` | Daemon state (`running` / `paused`) |
-| `info` | GPU, decoder state, dropped video frames, and per-output details |
-| `stop` | Same as `wallr quit` |
-| `seek <ts>` | Seek video (`HH:MM:SS` or seconds) |
-| `blank` / `restore` | Blank an output to black / restore its wallpaper |
+Use `--monitor <output>` on playback commands to target one output. Without
+it, supported playback commands apply to all outputs.

@@ -1,30 +1,23 @@
-# Benchmarks
+# benchmarks
 
-Wallr has two benchmark paths:
-
-```sh
-./scripts/benchmark-wallpapers.sh
-./scripts/benchmark-video.sh assets/demo.mkv
-```
-
-The wallpaper benchmark compares switching requests with awww in a live
-Wayland session. It measures daemon memory, CPU snapshots, and command
-latency. The video benchmark measures decoder throughput and reports whether
-the requested backend produced hardware frames.
-
-The video benchmark drives `wallr-core`'s `video_probe` example, which decodes
-a file for a few seconds and prints the backend and decoder state it actually
-achieved:
+The scripts cover separate workloads:
 
 ```sh
-cargo run --release -p wallr-core --example video_probe -- assets/demo.mkv nvdec
+./scripts/benchmark-wallpapers.sh [image ...]
+./scripts/benchmark-video.sh [video]
 ```
 
-`video_probe` exits non-zero when the decoder fails or the backend falls back,
-so it can gate a script or CI step on its exit status rather than parsing
-`result:`. It needs no Wayland session and no GPU.
+The wallpaper script needs a live wayland session, `hyperfine`, and awww. It
+starts the local release daemon on a separate socket and reports switching
+latency, daemon memory, and sampled cpu use. Set `WALLR_BIN` or
+`WALLR_DAEMON_BIN` to choose the local binaries. Set `BENCHMARK_REPORT` to
+choose the report path. The script changes the displayed wallpaper during the
+run and should be used in a test session.
 
-Results are machine-specific. They must include the compositor, GPU, driver,
-display configuration, input media, and Wallr version before being compared.
-Decoder throughput is not a substitute for end-to-end presentation or
-multi-monitor frame-time measurements.
+The video script runs `video_probe` with software, VAAPI, and NVDEC. It measures
+decoding, not compositor presentation, gpu rendering, or multi-monitor
+playback. Hardware results require a matching device and driver.
+
+Keep results with the host, compositor, gpu, driver, display layout, media,
+and software versions. Measurements from different machines are not directly
+comparable. One run does not establish a universal winner.
