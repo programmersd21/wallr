@@ -65,6 +65,8 @@
             pkgs.clippy
             pkgs.rustfmt
             llvmPackages.libclang
+            pkgs.nil
+            pkgs.nixd
           ];
 
           LIBCLANG_PATH = "${llvmPackages.libclang.lib}/lib";
