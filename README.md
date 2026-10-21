@@ -95,4 +95,3 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 ## license
 
 MIT. See [LICENSE](LICENSE).
-```
