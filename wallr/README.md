@@ -21,4 +21,3 @@ See the root [README.md](../README.md) and [docs/cli-reference.md](../docs/cli-r
 ## license
 
 MIT. See [LICENSE](../LICENSE).
-```
