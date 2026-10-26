@@ -2,6 +2,20 @@
 
 All notable changes to Wallr are documented here.
 
+## [0.8.4] - 2026-10-26
+
+### fixed
+
+- `WallpaperEngine::set_wallpaper` no longer runs blocking hook/theme work on
+  the async executor thread.
+- `WallpaperEngine::apply_wallpaper` no longer reports success while only
+  checking file existence; wallpaper state validation remains explicit.
+- GPU adapter enumeration is shared between detection and selection.
+
+### changed
+
+- Unsafe Wayland handle wrappers now document their lifetime invariants.
+
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
@@ -12,7 +26,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Added a Linux helper to build the pinned static FFmpeg toolchain used by
   release binaries.
 
-### Changed
+### changed
 
 - Both benchmark scripts support dynamic FFmpeg by default or static FFmpeg via
   `BENCHMARK_FFMPEG_LINKAGE=static`, and record the verified linkage. The
@@ -29,7 +43,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [0.8.2] - 2026-10-21
 
-### Changed
+### changed
 
 - raised the minimum supported rust version to 1.90 and updated shader
   validation to naga 30, matching wgpu.
@@ -79,7 +93,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
   lightweight IPC client, while `wallr-daemon` owns Wayland, wgpu, FFmpeg, and
   live-media resources.
 
-### Changed
+### changed
 
 - `wallr daemon` remains the public command and launches `wallr-daemon`, so
   existing user commands and configuration remain compatible.
@@ -125,7 +139,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
   of stale frames.
 - MSRV verification job and locked builds in CI.
 
-### Changed
+### changed
 
 - Interactive CLI and IPC status output now uses lowercase labels and consistent
   terminal colors while preserving exact config and path output for scripts.
@@ -164,7 +178,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Regression tests cover IPC ownership, theme cache identity, duration
   overflow, GIF timing, and video metadata bounds.
 
-### Changed
+### changed
 
 - Theme providers, hooks, reload commands, config reload, and post-render
   theme work now run on blocking workers instead of the Tokio runtime.
@@ -222,7 +236,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - `Daemon::new` accepts the same configuration; use `with_config_path` to
   preserve an explicit config path.
 
-### Changed
+### changed
 
 - MSRV bumped to 1.88; dependencies upgraded to latest compatible releases
   (wgpu 30, smithay-client-toolkit 0.21, dirs 7, sha2 0.11, gif 0.14, zstd 0.14).
@@ -251,7 +265,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
   exit before the actionable `error: software probe failed` line could be
   printed.
 
-### Changed
+### changed
 
 - The published `wallr-core` package now includes `examples/`, so the
   `video_probe` example is available to downstream `cargo add wallr-core`
@@ -293,7 +307,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [0.6.2] - 2026-09-24
 
-### Changed
+### changed
 
 - Hardware-decoder setup now negotiates FFmpeg's hardware pixel format before
   accepting a hardware decoder.
@@ -362,7 +376,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [0.6.1] - 2026-09-19
 
-### Changed
+### changed
 
 - Transition feel now follows awww: a new `bezier` easing implements
   awww's default cubic curve and is the default for every named effect.
@@ -400,7 +414,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - `wallr set -` reads image bytes from stdin, staged to a temp file.
 - Moved `naga` to dev-dependencies (WGSL validation in tests only).
 
-### Changed
+### changed
 
 - GIF decoding now snapshots the file to memory once per set; loop wraps
   re-decode from RAM instead of re-opening the file.
@@ -455,7 +469,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - Added the zero-duration static-image `wl_shm` fast path.
 - Added `WALLR_SOCKET` support for isolated daemon instances.
 
-### Changed
+### changed
 
 - Made GPU initialization genuinely lazy: static daemon startup now avoids
   adapter/device discovery, shader and pipeline creation, swapchain surfaces,

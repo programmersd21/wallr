@@ -112,12 +112,27 @@ impl WallpaperEngine {
         DiagnosticReport { checks }
     }
 
+    /// Asynchronous entry point. The engine keeps no Wayland state, so the
+    /// blocking hook/theme work is safe to run on a dedicated worker thread.
     pub async fn set_wallpaper(
-        &mut self,
+        &self,
         path: &Path,
         options: &SetOptions,
     ) -> Result<(), WallpaperError> {
-        self.set_wallpaper_blocking(path, options)
+        let config = self.config.clone();
+        let path = path.to_path_buf();
+        let options = options.clone();
+        match tokio::task::spawn_blocking(move || {
+            let mut engine = WallpaperEngine::new(config)?;
+            engine.set_wallpaper_blocking(&path, &options)
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(err) => Err(WallpaperError::Custom(format!(
+                "wallpaper task failed: {err}"
+            ))),
+        }
     }
 
     /// Synchronous implementation for callers that must run it on a blocking
@@ -160,10 +175,8 @@ impl WallpaperEngine {
                 path.display()
             )));
         }
-        info!(
-            "Applying wallpaper natively via Wayland layer-shell surface: {:?}",
-            path
-        );
+        // Rendering happens in the daemon before this engine runs; this step
+        // only validates that the source file still exists for theme/hooks.
         Ok(())
     }
 
@@ -177,5 +190,58 @@ impl WallpaperEngine {
         info!("Running reload commands...");
         theme::run_reload_list(&self.config.reload)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_rejects_missing_file() {
+        let engine = WallpaperEngine::new(WallrConfig::default()).unwrap();
+        let result = engine.apply_wallpaper(Path::new("/definitely/missing/wallpaper.png"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn set_wallpaper_blocking_rejects_missing_file() {
+        let mut engine = WallpaperEngine::new(WallrConfig::default()).unwrap();
+        let options = SetOptions {
+            no_theme: true,
+            theme_provider: None,
+            monitor: None,
+        };
+        let result =
+            engine.set_wallpaper_blocking(Path::new("/definitely/missing/wallpaper.png"), &options);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn set_wallpaper_blocking_accepts_existing_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("wall.png");
+        std::fs::write(&path, b"not a real image").unwrap();
+        let mut engine = WallpaperEngine::new(WallrConfig::default()).unwrap();
+        let options = SetOptions {
+            no_theme: true,
+            theme_provider: None,
+            monitor: None,
+        };
+        assert!(engine.set_wallpaper_blocking(&path, &options).is_ok());
+    }
+
+    #[tokio::test]
+    async fn set_wallpaper_async_rejects_missing_file() {
+        let engine = WallpaperEngine::new(WallrConfig::default()).unwrap();
+        let options = SetOptions {
+            no_theme: true,
+            theme_provider: None,
+            monitor: None,
+        };
+        let result = engine
+            .set_wallpaper(Path::new("/definitely/missing/wallpaper.png"), &options)
+            .await;
+        assert!(result.is_err());
     }
 }

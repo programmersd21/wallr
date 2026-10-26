@@ -61,10 +61,13 @@ struct WaylandWindow {
 
 // SAFETY: wgpu requires a Send + Sync handle for surface creation. These
 // pointers are only opaque identifiers passed to wgpu; Wallr never dereferences
-// them. The display connection remains owned by the daemon, and the surface's
-// cloned Wayland proxy remains in RenderState while the wgpu surface exists.
-// Output teardown cancels playback and waits for the render lock before
-// releasing that state. The handle is created and consumed synchronously.
+// them. The display pointer names the process-global Wayland `wl_display`
+// connection, which lives until process exit. The surface pointer names a
+// `wl_surface` whose proxy is cloned into `RenderState::shm_surface` and is not
+// destroyed until that state is dropped. Output teardown cancels playback,
+// waits for the render lock, and only then drops the layer surface, so no wgpu
+// surface outlives the underlying protocol object. The handle is constructed
+// and consumed synchronously on one blocking thread and is never retained.
 unsafe impl Send for WaylandWindow {}
 unsafe impl Sync for WaylandWindow {}
 
@@ -127,10 +130,14 @@ struct WaylandState {
 /// `spawn_blocking` task or an `Arc`-shared `RenderState`.
 ///
 /// SAFETY: the daemon's `Connection` (display) is held for the process
-/// lifetime, and each raw surface pointer is paired with a cloned
-/// `wl_surface::WlSurface` proxy in `RenderState`, so the protocol object
-/// cannot be destroyed while the pointer is in use. Output teardown waits for
-/// the render lock and stops playback before dropping that proxy.
+/// lifetime, so the display pointer stays valid. Each raw surface pointer is
+/// paired with a cloned `wl_surface::WlSurface` proxy stored in the same
+/// `RenderState`; that proxy keeps the protocol object alive. Teardown bumps
+/// the playback generation, stops playback, waits for the render lock, and
+/// drops the layer surface only after no render task can still use the
+/// pointer, so the pointer cannot dangle while a render task runs. The wrapper
+/// is `Send` but intentionally not `Sync`: shared access must be serialized by
+/// the surrounding `Mutex`/render lock.
 struct SendDisplayPtr(*mut std::ffi::c_void);
 unsafe impl Send for SendDisplayPtr {}
 

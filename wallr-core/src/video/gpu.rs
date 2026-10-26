@@ -32,47 +32,39 @@ impl fmt::Display for AdapterInfo {
     }
 }
 
-pub async fn detect_adapters(instance: &wgpu::Instance) -> Vec<AdapterInfo> {
+async fn enumerate_adapters(instance: &wgpu::Instance) -> Vec<(wgpu::Adapter, AdapterInfo)> {
     let mut adapters = Vec::new();
     for adapter in instance.enumerate_adapters(wgpu::Backends::all()).await {
         let info = adapter.get_info();
-        adapters.push(AdapterInfo {
-            name: info.name.clone(),
-            backend: info.backend,
-            device_type: info.device_type,
-            driver: info.driver.clone(),
-            driver_info: info.driver_info.clone(),
-        });
-    }
-    tracing::info!("Detected {} GPU adapter(s)", adapters.len());
-    for (i, a) in adapters.iter().enumerate() {
-        tracing::info!("  [{}] {}", i, a);
+        adapters.push((
+            adapter,
+            AdapterInfo {
+                name: info.name,
+                backend: info.backend,
+                device_type: info.device_type,
+                driver: info.driver,
+                driver_info: info.driver_info,
+            },
+        ));
     }
     adapters
+}
+
+pub async fn detect_adapters(instance: &wgpu::Instance) -> Vec<AdapterInfo> {
+    let adapters = enumerate_adapters(instance).await;
+    let infos: Vec<AdapterInfo> = adapters.into_iter().map(|(_, info)| info).collect();
+    tracing::info!("Detected {} GPU adapter(s)", infos.len());
+    for (i, a) in infos.iter().enumerate() {
+        tracing::info!("  [{}] {}", i, a);
+    }
+    infos
 }
 
 pub async fn select_adapter(
     instance: &wgpu::Instance,
     preference: &GpuSelection,
 ) -> VideoResult<wgpu::Adapter> {
-    let adapters: Vec<_> = instance
-        .enumerate_adapters(wgpu::Backends::all())
-        .await
-        .into_iter()
-        .map(|adapter| {
-            let info = adapter.get_info();
-            (
-                adapter,
-                AdapterInfo {
-                    name: info.name,
-                    backend: info.backend,
-                    device_type: info.device_type,
-                    driver: info.driver,
-                    driver_info: info.driver_info,
-                },
-            )
-        })
-        .collect();
+    let adapters = enumerate_adapters(instance).await;
     if adapters.is_empty() {
         return Err(VideoError::AdapterNotFound(
             "No GPU adapters detected".to_string(),
