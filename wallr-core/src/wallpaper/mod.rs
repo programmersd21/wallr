@@ -31,6 +31,14 @@ pub struct DiagnosticReport {
     pub checks: Vec<DiagnosticCheck>,
 }
 
+impl DiagnosticReport {
+    pub fn has_failures(&self) -> bool {
+        self.checks
+            .iter()
+            .any(|check| matches!(check.status, DiagnosticStatus::Fail))
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum WallpaperError {
     #[error("Theme error: {0}")]
@@ -229,6 +237,42 @@ mod tests {
             monitor: None,
         };
         assert!(engine.set_wallpaper_blocking(&path, &options).is_ok());
+    }
+
+    #[test]
+    fn diagnostic_report_has_failures_only_when_fail_present() {
+        let passing = DiagnosticReport {
+            checks: vec![DiagnosticCheck {
+                name: "pass".to_string(),
+                status: DiagnosticStatus::Pass,
+                message: "ok".to_string(),
+            }],
+        };
+        let warning_only = DiagnosticReport {
+            checks: vec![DiagnosticCheck {
+                name: "warn".to_string(),
+                status: DiagnosticStatus::Warn,
+                message: "warn".to_string(),
+            }],
+        };
+        let failing = DiagnosticReport {
+            checks: vec![
+                DiagnosticCheck {
+                    name: "pass".to_string(),
+                    status: DiagnosticStatus::Pass,
+                    message: "ok".to_string(),
+                },
+                DiagnosticCheck {
+                    name: "fail".to_string(),
+                    status: DiagnosticStatus::Fail,
+                    message: "bad".to_string(),
+                },
+            ],
+        };
+
+        assert!(!passing.has_failures());
+        assert!(!warning_only.has_failures());
+        assert!(failing.has_failures());
     }
 
     #[tokio::test]

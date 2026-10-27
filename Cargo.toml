@@ -3,7 +3,7 @@ members = ["wallr", "wallr-common", "wallr-core"]
 resolver = "3"
 
 [workspace.package]
-version = "0.8.4"
+version = "0.8.5"
 edition = "2024"
 authors = ["Wallr Contributors"]
 license = "MIT"
@@ -38,8 +38,8 @@ strip = false
 opt-level = 2 # Optimize dependencies even in dev mode
 
 [workspace.dependencies]
-wallr-common = { path = "wallr-common", version = "0.8.4" }
-wallr-core = { path = "wallr-core", version = "0.8.4" }
+wallr-common = { path = "wallr-common", version = "0.8.5" }
+wallr-core = { path = "wallr-core", version = "0.8.5" }
 
 # Core utilities
 anyhow = "1"

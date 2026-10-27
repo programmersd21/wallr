@@ -2,6 +2,18 @@
 
 All notable changes to Wallr are documented here.
 
+## [0.8.5] - 2026-10-27
+
+### fixed
+
+- same-path wallpaper replacements are no longer treated as no-ops when the
+  source file changes.
+- `wallr doctor` exits with status 1 when a diagnostic check fails.
+
+### tests
+
+- added regression tests for wallpaper source identity and doctor exit status.
+
 ## [0.8.4] - 2026-10-26
 
 ### fixed

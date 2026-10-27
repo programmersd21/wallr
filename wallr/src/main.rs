@@ -380,6 +380,9 @@ async fn async_main(cli: WallrCli) -> Result<()> {
                 );
             }
             println!();
+            if report.has_failures() {
+                std::process::exit(1);
+            }
         }
 
         Commands::Config { subcommand } => match subcommand {

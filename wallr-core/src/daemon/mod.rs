@@ -273,7 +273,7 @@ mod viewport_tests {
         VideoPresentAction, advance_gif_slots, clamp_max_fps, clamp_preload_frames,
         crop_fill_to_output, is_transient_wallpaper_error, is_usable_wallpaper_file,
         persist_wallpaper_at, read_wallpaper_state, validate_live_config, video_present_action,
-        viewport_destination, write_wallpaper_state,
+        viewport_destination, wallpaper_source_id, write_wallpaper_state,
     };
     use crate::renderer::FrameStatus;
 
@@ -456,6 +456,28 @@ mod viewport_tests {
         assert!(!is_usable_wallpaper_file(
             &temporary.path().join("missing.jpg")
         ));
+    }
+
+    #[test]
+    fn wallpaper_source_id_detects_replaced_contents() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("wall.jpg");
+        std::fs::write(&path, b"first").expect("write first");
+        let first = wallpaper_source_id(&path).expect("source id");
+        // Replacing contents changes identity, even at the same path.
+        std::fs::write(&path, b"second").expect("write second");
+        let second = wallpaper_source_id(&path).expect("source id");
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn wallpaper_source_id_is_stable_for_unchanged_file() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let path = temporary.path().join("wall.jpg");
+        std::fs::write(&path, b"same").expect("write");
+        let first = wallpaper_source_id(&path).expect("source id");
+        let second = wallpaper_source_id(&path).expect("source id");
+        assert_eq!(first, second);
     }
 
     #[test]
@@ -868,6 +890,8 @@ struct RenderState {
     /// Per-output uniform buffer + bind group (Issue #9 race fix).
     /// Path of the last wallpaper set on this output (for restore).
     last_wallpaper: Option<std::path::PathBuf>,
+    /// File identity of the last wallpaper, used to detect in-place replacement.
+    last_wallpaper_source: Option<WallpaperSourceId>,
     /// Previous wallpaper state before blank (for restore).
     pre_blank: Option<(std::path::PathBuf, u32)>,
     /// Whether this output is currently blanked.
@@ -909,8 +933,7 @@ struct RenderState {
 
 struct CachedShmImage {
     path: std::path::PathBuf,
-    modified: std::time::SystemTime,
-    size: u64,
+    source: WallpaperSourceId,
     scaling_mode: u32,
     output_width: u32,
     output_height: u32,
@@ -918,6 +941,25 @@ struct CachedShmImage {
     height: u32,
     compressed: Vec<u8>,
     raw_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WallpaperSourceId {
+    dev: u64,
+    ino: u64,
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+fn wallpaper_source_id(path: &std::path::Path) -> Option<WallpaperSourceId> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(path).ok()?;
+    Some(WallpaperSourceId {
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+        size: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
 }
 
 struct GpuState {
@@ -1049,6 +1091,7 @@ impl RenderState {
         if !self.blanked
             && (self.current_bind.is_some() || self.shm_buffers.iter().any(|b| b.is_some()))
             && self.last_wallpaper.as_deref() == Some(path)
+            && self.last_wallpaper_source == wallpaper_source_id(path)
             && self.scaling_mode == scaling_mode
             && self.current_effect.as_ref() == Some(effect)
         {
@@ -1088,6 +1131,7 @@ impl RenderState {
             self.scaling_mode = scaling_mode;
             self.current_effect = Some(effect.clone());
             self.last_wallpaper = Some(path.to_path_buf());
+            self.last_wallpaper_source = wallpaper_source_id(path);
             self.blanked = false;
             // Dropping the old bind group/texture is enough to release the
             // Rust-side ownership. A blocking device drain here makes every
@@ -1104,6 +1148,7 @@ impl RenderState {
         self.spawn_transition(commit, effect, duration_ms);
         // Update last_wallpaper after successful commit
         self.last_wallpaper = Some(path.to_path_buf());
+        self.last_wallpaper_source = wallpaper_source_id(path);
         Ok(())
     }
 
@@ -1113,6 +1158,7 @@ impl RenderState {
         scaling_mode: u32,
     ) -> anyhow::Result<bool> {
         use image::{ImageDecoder, ImageReader};
+        use std::os::unix::fs::MetadataExt as _;
 
         // The wgpu transition task and the wl_shm fast path target the same
         // layer surface. Serialize the protocol commit so a static switch
@@ -1127,11 +1173,10 @@ impl RenderState {
         };
 
         let source = std::fs::metadata(path)?;
-        let modified = source.modified().unwrap_or(std::time::UNIX_EPOCH);
+        let current_source = wallpaper_source_id(path);
         let cached = self.cached_shm_image.as_ref().filter(|cached| {
             cached.path == path
-                && cached.modified == modified
-                && cached.size == source.len()
+                && current_source == Some(cached.source)
                 && cached.scaling_mode == scaling_mode
                 && cached.output_width == self.width
                 && cached.output_height == self.height
@@ -1168,8 +1213,12 @@ impl RenderState {
             if compressed.len() <= STATIC_CACHE_LIMIT_BYTES {
                 self.cached_shm_image = Some(CachedShmImage {
                     path: path.to_path_buf(),
-                    modified,
-                    size: source.len(),
+                    source: WallpaperSourceId {
+                        dev: source.dev(),
+                        ino: source.ino(),
+                        size: source.len(),
+                        modified: source.modified().ok(),
+                    },
                     scaling_mode,
                     output_width: self.width,
                     output_height: self.height,
@@ -3564,6 +3613,7 @@ impl Daemon {
             scaling_mode: 0,
             current_effect: None,
             last_wallpaper: None,
+            last_wallpaper_source: None,
             pre_blank: None,
             blanked: false,
             gif_paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -3662,6 +3712,7 @@ fn create_render_state_for_output_sync(
         scaling_mode: 0,
         current_effect: None,
         last_wallpaper: None,
+        last_wallpaper_source: None,
         pre_blank: None,
         blanked: false,
         gif_paused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
