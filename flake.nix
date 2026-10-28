@@ -39,6 +39,7 @@
               pkgs.pkg-config
               llvmPackages.libclang
               pkgs.rustPlatform.bindgenHook
+              pkgs.makeWrapper
             ];
 
             buildInputs = [
@@ -51,6 +52,11 @@
             doCheck = false;
 
             LIBCLANG_PATH = "${llvmPackages.libclang.lib}/lib";
+
+            postFixup = ''
+              wrapProgram $out/bin/wallr-daemon \
+                  --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath [ pkgs.wayland ]}
+            '';
 
             meta = with pkgs.lib; {
               description = "GPU-accelerated wallpaper engine for Wayland";
