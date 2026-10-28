@@ -38,6 +38,7 @@
               rustToolchain
               pkgs.pkg-config
               llvmPackages.libclang
+              pkgs.rustPlatform.bindgenHook
             ];
 
             buildInputs = [
