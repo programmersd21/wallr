@@ -10,8 +10,15 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      rust-overlay,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
@@ -31,6 +38,8 @@
               rustToolchain
               pkgs.pkg-config
               llvmPackages.libclang
+              pkgs.rustPlatform.bindgenHook
+              pkgs.makeWrapper
             ];
 
             buildInputs = [
@@ -43,6 +52,11 @@
             doCheck = false;
 
             LIBCLANG_PATH = "${llvmPackages.libclang.lib}/lib";
+
+            postFixup = ''
+              wrapProgram $out/bin/wallr-daemon \
+                  --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath [ pkgs.wayland ]}
+            '';
 
             meta = with pkgs.lib; {
               description = "GPU-accelerated wallpaper engine for Wayland";
@@ -72,5 +86,8 @@
           LIBCLANG_PATH = "${llvmPackages.libclang.lib}/lib";
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
         };
-      });
+
+        formatter = pkgs.nixfmt-tree;
+      }
+    );
 }
