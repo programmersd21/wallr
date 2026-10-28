@@ -10,8 +10,15 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      rust-overlay,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
@@ -72,5 +79,8 @@
           LIBCLANG_PATH = "${llvmPackages.libclang.lib}/lib";
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
         };
-      });
+
+        formatter = pkgs.nixfmt-tree;
+      }
+    );
 }
