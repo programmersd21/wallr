@@ -80,6 +80,7 @@ fn print_cli_message(message: &str) {
 /// With no `--effect` flag the default is a plain linear crossfade,
 /// matching awww's default `simple` feel; explicit `-e fade` keeps polish.
 fn pick_effect(effect_args: &EffectArgs) -> anyhow::Result<(Effect, Option<u32>)> {
+    effect_args.validate().map_err(anyhow::Error::msg)?;
     let effect = effect_args.to_effect(Effect::Fade(FadeParams {
         easing: wallr_common::effect::Easing::Linear,
         ..FadeParams::default()

@@ -1087,6 +1087,14 @@ mod tests {
     /// bind groups, uniform upload, and the WGSL blend for the renumbered
     /// effect arms.
     #[test]
+    fn validate_static_decode_rejects_invalid_dimensions_and_huge_images() {
+        assert!(Renderer::validate_static_decode(0, 10, 10).is_err());
+        assert!(Renderer::validate_static_decode(10, 0, 10).is_err());
+        assert!(Renderer::validate_static_decode(10, 10, 1).is_ok());
+        assert!(Renderer::validate_static_decode(10, 10, u64::MAX).is_err());
+    }
+
+    #[test]
     fn transition_renders_mid_fade_blend_offscreen() {
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()

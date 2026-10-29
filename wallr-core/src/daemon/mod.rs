@@ -272,8 +272,8 @@ mod viewport_tests {
     use super::{
         VideoPresentAction, advance_gif_slots, clamp_max_fps, clamp_preload_frames,
         crop_fill_to_output, is_transient_wallpaper_error, is_usable_wallpaper_file,
-        persist_wallpaper_at, read_wallpaper_state, validate_live_config, video_present_action,
-        viewport_destination, wallpaper_source_id, write_wallpaper_state,
+        persist_wallpaper_at, read_wallpaper_state, sort_named_targets, validate_live_config,
+        video_present_action, viewport_destination, wallpaper_source_id, write_wallpaper_state,
     };
     use crate::renderer::FrameStatus;
 
@@ -478,6 +478,14 @@ mod viewport_tests {
         let first = wallpaper_source_id(&path).expect("source id");
         let second = wallpaper_source_id(&path).expect("source id");
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn named_targets_are_sorted_for_deterministic_monitor_selection() {
+        let mut targets = vec![("zeta".to_string(), 0), ("alpha".to_string(), 0)];
+        sort_named_targets(&mut targets);
+        let names: Vec<&str> = targets.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "zeta"]);
     }
 
     #[test]
@@ -2449,11 +2457,19 @@ fn resolve_named_targets(
             .get(name)
             .map(|state| vec![(name.to_string(), state.clone())])
             .unwrap_or_default(),
-        None => render_states
-            .iter()
-            .map(|(name, state)| (name.clone(), state.clone()))
-            .collect(),
+        None => {
+            let mut targets: Vec<_> = render_states
+                .iter()
+                .map(|(name, state)| (name.clone(), state.clone()))
+                .collect();
+            sort_named_targets(&mut targets);
+            targets
+        }
     }
+}
+
+fn sort_named_targets<T>(targets: &mut [(String, T)]) {
+    targets.sort_by(|left, right| left.0.cmp(&right.0));
 }
 
 type RenderStateMap = std::collections::HashMap<String, Arc<Mutex<RenderState>>>;
@@ -2480,10 +2496,12 @@ async fn snapshot_named_targets(
 
 async fn snapshot_all_named(map: &SharedRenderStates) -> Vec<(String, Arc<Mutex<RenderState>>)> {
     let states = map.lock().await;
-    states
+    let mut targets: Vec<_> = states
         .iter()
         .map(|(name, state)| (name.clone(), state.clone()))
-        .collect()
+        .collect();
+    sort_named_targets(&mut targets);
+    targets
 }
 
 /// Returns settled outputs' shared-memory pools to the OS.

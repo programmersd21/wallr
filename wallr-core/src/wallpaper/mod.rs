@@ -156,7 +156,7 @@ impl WallpaperEngine {
 
         let result = (|| {
             theme::run_hooks(&self.config.hooks.before)?;
-            self.apply_wallpaper(path)?;
+            self.validate_wallpaper_file(path)?;
             if !options.no_theme {
                 let provider = options
                     .theme_provider
@@ -176,7 +176,7 @@ impl WallpaperEngine {
         result
     }
 
-    fn apply_wallpaper(&self, path: &Path) -> Result<(), WallpaperError> {
+    fn validate_wallpaper_file(&self, path: &Path) -> Result<(), WallpaperError> {
         if !path.is_file() {
             return Err(WallpaperError::Custom(format!(
                 "wallpaper file not found: {}",
@@ -206,9 +206,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn apply_rejects_missing_file() {
+    fn validate_wallpaper_file_rejects_missing_file() {
         let engine = WallpaperEngine::new(WallrConfig::default()).unwrap();
-        let result = engine.apply_wallpaper(Path::new("/definitely/missing/wallpaper.png"));
+        let result = engine.validate_wallpaper_file(Path::new("/definitely/missing/wallpaper.png"));
         assert!(result.is_err());
     }
 

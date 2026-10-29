@@ -2,6 +2,21 @@
 
 All notable changes to Wallr are documented here.
 
+## [0.8.6] - 2026-10-27
+
+### fixed
+
+- monitor listing and current-output selection are now deterministic.
+- invalid effect origins, directions, and numeric parameters are rejected
+  before wallpaper state changes.
+- wallpaper source validation was renamed to describe its actual role.
+- static decode limits are covered by regression tests.
+
+### tests
+
+- added regression tests for deterministic monitor targets, effect validation,
+  and static decode validation.
+
 ## [0.8.5] - 2026-10-27
 
 ### fixed

@@ -85,6 +85,95 @@ impl EffectArgs {
             softness: self.softness,
         }
     }
+
+    /// Validate effect arguments before they are turned into an effect.
+    pub fn validate(&self) -> Result<(), String> {
+        const ORIGIN_PRESETS: &[&str] = &[
+            "top_left",
+            "top",
+            "top_right",
+            "left",
+            "center",
+            "right",
+            "bottom_left",
+            "bottom",
+            "bottom_right",
+        ];
+
+        if let Some(name) = &self.effect
+            && crate::effect::effect_from_name(name).is_none()
+        {
+            return Err(format!("unknown effect '{name}'"));
+        }
+
+        if let Some(origin) = &self.origin
+            && !ORIGIN_PRESETS.contains(&origin.as_str())
+        {
+            let mut parts = origin.split(',');
+            let x = parts
+                .next()
+                .ok_or_else(|| format!("invalid origin '{origin}': expected preset or x,y"))?
+                .trim();
+            let y = parts
+                .next()
+                .ok_or_else(|| format!("invalid origin '{origin}': expected preset or x,y"))?
+                .trim();
+            if parts.next().is_some() {
+                return Err(format!(
+                    "invalid origin '{origin}': expected exactly two coordinates"
+                ));
+            }
+            let x: f32 = x
+                .parse()
+                .map_err(|_| format!("invalid origin '{origin}': x is not a number"))?;
+            let y: f32 = y
+                .parse()
+                .map_err(|_| format!("invalid origin '{origin}': y is not a number"))?;
+            if !x.is_finite() || !y.is_finite() {
+                return Err(format!(
+                    "invalid origin '{origin}': coordinates must be finite"
+                ));
+            }
+            if !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+                return Err(format!(
+                    "invalid origin '{origin}': coordinates must be between 0 and 1"
+                ));
+            }
+        }
+
+        if let Some(direction) = &self.direction
+            && parse_vec2(direction).is_none()
+        {
+            return Err(format!(
+                "invalid direction '{direction}': expected finite x,y"
+            ));
+        }
+
+        for (name, value) in [
+            ("angle", self.angle),
+            ("from", self.from),
+            ("to", self.to),
+            ("frequency", self.frequency),
+            ("amplitude", self.amplitude),
+            ("softness", self.softness),
+        ] {
+            if let Some(value) = value
+                && !value.is_finite()
+            {
+                return Err(format!("invalid {name}: value must be finite"));
+            }
+        }
+
+        if let Some(softness) = self.softness
+            && !(0.01..=0.5).contains(&softness)
+        {
+            return Err(format!(
+                "invalid softness {softness}: expected a value between 0.01 and 0.5"
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 /// validate `--effect`. Aliases (left, right, top, bottom, center, any,
@@ -115,6 +204,9 @@ fn parse_vec2(s: &str) -> Option<[f32; 2]> {
     let mut parts = s.split(',');
     let x = parts.next()?.trim().parse::<f32>().ok()?;
     let y = parts.next()?.trim().parse::<f32>().ok()?;
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
     Some([x, y])
 }
 
@@ -415,7 +507,7 @@ pub enum IpcCommands {
 
 #[cfg(test)]
 mod tests {
-    use super::{WallrCli, WallrDaemonCli, parse_timestamp_ms};
+    use super::{EffectArgs, WallrCli, WallrDaemonCli, parse_timestamp_ms};
     use clap::Parser;
 
     #[test]
@@ -468,5 +560,39 @@ mod tests {
         for value in ["", "-1", "NaN", "inf", "1e300", "1:60", "1:2:60", "1:2:3:4"] {
             assert!(parse_timestamp_ms(value).is_err(), "{value} should fail");
         }
+    }
+
+    #[test]
+    fn effect_args_validate_origin_and_direction() {
+        let mut args = EffectArgs {
+            origin: Some("center".into()),
+            ..EffectArgs::default()
+        };
+        assert!(args.validate().is_ok());
+
+        args.origin = Some("0.25,0.75".into());
+        assert!(args.validate().is_ok());
+
+        args.origin = Some("unknown".into());
+        assert!(args.validate().is_err());
+
+        args.origin = Some("0.5,1.5".into());
+        assert!(args.validate().is_err());
+
+        args.origin = Some("0.5,0.5,0.5".into());
+        assert!(args.validate().is_err());
+
+        args.origin = Some("NaN,0".into());
+        assert!(args.validate().is_err());
+
+        args.origin = Some("0.5,0.5".into());
+        args.direction = Some("1,0".into());
+        assert!(args.validate().is_ok());
+
+        args.direction = Some("1".into());
+        assert!(args.validate().is_err());
+
+        args.direction = Some("NaN,0".into());
+        assert!(args.validate().is_err());
     }
 }

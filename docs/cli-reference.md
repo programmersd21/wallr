@@ -23,7 +23,7 @@ labels use lowercase text; paths and configuration values keep their spelling.
 | `wallr config path` | print the active configuration path |
 | `wallr reload` | reload configuration and run reload commands |
 | `wallr monitor list` | list connected outputs |
-| `wallr monitor current` | show the focused output |
+| `wallr monitor current` | show the first output in deterministic order |
 | `wallr ipc <command>` | control playback or query daemon state |
 | `wallr quit` | stop the daemon |
 | `wallr daemon` | start the daemon in the foreground |
