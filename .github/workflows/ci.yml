@@ -33,7 +33,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -52,7 +52,7 @@ jobs:
             libswscale-dev \
             pkg-config
       - name: Cache cargo registry and build artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.3
       - run: cargo fmt --all --check
       - name: Check shell scripts
         run: for script in scripts/*.sh; do bash -n "$script"; done
@@ -101,7 +101,7 @@ jobs:
     name: MSRV (1.90)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.90
         with:
           components: rustfmt, clippy
@@ -121,6 +121,6 @@ jobs:
             lld \
             pkg-config
       - name: Cache cargo registry and build artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.3
       - run: cargo check --workspace --locked
       - run: cargo test --workspace --locked
