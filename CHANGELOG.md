@@ -2,6 +2,24 @@
 
 All notable changes to Wallr are documented here.
 
+## [0.8.8] - 2026-10-30
+
+### fixed
+
+- failed and superseded seeks no longer leave the decoder treating the request
+  as permanently pending.
+- seek completion is acknowledged by request generation; caller-side timeouts
+  can no longer let an abandoned seek execute later.
+- successful seeks clear queued frames before reporting completion.
+- seek timestamps remain in FFmpeg AV_TIME_BASE microseconds.
+- initial presentation timestamps are normalized from the stream start time.
+
+### tests
+
+- added real FFmpeg seek tests covering beginning, middle, near-end, failed
+  seeks and recovery.
+- added playback seek error tests and queue budget tests.
+
 ## [0.8.7] - 2026-10-29
 
 ### fixed

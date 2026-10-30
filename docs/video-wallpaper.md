@@ -16,8 +16,12 @@ hardware-decoded frame. `wallr ipc info` shows the decoder state. NVIDIA
 decoding requires a working NVIDIA driver; VAAPI requires a supported device
 and driver. Software decoding remains available but can use more cpu.
 
-The decoder queues a bounded number of frames. If playback falls behind, stale
-frames can be dropped instead of allowing the queue to grow. Presentation
+The decoder queues a bounded number of frames, capped at three frames and
+256 MiB of decoded frame data. Playback can hold one additional pending frame.
+If playback falls behind, stale frames are dropped instead of allowing the
+queue to grow. This budget covers application-owned decoded frames only;
+FFmpeg internal buffers, hardware frame pools, conversion buffers, GPU
+textures, and per-output renderer resources are outside it. Presentation
 follows video timestamps. `wallpaper.loop_video` controls looping, and
 `wallpaper.mute` keeps audio muted.
 
@@ -50,6 +54,10 @@ wallr ipc resume
 wallr ipc seek 1:30
 wallr ipc info
 ```
+
+Seeks wait for the decoder to confirm the operation. A failed seek returns an
+error and leaves the previous playback position in place. A newer seek
+supersedes a queued seek rather than being applied out of order.
 
 Use `--monitor <output>` to target an output where supported. Without it,
 playback controls apply to all outputs.

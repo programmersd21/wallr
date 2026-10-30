@@ -94,8 +94,8 @@ jobs:
             test "$crate_version" = "$VERSION"
           done
           grep -Fq "version = \"$VERSION\"" flake.nix
-          test "$VERSION" = "0.8.7"
-          grep -q "## \[0.8.7\]" CHANGELOG.md
+          test "$VERSION" = "0.8.8"
+          grep -q "## \[0.8.8\]" CHANGELOG.md
 
   msrv:
     name: MSRV (1.90)

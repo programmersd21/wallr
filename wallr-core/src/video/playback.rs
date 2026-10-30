@@ -360,6 +360,21 @@ mod tests {
     }
 
     #[test]
+    fn seek_without_active_video_returns_error() {
+        let playback = VideoPlayback::new();
+        assert!(playback.seek(Duration::from_secs(1)).is_err());
+    }
+
+    #[test]
+    fn scheduler_rejects_seek_beyond_duration_and_keeps_position() {
+        let mut scheduler = FrameScheduler::new(Duration::from_secs(2));
+        scheduler.seek(Duration::from_millis(500)).unwrap();
+        let before = scheduler.current_position();
+        assert!(scheduler.seek(Duration::from_secs(3)).is_err());
+        assert!(scheduler.current_position() >= before);
+    }
+
+    #[test]
     fn selects_latest_due_frame() {
         let mut scheduler = FrameScheduler::new(Duration::from_secs(1));
         scheduler.seek(Duration::from_millis(50)).unwrap();

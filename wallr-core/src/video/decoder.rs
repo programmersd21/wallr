@@ -209,8 +209,11 @@ pub struct DecoderInfo {
     pub state: DecoderState,
 }
 
+type SeekAck = (u64, Option<VideoError>);
+type SeekRequest = (Duration, u64, std::sync::mpsc::Sender<SeekAck>);
+
 enum DecoderControl {
-    Seek(Duration, u64, std::sync::mpsc::Sender<Option<VideoError>>),
+    Seek(SeekRequest),
 }
 
 pub struct VideoDecoder {
@@ -318,7 +321,6 @@ impl VideoDecoder {
         let pause_requested = Arc::new(AtomicBool::new(false));
         let pause_requested_clone = pause_requested.clone();
         let seek_epoch = Arc::new(AtomicU64::new(0));
-        let seek_epoch_clone = seek_epoch.clone();
         let hw_in_use = Arc::new(AtomicU8::new(0));
         let hw_in_use_clone = hw_in_use.clone();
         let decoder_state = Arc::new(AtomicU8::new(DecoderState::Initializing.code()));
@@ -342,7 +344,6 @@ impl VideoDecoder {
                     control_rx,
                     stop_flag_clone,
                     pause_requested_clone,
-                    seek_epoch_clone,
                     hw_in_use_clone.clone(),
                     decoder_state_clone.clone(),
                     fallback_clone,
@@ -630,7 +631,6 @@ impl VideoDecoder {
         control_rx: Receiver<DecoderControl>,
         stop_flag: Arc<AtomicBool>,
         pause_requested: Arc<AtomicBool>,
-        seek_epoch: Arc<AtomicU64>,
         hw_in_use: Arc<AtomicU8>,
         decoder_state: Arc<AtomicU8>,
         fallback_occurred: Arc<AtomicBool>,
@@ -649,6 +649,16 @@ impl VideoDecoder {
 
         let video_stream_index = stream.index();
         let time_base = stream.time_base();
+        let stream_start = {
+            let start = stream.start_time();
+            if start != i64::MIN && time_base.numerator() > 0 && time_base.denominator() > 0 {
+                let seconds =
+                    start as f64 * time_base.numerator() as f64 / time_base.denominator() as f64;
+                seconds.is_finite().then_some(seconds)
+            } else {
+                None
+            }
+        };
 
         let (mut decoder, used_hw, initial_state) = Self::build_decoder(&stream, hw_accel)?;
         tracing::info!("Decoder in use: {}", used_hw.name());
@@ -662,11 +672,9 @@ impl VideoDecoder {
         let mut scaler_src: Option<ffmpeg::format::Pixel> = None;
 
         let mut paused: bool;
-        let mut pending_seek: Option<(Duration, u64, std::sync::mpsc::Sender<Option<VideoError>>)> =
-            None;
-        let mut applied_seek_epoch = 0;
+        let mut pending_seek: Option<SeekRequest> = None;
         let mut frame_index = 0u64;
-        let mut pts_origin: Option<f64> = None;
+        let mut pts_origin: Option<f64> = stream_start;
         let mut last_output_pts = None;
         let mut hardware_frame_seen = false;
         let mut decoded_frame = ffmpeg::frame::Video::empty();
@@ -680,12 +688,15 @@ impl VideoDecoder {
 
             while let Ok(control) = control_rx.try_recv() {
                 match control {
-                    DecoderControl::Seek(ts, epoch, ack) => {
+                    DecoderControl::Seek((ts, epoch, ack)) => {
                         if let Some(previous) = pending_seek.take() {
-                            let _ = previous.2.send(Some(VideoError::SeekFailed(
-                                previous.0,
-                                anyhow::anyhow!("seek superseded"),
-                            )));
+                            let _ = previous.2.send((
+                                previous.1,
+                                Some(VideoError::SeekFailed(
+                                    previous.0,
+                                    anyhow::anyhow!("seek superseded"),
+                                )),
+                            ));
                         }
                         pending_seek = Some((ts, epoch, ack));
                     }
@@ -696,14 +707,13 @@ impl VideoDecoder {
             if let Some((ts, epoch, ack)) = pending_seek.take() {
                 let result = Self::apply_seek(&mut ictx, &mut decoder, ts);
                 let seek_ok = result.is_ok();
-                let _ = ack.send(result.err());
                 if seek_ok {
-                    applied_seek_epoch = epoch;
                     last_output_pts = None;
                     if let Ok(mut queue) = frame_queue.lock() {
                         queue.clear();
                     }
                 }
+                let _ = ack.send((epoch, result.err()));
             }
 
             if paused {
@@ -718,12 +728,15 @@ impl VideoDecoder {
 
                 while let Ok(control) = control_rx.try_recv() {
                     match control {
-                        DecoderControl::Seek(ts, epoch, ack) => {
+                        DecoderControl::Seek((ts, epoch, ack)) => {
                             if let Some(previous) = pending_seek.take() {
-                                let _ = previous.2.send(Some(VideoError::SeekFailed(
-                                    previous.0,
-                                    anyhow::anyhow!("seek superseded"),
-                                )));
+                                let _ = previous.2.send((
+                                    previous.1,
+                                    Some(VideoError::SeekFailed(
+                                        previous.0,
+                                        anyhow::anyhow!("seek superseded"),
+                                    )),
+                                ));
                             }
                             pending_seek = Some((ts, epoch, ack));
                         }
@@ -764,21 +777,22 @@ impl VideoDecoder {
                         }
                         while let Ok(control) = control_rx.try_recv() {
                             match control {
-                                DecoderControl::Seek(ts, epoch, ack) => {
+                                DecoderControl::Seek((ts, epoch, ack)) => {
                                     if let Some(previous) = pending_seek.take() {
-                                        let _ = previous.2.send(Some(VideoError::SeekFailed(
-                                            previous.0,
-                                            anyhow::anyhow!("seek superseded"),
-                                        )));
+                                        let _ = previous.2.send((
+                                            previous.1,
+                                            Some(VideoError::SeekFailed(
+                                                previous.0,
+                                                anyhow::anyhow!("seek superseded"),
+                                            )),
+                                        ));
                                     }
                                     pending_seek = Some((ts, epoch, ack));
                                 }
                             }
                         }
                         paused = pause_requested.load(Ordering::Acquire);
-                        if pending_seek.is_some()
-                            || seek_epoch.load(Ordering::Acquire) != applied_seek_epoch
-                        {
+                        if pending_seek.is_some() {
                             interrupted = true;
                             break;
                         }
@@ -1000,18 +1014,19 @@ impl VideoDecoder {
         let epoch = self.seek_epoch.fetch_add(1, Ordering::AcqRel) + 1;
         let (ack_tx, ack_rx) = std::sync::mpsc::channel();
         self.control_tx
-            .send(DecoderControl::Seek(timestamp, epoch, ack_tx))
+            .send(DecoderControl::Seek((timestamp, epoch, ack_tx)))
             .map_err(|_| VideoError::ChannelDisconnected)?;
-        match ack_rx.recv_timeout(Duration::from_secs(10)) {
-            Ok(None) => Ok(()),
-            Ok(Some(err)) => Err(err),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(VideoError::SeekFailed(
+        // Wait for the decoder to finish or reject this exact request. A
+        // caller-side timeout would allow the request to execute later and
+        // move playback to an abandoned position, so completion is awaited.
+        match ack_rx.recv() {
+            Ok((ack_epoch, None)) if ack_epoch == epoch => Ok(()),
+            Ok((ack_epoch, Some(err))) if ack_epoch == epoch => Err(err),
+            Ok(_) => Err(VideoError::SeekFailed(
                 timestamp,
-                anyhow::anyhow!("seek timed out"),
+                anyhow::anyhow!("stale seek acknowledgement"),
             )),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                Err(VideoError::ChannelDisconnected)
-            }
+            Err(std::sync::mpsc::RecvError) => Err(VideoError::ChannelDisconnected),
         }
     }
 
@@ -1600,6 +1615,89 @@ mod tests {
         assert_eq!(queued_video_frame_bytes(&queue), 8);
 
         assert!(push_bounded_video_frame(&mut queue, frame(11), 2, 10).is_err());
+    }
+
+    #[test]
+    fn real_video_seek_lands_near_requested_timestamp() {
+        let Some((_temp, path)) = make_test_video() else {
+            return;
+        };
+        let decoder = VideoDecoder::new(&path, HwAccel::Software).expect("decoder");
+        assert!(wait_for_frame(&decoder, Duration::from_secs(3)).is_some());
+
+        decoder
+            .seek(Duration::from_millis(1000))
+            .expect("seek middle");
+        let frame = wait_for_frame(&decoder, Duration::from_secs(3)).expect("frame after seek");
+        assert!(
+            frame.pts >= Duration::from_millis(900) && frame.pts <= Duration::from_millis(1400),
+            "frame pts {:?} was not near 1s",
+            frame.pts
+        );
+
+        // A failed seek must not poison later seeks.
+        assert!(decoder.seek(Duration::from_secs(u64::MAX)).is_err());
+        decoder
+            .seek(Duration::from_millis(1500))
+            .expect("seek after failure");
+        let frame = wait_for_frame(&decoder, Duration::from_secs(3)).expect("frame after failure");
+        assert!(
+            frame.pts >= Duration::from_millis(1400),
+            "frame pts {:?} was not near 1.5s",
+            frame.pts
+        );
+
+        // A second seek must not return frames from the first position.
+        decoder.seek(Duration::ZERO).expect("seek beginning");
+        let frame = wait_for_frame(&decoder, Duration::from_secs(3)).expect("frame after rewind");
+        assert!(
+            frame.pts <= Duration::from_millis(300),
+            "frame pts {:?} was not near the beginning",
+            frame.pts
+        );
+    }
+
+    fn make_test_video() -> Option<(tempfile::TempDir, std::path::PathBuf)> {
+        let temp = tempfile::tempdir().ok()?;
+        let path = temp.path().join("seek-test.mp4");
+        let status = std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=2:size=64x64:rate=10",
+                "-c:v",
+                "mpeg4",
+                "-g",
+                "1",
+                "-q:v",
+                "2",
+                "-y",
+            ])
+            .arg(&path)
+            .status()
+            .ok()?;
+        if !status.success() {
+            return None;
+        }
+        Some((temp, path))
+    }
+
+    fn wait_for_frame(decoder: &VideoDecoder, timeout: Duration) -> Option<VideoFrame> {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if let Some(frame) = decoder.next_frame() {
+                return Some(frame);
+            }
+            if decoder.decoder_state() == DecoderState::Failed {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        None
     }
 
     #[test]
