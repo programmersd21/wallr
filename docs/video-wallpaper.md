@@ -17,13 +17,13 @@ decoding requires a working NVIDIA driver; VAAPI requires a supported device
 and driver. Software decoding remains available but can use more cpu.
 
 The decoder queues a bounded number of frames, capped at three frames and
-256 MiB of decoded frame data. Playback can hold one additional pending frame.
-If playback falls behind, stale frames are dropped instead of allowing the
-queue to grow. This budget covers application-owned decoded frames only;
-FFmpeg internal buffers, hardware frame pools, conversion buffers, GPU
-textures, and per-output renderer resources are outside it. Presentation
-follows video timestamps. `wallpaper.loop_video` controls looping, and
-`wallpaper.mute` keeps audio muted.
+256 MiB of decoded frame data. Playback can hold one additional pending frame,
+so application-owned decoded frame data is bounded at 512 MiB in the worst
+case. If playback falls behind, stale frames are dropped instead of allowing
+the queue to grow. This budget does not cover FFmpeg internal buffers,
+hardware frame pools, conversion buffers, GPU textures, or per-output renderer
+resources. Presentation follows video timestamps. `wallpaper.loop_video`
+controls looping, and `wallpaper.mute` keeps audio muted.
 
 Set a per-wallpaper frame-rate ceiling with `--fps`:
 
