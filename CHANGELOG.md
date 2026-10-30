@@ -2,6 +2,20 @@
 
 All notable changes to Wallr are documented here.
 
+## [0.8.7] - 2026-10-29
+
+### fixed
+
+- FFmpeg seek timestamps now use AV_TIME_BASE microseconds.
+- failed decoder seeks are reported instead of appearing successful.
+- video frame queues enforce a 256 MiB total byte budget in addition to
+  their frame-count limit.
+
+### tests
+
+- added seek timestamp conversion and overflow tests.
+- added bounded video frame queue tests.
+
 ## [0.8.6] - 2026-10-27
 
 ### fixed

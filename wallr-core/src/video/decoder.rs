@@ -209,9 +209,8 @@ pub struct DecoderInfo {
     pub state: DecoderState,
 }
 
-#[derive(Debug, Clone, Copy)]
 enum DecoderControl {
-    Seek(Duration, u64),
+    Seek(Duration, u64, std::sync::mpsc::Sender<Option<VideoError>>),
 }
 
 pub struct VideoDecoder {
@@ -227,6 +226,56 @@ pub struct VideoDecoder {
     fallback_occurred: Arc<AtomicBool>,
     max_output_fps: Arc<AtomicU32>,
     decode_thread: Option<thread::JoinHandle<()>>,
+}
+
+/// Maximum total bytes retained by a decoder's frame queue. This bounds
+/// memory use even when only a few very large frames are queued.
+pub(crate) const MAX_VIDEO_FRAME_QUEUE_BYTES: usize = 256 * 1024 * 1024;
+
+pub(crate) fn queued_video_frame_bytes(queue: &std::collections::VecDeque<VideoFrame>) -> usize {
+    queue
+        .iter()
+        .map(|frame| frame.data.len())
+        .fold(0usize, usize::saturating_add)
+}
+
+/// Push a frame while enforcing both frame-count and byte budgets.
+///
+/// Returns the number of older frames dropped to make room, or an error if
+/// the frame itself exceeds the byte budget.
+pub(crate) fn push_bounded_video_frame(
+    queue: &mut std::collections::VecDeque<VideoFrame>,
+    frame: VideoFrame,
+    max_frames: usize,
+    max_bytes: usize,
+) -> VideoResult<usize> {
+    if max_frames == 0 || frame.data.len() > max_bytes {
+        return Err(VideoError::QueueFull);
+    }
+    let frame_bytes = frame.data.len();
+    let mut dropped = 0usize;
+    while queue.len() >= max_frames
+        || queued_video_frame_bytes(queue).saturating_add(frame_bytes) > max_bytes
+    {
+        if queue.pop_front().is_some() {
+            dropped += 1;
+        } else {
+            break;
+        }
+    }
+    queue.push_back(frame);
+    Ok(dropped)
+}
+
+pub(crate) fn ffmpeg_seek_timestamp(timestamp: Duration) -> VideoResult<i64> {
+    let micros = timestamp.as_micros();
+    if micros > i64::MAX as u128 {
+        return Err(VideoError::SeekFailed(
+            timestamp,
+            anyhow::anyhow!("seek timestamp exceeds representable FFmpeg time"),
+        ));
+    }
+    Ok(micros as i64)
 }
 
 impl VideoDecoder {
@@ -613,7 +662,8 @@ impl VideoDecoder {
         let mut scaler_src: Option<ffmpeg::format::Pixel> = None;
 
         let mut paused: bool;
-        let mut pending_seek: Option<(Duration, u64)> = None;
+        let mut pending_seek: Option<(Duration, u64, std::sync::mpsc::Sender<Option<VideoError>>)> =
+            None;
         let mut applied_seek_epoch = 0;
         let mut frame_index = 0u64;
         let mut pts_origin: Option<f64> = None;
@@ -630,15 +680,30 @@ impl VideoDecoder {
 
             while let Ok(control) = control_rx.try_recv() {
                 match control {
-                    DecoderControl::Seek(ts, epoch) => pending_seek = Some((ts, epoch)),
+                    DecoderControl::Seek(ts, epoch, ack) => {
+                        if let Some(previous) = pending_seek.take() {
+                            let _ = previous.2.send(Some(VideoError::SeekFailed(
+                                previous.0,
+                                anyhow::anyhow!("seek superseded"),
+                            )));
+                        }
+                        pending_seek = Some((ts, epoch, ack));
+                    }
                 }
             }
             paused = pause_requested.load(Ordering::Acquire);
 
-            if let Some((ts, epoch)) = pending_seek.take() {
-                Self::apply_seek(&mut ictx, &mut decoder, time_base, ts);
-                applied_seek_epoch = epoch;
-                last_output_pts = None;
+            if let Some((ts, epoch, ack)) = pending_seek.take() {
+                let result = Self::apply_seek(&mut ictx, &mut decoder, ts);
+                let seek_ok = result.is_ok();
+                let _ = ack.send(result.err());
+                if seek_ok {
+                    applied_seek_epoch = epoch;
+                    last_output_pts = None;
+                    if let Ok(mut queue) = frame_queue.lock() {
+                        queue.clear();
+                    }
+                }
             }
 
             if paused {
@@ -653,7 +718,15 @@ impl VideoDecoder {
 
                 while let Ok(control) = control_rx.try_recv() {
                     match control {
-                        DecoderControl::Seek(ts, epoch) => pending_seek = Some((ts, epoch)),
+                        DecoderControl::Seek(ts, epoch, ack) => {
+                            if let Some(previous) = pending_seek.take() {
+                                let _ = previous.2.send(Some(VideoError::SeekFailed(
+                                    previous.0,
+                                    anyhow::anyhow!("seek superseded"),
+                                )));
+                            }
+                            pending_seek = Some((ts, epoch, ack));
+                        }
                     }
                 }
                 paused = pause_requested.load(Ordering::Acquire);
@@ -691,8 +764,14 @@ impl VideoDecoder {
                         }
                         while let Ok(control) = control_rx.try_recv() {
                             match control {
-                                DecoderControl::Seek(ts, epoch) => {
-                                    pending_seek = Some((ts, epoch));
+                                DecoderControl::Seek(ts, epoch, ack) => {
+                                    if let Some(previous) = pending_seek.take() {
+                                        let _ = previous.2.send(Some(VideoError::SeekFailed(
+                                            previous.0,
+                                            anyhow::anyhow!("seek superseded"),
+                                        )));
+                                    }
+                                    pending_seek = Some((ts, epoch, ack));
                                 }
                             }
                         }
@@ -807,11 +886,19 @@ impl VideoDecoder {
                     frame_index = frame_index.wrapping_add(1);
 
                     if let Ok(mut queue) = frame_queue.lock() {
-                        if queue.len() >= frame_capacity {
-                            queue.pop_front();
-                            dropped_frames.fetch_add(1, Ordering::Relaxed);
+                        match push_bounded_video_frame(
+                            &mut queue,
+                            video_frame,
+                            frame_capacity,
+                            MAX_VIDEO_FRAME_QUEUE_BYTES,
+                        ) {
+                            Ok(dropped) => {
+                                dropped_frames.fetch_add(dropped as u64, Ordering::Relaxed);
+                            }
+                            Err(_) => {
+                                dropped_frames.fetch_add(1, Ordering::Relaxed);
+                            }
                         }
-                        queue.push_back(video_frame);
                     }
                 }
             }
@@ -851,23 +938,21 @@ impl VideoDecoder {
     fn apply_seek(
         ictx: &mut ffmpeg::format::context::Input,
         decoder: &mut ffmpeg::codec::decoder::Video,
-        time_base: ffmpeg::Rational,
         ts: Duration,
-    ) {
-        let tb_sec = time_base.numerator() as f64 / time_base.denominator() as f64;
-        let ts_tb = if tb_sec > 0.0 {
-            (ts.as_secs_f64() / tb_sec) as i64
-        } else {
-            0
-        };
-        match ictx.seek(ts_tb, ..) {
+    ) -> VideoResult<()> {
+        let ts_micros = ffmpeg_seek_timestamp(ts)?;
+        match ictx.seek(ts_micros, ..) {
             Ok(()) => {
                 decoder.flush();
                 let mut drain = ffmpeg::frame::Video::empty();
                 while decoder.receive_frame(&mut drain).is_ok() {}
                 tracing::info!("Seeked to {:?}", ts);
+                Ok(())
             }
-            Err(e) => tracing::warn!("Seek to {:?} failed: {}", ts, e),
+            Err(e) => {
+                tracing::warn!("Seek to {:?} failed: {}", ts, e);
+                Err(VideoError::SeekFailed(ts, anyhow::anyhow!(e)))
+            }
         }
     }
 
@@ -911,9 +996,23 @@ impl VideoDecoder {
         self.pause_requested.store(false, Ordering::Release);
     }
 
-    pub fn seek(&self, timestamp: Duration) {
+    pub fn seek(&self, timestamp: Duration) -> VideoResult<()> {
         let epoch = self.seek_epoch.fetch_add(1, Ordering::AcqRel) + 1;
-        let _ = self.control_tx.send(DecoderControl::Seek(timestamp, epoch));
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        self.control_tx
+            .send(DecoderControl::Seek(timestamp, epoch, ack_tx))
+            .map_err(|_| VideoError::ChannelDisconnected)?;
+        match ack_rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(None) => Ok(()),
+            Ok(Some(err)) => Err(err),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(VideoError::SeekFailed(
+                timestamp,
+                anyhow::anyhow!("seek timed out"),
+            )),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Err(VideoError::ChannelDisconnected)
+            }
+        }
     }
 
     pub fn drain(&mut self) {
@@ -1453,6 +1552,54 @@ mod tests {
         assert!(!any_render_node(temp.path()));
         std::fs::create_dir_all(temp.path().join("renderD128")).expect("create");
         assert!(any_render_node(temp.path()));
+    }
+
+    #[test]
+    fn ffmpeg_seek_timestamp_uses_microseconds() {
+        assert_eq!(ffmpeg_seek_timestamp(Duration::ZERO).unwrap(), 0);
+        assert_eq!(
+            ffmpeg_seek_timestamp(Duration::from_secs(1)).unwrap(),
+            1_000_000
+        );
+        assert_eq!(
+            ffmpeg_seek_timestamp(Duration::from_millis(1500)).unwrap(),
+            1_500_000
+        );
+    }
+
+    #[test]
+    fn ffmpeg_seek_timestamp_rejects_overflow() {
+        let huge = Duration::from_secs(u64::MAX);
+        assert!(ffmpeg_seek_timestamp(huge).is_err());
+    }
+
+    #[test]
+    fn bounded_video_frame_queue_enforces_count_and_bytes() {
+        let mut queue = std::collections::VecDeque::new();
+        let frame = |size: usize| VideoFrame {
+            data: VideoFrameData::Rgba(vec![0; size]),
+            width: 1,
+            height: 1,
+            pts: Duration::ZERO,
+            index: 0,
+        };
+
+        assert_eq!(
+            push_bounded_video_frame(&mut queue, frame(4), 2, 10).unwrap(),
+            0
+        );
+        assert_eq!(
+            push_bounded_video_frame(&mut queue, frame(4), 2, 10).unwrap(),
+            0
+        );
+        assert_eq!(
+            push_bounded_video_frame(&mut queue, frame(4), 2, 10).unwrap(),
+            1
+        );
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queued_video_frame_bytes(&queue), 8);
+
+        assert!(push_bounded_video_frame(&mut queue, frame(11), 2, 10).is_err());
     }
 
     #[test]

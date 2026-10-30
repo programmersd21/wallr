@@ -5,7 +5,7 @@ wgpu rendering, animated image and video playback, theme providers, and ipc.
 
 ```toml
 [dependencies]
-wallr-core = "0.8.6"
+wallr-core = "0.8.7"
 ```
 
 The optional `static-ffmpeg` feature enables static ffmpeg linking when the

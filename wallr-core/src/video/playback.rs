@@ -169,11 +169,17 @@ impl VideoPlayback {
         let scheduler = scheduler.as_mut().ok_or_else(|| {
             VideoError::SeekFailed(timestamp, anyhow::anyhow!("no video is playing"))
         })?;
-        scheduler.seek(timestamp)?;
+        if timestamp > scheduler.duration() {
+            return Err(VideoError::SeekFailed(
+                timestamp,
+                anyhow::anyhow!("Position exceeds video duration"),
+            ));
+        }
         if let Some(d) = decoder.as_mut() {
-            d.seek(timestamp);
+            d.seek(timestamp)?;
             d.drain();
         }
+        scheduler.seek(timestamp)?;
         *pending = None;
         tracing::info!("Video seeked to {:?}", timestamp);
         Ok(())
