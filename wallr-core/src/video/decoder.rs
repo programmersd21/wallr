@@ -676,6 +676,7 @@ impl VideoDecoder {
         let mut frame_index = 0u64;
         let mut pts_origin: Option<f64> = stream_start;
         let mut last_output_pts = None;
+        let mut last_good_position = Duration::ZERO;
         let mut hardware_frame_seen = false;
         let mut decoded_frame = ffmpeg::frame::Video::empty();
         let mut sw_frame = ffmpeg::frame::Video::empty();
@@ -705,15 +706,33 @@ impl VideoDecoder {
             paused = pause_requested.load(Ordering::Acquire);
 
             if let Some((ts, epoch, ack)) = pending_seek.take() {
-                let result = Self::apply_seek(&mut ictx, &mut decoder, ts);
-                let seek_ok = result.is_ok();
-                if seek_ok {
-                    last_output_pts = None;
-                    if let Ok(mut queue) = frame_queue.lock() {
-                        queue.clear();
+                match Self::apply_seek(&mut ictx, &mut decoder, ts) {
+                    Ok(()) => {
+                        last_good_position = ts;
+                        last_output_pts = None;
+                        if let Ok(mut queue) = frame_queue.lock() {
+                            queue.clear();
+                        }
+                        let _ = ack.send((epoch, None));
+                    }
+                    Err(err) => {
+                        // A failed demuxer seek may leave FFmpeg's internal
+                        // position undefined. Recover to the last decoded
+                        // position; if that also fails the decoder is no
+                        // longer trustworthy.
+                        if Self::apply_seek(&mut ictx, &mut decoder, last_good_position).is_ok() {
+                            last_output_pts = None;
+                            if let Ok(mut queue) = frame_queue.lock() {
+                                queue.clear();
+                            }
+                            let _ = ack.send((epoch, Some(err)));
+                        } else {
+                            decoder_state.store(DecoderState::Failed.code(), Ordering::Release);
+                            let _ = ack.send((epoch, Some(err)));
+                            break 'outer;
+                        }
                     }
                 }
-                let _ = ack.send((epoch, result.err()));
             }
 
             if paused {
@@ -908,6 +927,7 @@ impl VideoDecoder {
                         ) {
                             Ok(dropped) => {
                                 dropped_frames.fetch_add(dropped as u64, Ordering::Relaxed);
+                                last_good_position = pts_duration;
                             }
                             Err(_) => {
                                 dropped_frames.fetch_add(1, Ordering::Relaxed);
