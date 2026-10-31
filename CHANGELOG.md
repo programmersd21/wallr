@@ -2,6 +2,16 @@
 
 All notable changes to Wallr are documented here.
 
+## [0.8.10] - 2026-10-31
+
+### fixed
+
+- unknown or zero video durations no longer break timestamp scheduling.
+
+### changed
+
+- README license badge now uses a dark color.
+
 ## [0.8.9] - 2026-10-31
 
 ### fixed

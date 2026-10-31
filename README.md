@@ -16,7 +16,7 @@ and optional theme updates.
   <a href="https://aur.archlinux.org/packages/wallr-bin"><img src="https://img.shields.io/aur/votes/wallr-bin?style=for-the-badge&logo=archlinux&logoColor=f5c2e7&labelColor=11111b&color=f5c2e7" alt="aur votes"></a>
   <a href="https://crates.io/crates/wallr"><img src="https://img.shields.io/crates/v/wallr?style=for-the-badge&logo=rust&logoColor=fab387&labelColor=11111b&color=fab387" alt="crates.io version"></a>
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/msrv-1.90-94e2d5?style=for-the-badge&logo=rust&logoColor=94e2d5&labelColor=11111b&color=94e2d5" alt="minimum supported rust version"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-89b4fa?style=for-the-badge&labelColor=11111b&color=89b4fa" alt="license"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-313244?style=for-the-badge&labelColor=11111b&color=313244" alt="license"></a>
 </p>
 
 </div>
