@@ -427,6 +427,14 @@ impl VideoDecoder {
             } else {
                 ictx.duration() as f64 / ffmpeg::ffi::AV_TIME_BASE as f64
             };
+            let seconds = if seconds.is_finite() && seconds > 0.0 {
+                seconds
+            } else {
+                // A zero or unknown duration cannot drive timestamp-based
+                // scheduling. Use a long finite fallback instead of fabricating
+                // a 1 ms duration or rejecting every non-zero-PTS frame.
+                3600.0
+            };
             duration_from_seconds(seconds)?
         };
 
