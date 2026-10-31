@@ -191,6 +191,8 @@ impl AnimatedImage {
     fn restart(&mut self) {
         self.reader = GifReader::open_bytes(self.bytes.clone()).ok();
         self.next_index = 0;
+        self.canvas.fill(0);
+        self.prev_save.clear();
     }
 
     /// Decodes the next frame, compositing it onto the canvas and caching it.
@@ -260,6 +262,23 @@ impl AnimatedImage {
                 }
             }
 
+            // Cache the fully composited frame before applying disposal, which
+            // prepares the canvas for the next frame rather than this one.
+            let raw_len = self.canvas.len();
+            if index < self.cache.len() && self.cache[index].is_none() {
+                if self.raw_cache {
+                    self.cache_bytes += raw_len;
+                    self.cache[index] = Some(CachedFrame::Raw(self.canvas.clone()));
+                } else {
+                    let compressed = zstd::bulk::compress(&self.canvas, 1)
+                        .unwrap_or_else(|_| self.canvas.clone());
+                    if self.cache_bytes + compressed.len() <= CACHE_BUDGET {
+                        self.cache_bytes += compressed.len();
+                        self.cache[index] = Some(CachedFrame::Zstd(compressed));
+                    }
+                }
+            }
+
             match f.dispose {
                 DisposalMethod::Background => {
                     for y in 0..fh {
@@ -275,23 +294,6 @@ impl AnimatedImage {
                     }
                 }
                 _ => {}
-            }
-        }
-
-        // Cache the freshly decoded frame if the budget allows: raw when the
-        // whole animation fits, zstd otherwise.
-        let raw_len = self.canvas.len();
-        if index < self.cache.len() && self.cache[index].is_none() {
-            if self.raw_cache {
-                self.cache_bytes += raw_len;
-                self.cache[index] = Some(CachedFrame::Raw(self.canvas.clone()));
-            } else {
-                let compressed =
-                    zstd::bulk::compress(&self.canvas, 1).unwrap_or_else(|_| self.canvas.clone());
-                if self.cache_bytes + compressed.len() <= CACHE_BUDGET {
-                    self.cache_bytes += compressed.len();
-                    self.cache[index] = Some(CachedFrame::Zstd(compressed));
-                }
             }
         }
 
@@ -459,8 +461,15 @@ fn scan_gif(bytes: &[u8]) -> anyhow::Result<Option<GifInfo>> {
         "GIF logical screen dimensions are zero"
     );
     let packed = bytes[10];
-    let gct_size = 3 * (1 << ((packed & 0x07) + 1));
-    let mut pos = 13 + gct_size;
+    let gct_size = if packed & 0x80 != 0 {
+        3usize * (1usize << ((packed & 0x07) + 1))
+    } else {
+        0
+    };
+    let mut pos = match 13usize.checked_add(gct_size) {
+        Some(pos) => pos,
+        None => return Ok(None),
+    };
     if pos > bytes.len() {
         return Ok(None);
     }

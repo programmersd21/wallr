@@ -891,6 +891,8 @@ struct RenderState {
     preload_frames: usize,
     /// Optional cap for live video presentation.
     max_fps: Option<u32>,
+    /// Configured default cap, restored when a request omits --fps.
+    default_max_fps: Option<u32>,
     /// Current scaling mode for live playback.
     scaling_mode: u32,
     /// Effect used by the active request, for idempotent switch detection.
@@ -1109,10 +1111,12 @@ impl RenderState {
         // frame. Hand the pixels directly to the compositor and release the
         // persistent GPU image, matching the low-idle-cost architecture used
         // by dedicated static wallpaper daemons.
-        let is_animated_image = matches!(
-            path.extension().and_then(|extension| extension.to_str()),
-            Some("gif" | "GIF" | "apng" | "APNG")
-        );
+        let is_animated_image = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("gif") || extension.eq_ignore_ascii_case("apng")
+            });
         if duration_ms == 0
             && !is_animated_image
             && !crate::video::VideoDecoder::is_video_file(path)
@@ -3054,6 +3058,9 @@ impl Daemon {
                         for (name, rs) in &targets {
                             if let Some(fps) = fps {
                                 rs.lock().await.max_fps = Some(clamp_max_fps(Some(fps)).unwrap());
+                            } else {
+                                let mut state = rs.lock().await;
+                                state.max_fps = state.default_max_fps;
                             }
                             let result = set_wallpaper_with_retry(
                                 rs,
@@ -3628,6 +3635,7 @@ impl Daemon {
             preferred_gpu: config.video.preferred_gpu.clone(),
             preload_frames: clamp_preload_frames(config.video.preload_frames),
             max_fps: clamp_max_fps(config.daemon.max_fps),
+            default_max_fps: clamp_max_fps(config.daemon.max_fps),
             scaling_mode: 0,
             current_effect: None,
             last_wallpaper: None,
@@ -3727,6 +3735,7 @@ fn create_render_state_for_output_sync(
         preferred_gpu: config.video.preferred_gpu.clone(),
         preload_frames: clamp_preload_frames(config.video.preload_frames),
         max_fps: clamp_max_fps(config.daemon.max_fps),
+        default_max_fps: clamp_max_fps(config.daemon.max_fps),
         scaling_mode: 0,
         current_effect: None,
         last_wallpaper: None,

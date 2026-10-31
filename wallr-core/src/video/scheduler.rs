@@ -122,7 +122,12 @@ impl FrameScheduler {
             return false;
         }
         let current = self.current_position();
-        if current < Duration::from_millis(100)
+        // The suppression avoids showing a previous loop's final frame
+        // immediately after a wrap. It is only meaningful for clips longer
+        // than the suppression window; applying it to short clips rejects
+        // valid non-zero-PTS frames.
+        if self.duration > Duration::from_millis(100)
+            && current < Duration::from_millis(100)
             && frame_pts > self.duration.saturating_sub(Duration::from_millis(100))
         {
             return false;

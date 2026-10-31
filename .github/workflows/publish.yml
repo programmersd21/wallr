@@ -6,7 +6,7 @@ on:
       version:
         description: 'Workspace version to publish'
         required: true
-        default: '0.8.8'
+        default: '0.8.9'
         type: string
 
 permissions:

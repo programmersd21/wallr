@@ -27,7 +27,7 @@ pub enum ThemeProvider {
     None,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum GpuSelection {
     #[default]
@@ -35,6 +35,21 @@ pub enum GpuSelection {
     Integrated,
     Discrete,
     Named(String),
+}
+
+impl<'de> serde::Deserialize<'de> for GpuSelection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "auto" => Ok(GpuSelection::Auto),
+            "integrated" => Ok(GpuSelection::Integrated),
+            "discrete" => Ok(GpuSelection::Discrete),
+            other => Ok(GpuSelection::Named(other.to_string())),
+        }
+    }
 }
 
 impl std::fmt::Display for GpuSelection {
@@ -66,5 +81,13 @@ mod tests {
     #[test]
     fn gpu_selection_default() {
         assert_eq!(GpuSelection::default(), GpuSelection::Auto);
+    }
+
+    #[test]
+    fn gpu_selection_deserializes_scalar_names() {
+        let named: GpuSelection = serde_yaml::from_str("NVIDIA").unwrap();
+        assert_eq!(named, GpuSelection::Named("NVIDIA".to_string()));
+        let auto: GpuSelection = serde_yaml::from_str("auto").unwrap();
+        assert_eq!(auto, GpuSelection::Auto);
     }
 }

@@ -2,6 +2,21 @@
 
 All notable changes to Wallr are documented here.
 
+## [0.8.9] - 2026-10-30
+
+### fixed
+
+- GIF global colour table parsing now respects the global colour table flag.
+- GIF frames are cached before disposal is applied.
+- GIF animation restart resets canvas and previous-frame state.
+- extension checks for animated wallpapers are case-insensitive.
+- GPU adapter names can be used directly in configuration.
+
+### tests
+
+- added GIF colour-table and disposal regression coverage.
+- added GPU selection deserialization tests.
+
 ## [0.8.8] - 2026-10-30
 
 ### fixed
