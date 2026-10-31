@@ -2,7 +2,7 @@
 
 All notable changes to Wallr are documented here.
 
-## [0.8.9] - 2026-10-30
+## [0.8.9] - 2026-10-31
 
 ### fixed
 
