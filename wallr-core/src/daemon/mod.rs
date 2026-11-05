@@ -1355,6 +1355,15 @@ impl RenderState {
         self.shm_buffers[used_slot] = Some(buffer);
         self.shm_width = width;
         self.shm_height = height;
+        // Static restores run outside the dispatch thread, which may already
+        // be waiting for server events. Flush the commit so mapping the surface
+        // does not depend on an unrelated event waking that thread.
+        let backend = self
+            .shm_surface
+            .backend()
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("Wayland connection closed during static commit"))?;
+        Connection::from_backend(backend).flush()?;
         self.shm_reaper.notify_one();
         Ok(true)
     }
