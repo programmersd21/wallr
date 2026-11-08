@@ -2,6 +2,20 @@
 
 All notable changes to Wallr are documented here.
 
+## [0.8.12] - 2026-11-08
+
+### fixed
+
+- static wallpaper commits are flushed to the Wayland compositor so saved
+  backgrounds appear on daemon startup without waiting for another event.
+- release metadata, crate documentation, and Nix package version are aligned
+  with the release version. The v0.8.11 release failed tag verification because
+  its workspace version was still 0.8.10; no release binary was built.
+
+### docs
+
+- documented startup restoration and the release preparation checklist.
+
 ## [0.8.10] - 2026-10-31
 
 ### fixed

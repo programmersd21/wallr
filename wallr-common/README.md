@@ -5,7 +5,7 @@ does not depend on wayland, wgpu, or ffmpeg.
 
 ```toml
 [dependencies]
-wallr-common = "0.8.10"
+wallr-common = "0.8.12"
 ```
 
 ## license
