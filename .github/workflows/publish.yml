@@ -6,11 +6,15 @@ on:
       version:
         description: 'Workspace version to publish'
         required: true
-        default: '0.8.10'
+        default: '0.8.12'
         type: string
 
 permissions:
   contents: read
+
+concurrency:
+  group: wallr-crates-publish
+  cancel-in-progress: false
 
 jobs:
   publish:

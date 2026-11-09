@@ -19,6 +19,10 @@ wallpapers use `wl_shm` when the surface protocol allows it; transitions, gif,
 video, and surfaces already using the gpu path use wgpu. Settled wallpapers do
 not run a frame loop.
 
+Saved static wallpapers are restored on daemon startup. After committing a
+shared-memory wallpaper buffer, the daemon flushes the Wayland connection so
+the compositor receives it even when no further events wake the daemon.
+
 ## images and transitions
 
 Static images without transitions use bounded `wl_shm` buffers. Fill images
